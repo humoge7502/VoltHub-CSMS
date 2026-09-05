@@ -127,7 +127,22 @@ jobs:
           docker inspect -f '{{.Name}} {{.State.Health.Status}}' volthub-oracle volthub-timescale
       - name: Migrate + seed (canonical path, shared with db-tests)
         env: { SEED_DB: '1' }
-        run: bash scripts/migrate.sh
+        run: |
+          # gvenzl first-boot restarts the DB after creating the app user, so
+          # FREEPDB1 deregisters from the listener briefly AFTER the docker
+          # healthcheck already flipped healthy. Require 3 consecutive clean
+          # connects before migrating (seed must not run against a flapping DB).
+          good=0
+          for i in $(seq 1 40); do
+            if docker exec volthub-oracle bash -lc "echo 'select 1 from dual;' | sqlplus -S volthub/volthub_dev_pwd@localhost/freepdb1" >/dev/null 2>&1; then
+              good=$((good+1)); [ "$good" -ge 3 ] && break
+            else
+              good=0
+            fi
+            echo "wait stable oracle $i"; sleep 5
+          done
+          [ "$good" -ge 3 ] || { echo 'oracle never became stable'; exit 1; }
+          bash scripts/migrate.sh
       - run: docker compose -f infra/docker-compose.yml up -d --build || { echo '--- compose up failed; dumping container logs ---'; docker compose -f infra/docker-compose.yml logs --no-color || true; exit 1; }
       - name: Wait for API then assert health/docs/metrics
         run: |
