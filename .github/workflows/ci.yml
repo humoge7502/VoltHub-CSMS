@@ -106,7 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose -f infra/docker-compose.yml up -d --build
+      - run: docker compose -f infra/docker-compose.yml up -d --build || { echo '--- compose up failed; dumping container logs ---'; docker compose -f infra/docker-compose.yml logs --tail 120 || true; exit 1; }
       - run: sleep 45 && curl -sf http://localhost:4000/api/v1/health/deep | grep -q '"status":"ok"' && curl -sf http://localhost:4000/api/v1/docs | grep -q openapi && curl -sf http://localhost:4000/api/v1/metrics | grep -q volthub_requests_total
       - run: npm run test:e2e
       - run: docker compose -f infra/docker-compose.yml down
