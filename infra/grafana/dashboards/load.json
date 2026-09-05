@@ -1,0 +1,28 @@
+{
+  "title": "VoltHub — station load (tick_1m cagg)",
+  "panels": [
+    {
+      "title": "Avg / peak kW per 5 min",
+      "type": "timeseries",
+      "datasource": "TimescaleDB",
+      "targets": [
+        {
+          "rawSql": "SELECT bucket AS time, AVG(avg_kw) AS \"avg kW\", MAX(peak_kw) AS \"peak kW\" FROM tick_1m WHERE bucket > NOW() - INTERVAL '24 hours' AND station_id = $station GROUP BY bucket ORDER BY bucket",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "title": "Fault / offline events per min",
+      "type": "timeseries",
+      "datasource": "TimescaleDB",
+      "targets": [
+        {
+          "rawSql": "SELECT bucket AS time, SUM(fault_events) AS faults, SUM(offline_events) AS offline FROM state_1m WHERE bucket > NOW() - INTERVAL '24 hours' GROUP BY bucket ORDER BY bucket",
+          "format": "time_series"
+        }
+      ]
+    }
+  ],
+  "templating": { "list": [{ "name": "station", "type": "query", "datasource": "TimescaleDB", "query": "SELECT station_id FROM station_map GROUP BY 1" }] }
+}

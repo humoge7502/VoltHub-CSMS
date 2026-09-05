@@ -1,0 +1,30 @@
+%% VoltHub CSMS — DA3 TimescaleDB schema (Section 26)
+flowchart TB
+    subgraph Raw["Raw hypertables"]
+        MT["meter_tick<br/>---<br/>ts TIMESTAMPTZ (chunk key, 1d)<br/>session_id, connector_ref<br/>meter_kwh, power_kw, voltage_v, current_a<br/>PK(session_id, ts) = idempotency"]
+        CSE["connector_state_event<br/>---<br/>ts TIMESTAMPTZ (chunk key, 1d)<br/>connector_ref, from_state, to_state<br/>cause, session_id<br/>PK(connector_ref, ts)"]
+        SM["session_metric<br/>---<br/>ts TIMESTAMPTZ (7d chunks)<br/>session_id, station_id<br/>energy_kwh, duration_s, peak_kw"]
+    end
+
+    subgraph Caggs["Continuous aggregates (incremental)"]
+        C1["tick_1m<br/>time_bucket 1min<br/>delta_kwh, avg_kw, peak_kw<br/>refresh every 1min"]
+        C2["tick_1h<br/>time_bucket 1h (cagg over cagg)<br/>energy_kwh, avg_kw, peak_kw"]
+        C3["state_1m<br/>dominant_state per min<br/>fault/offline transition counts"]
+    end
+
+    subgraph Meta["Reference (Oracle-projected)"]
+        MAP["station_map<br/>connector_ref -> station_id<br/>standard_code, max_power_kw"]
+    end
+
+    MT -->|"GROUP BY bucket, connector"| C1
+    C1 --> C2
+    CSE --> C3
+    MAP -.->|"enrichment join"| C1
+    MAP -.-> C3
+
+    subgraph Policies["Automated policies"]
+        P1["compression: meter_tick > 7 days<br/>(segmentby connector_ref)"]
+        P2["retention: meter_tick > 90 days"]
+        P3["retention: state events > 180 days"]
+    end
+    Policies -.-> Raw

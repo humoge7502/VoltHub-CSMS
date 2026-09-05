@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: volthub
+    orgId: 1
+    folder: VoltHub
+    type: file
+    options: { path: /var/lib/grafana/dashboards }

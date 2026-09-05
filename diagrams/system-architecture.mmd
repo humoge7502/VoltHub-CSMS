@@ -1,0 +1,46 @@
+%% VoltHub CSMS — System architecture (Section 8.2)
+flowchart TB
+    subgraph Clients["Clients"]
+        D["Driver web app<br/>(Next.js RSC)"]
+        O["Operator / Admin<br/>dashboards"]
+    end
+
+    subgraph App["NestJS Modular Monolith"]
+        API["REST API<br/>auth - stations - reservations<br/>billing - admin"]
+        GW["OCPP Gateway<br/>WebSocket per charge point"]
+        W["Worker<br/>outbox relay - expiry sweeper<br/>notifications"]
+    end
+
+    subgraph Sim["Charger Simulator (Node CLI)"]
+        S1["fleet of N virtual chargers"]
+        S2["scenarios: normal - race -<br/>fault - no-show - burst"]
+    end
+
+    subgraph Oracle["ORACLE 23ai Free - OLTP system of record"]
+        T1["app_user - wallet - vehicle"]
+        T2["station - charge_point - connector"]
+        T3["reservation - charging_session<br/>meter_reading"]
+        T4["tariff_plan - tariff_band"]
+        T5["invoice - invoice_line - payment"]
+        T6["fault - maintenance - review"]
+        T7["audit_log - outbox_event"]
+        PKG["PL/SQL: RESERVATION_PKG<br/>CHARGE_SESSION_PKG - BILLING_PKG<br/>TARIFF_PKG - MAINTENANCE_PKG - AUDIT_PKG"]
+    end
+
+    subgraph TSDB["TIMESCALEDB - DA3 telemetry OLAP"]
+        HT["hypertables: meter_tick<br/>connector_state_event"]
+        CG["caggs: tick_1m - tick_1h - state_1m"]
+        POL["policies: compress 7d - drop 90d"]
+    end
+
+    D -->|"HTTPS REST + JWT"| API
+    O -->|"HTTPS REST + JWT"| API
+    S1 -->|"OCPP 1.6J JSON/WS"| GW
+    GW -->|"package calls"| PKG
+    API -->|"bind vars + package calls"| PKG
+    PKG --> T1 & T2 & T3 & T4 & T5 & T6 & T7
+    W -->|"FOR UPDATE SKIP LOCKED batch"| T7
+    W -->|"COPY (idempotent upsert)"| HT
+    HT --> CG
+    POL -.-> HT
+    O -->|"telemetry reads"| CG

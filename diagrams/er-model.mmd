@@ -1,0 +1,165 @@
+%% VoltHub CSMS — ER/EER model (DA1 report companion)
+%% Render: https://mermaid.live or mermaid-cli (mmdc -i er-model.mmd -o er-model.svg)
+erDiagram
+    APP_USER ||--o| WALLET_ACCOUNT : "holds (1:1, drivers)"
+    APP_USER ||--o{ VEHICLE : owns
+    APP_USER ||--o{ STATION : operates
+    APP_USER ||--o{ RESERVATION : books
+    APP_USER ||--o{ CHARGING_SESSION : charges
+    APP_USER ||--o{ MAINTENANCE_RECORD : performs
+    APP_USER ||--o{ REVIEW : writes
+    APP_USER ||--o{ NOTIFICATION : receives
+    APP_USER ||--o{ AUDIT_LOG : acts
+    APP_USER ||--o{ WALLET_LEDGER : "has (identifying)"
+    VEHICLE ||--o{ VEHICLE_STANDARD_SUPPORT : supports
+    CONNECTOR_STANDARD ||--o{ VEHICLE_STANDARD_SUPPORT : classifies
+    CONNECTOR_STANDARD ||--o{ CONNECTOR : classifies
+    STATION ||--o{ CHARGE_POINT : contains
+    STATION ||--o{ STATION_AMENITY : offers
+    CHARGE_POINT ||--|{ CONNECTOR : "has (identifying)"
+    CONNECTOR ||--o{ RESERVATION : "held by"
+    CONNECTOR ||--o{ CHARGING_SESSION : "hosts"
+    CONNECTOR ||--o{ FAULT : suffers
+    TARIFF_PLAN ||--|{ TARIFF_BAND : prices
+    TARIFF_PLAN |o--o| TARIFF_PLAN : supersedes
+    TARIFF_PLAN ||--o{ CHARGING_SESSION : "bills via"
+    RESERVATION |o--o| CHARGING_SESSION : "converts to"
+    CHARGING_SESSION ||--|{ METER_READING : "produces (identifying)"
+    CHARGING_SESSION ||--o| INVOICE : "billed as (1:1)"
+    CHARGING_SESSION ||--o| REVIEW : reviewed
+    INVOICE ||--|{ INVOICE_LINE : itemized
+    INVOICE ||--o{ PAYMENT : settled
+    PAYMENT |o--o| WALLET_LEDGER : debits
+    FAULT |o--o| MAINTENANCE_RECORD : addressed
+    CONNECTOR ||--o{ CONNECTOR_STATE_EVENT : "transitions (DA3)"
+    CHARGING_SESSION ||--o{ OUTBOX_EVENT : emits
+
+    APP_USER {
+        number user_id PK
+        varchar2 email UK
+        varchar2 password_hash
+        varchar2 role "DRIVER|OPERATOR|ADMIN - disjoint total"
+    }
+    WALLET_ACCOUNT {
+        number user_id PK_FK
+        number balance "derived - owned by BILLING_PKG"
+    }
+    WALLET_LEDGER {
+        number user_id PK_FK
+        number seq_no PK "partial key"
+        varchar2 kind
+        number amount "signed"
+        number balance_after
+    }
+    VEHICLE {
+        number vehicle_id PK
+        number owner_id FK
+        varchar2 make
+        number battery_kwh
+    }
+    CONNECTOR_STANDARD {
+        number standard_id PK
+        varchar2 code UK "TYPE2|CCS2|BHARAT_AC001..."
+    }
+    STATION {
+        number station_id PK
+        number operator_id FK
+        number latitude
+        number longitude
+        varchar2 city
+    }
+    CHARGE_POINT {
+        number cp_id PK
+        number station_id FK
+        varchar2 ocpp_identity UK
+    }
+    CONNECTOR {
+        number cp_id PK_FK "identifying"
+        number connector_no PK "partial key"
+        number standard_id FK
+        varchar2 status FK "CONNECTOR_STATE"
+    }
+    TARIFF_PLAN {
+        number plan_id PK
+        number group_id "version chain identity"
+        number version_no "UK with group_id"
+        number session_fee
+        timestamp active_from
+    }
+    TARIFF_BAND {
+        number band_id PK
+        number plan_id FK
+        varchar2 day_scope
+        number price_per_kwh
+    }
+    RESERVATION {
+        number reservation_id PK
+        varchar2 connector_ref FK
+        number user_id FK
+        timestamp start_at
+        timestamp end_at "overlap impossible BR-05"
+        varchar2 status
+    }
+    CHARGING_SESSION {
+        number session_id PK
+        varchar2 connector_ref FK
+        number user_id FK
+        number reservation_id UK_FK
+        number tariff_plan_id FK
+        varchar2 state FK
+        varchar2 billing_state
+        number energy_kwh "derived - frozen"
+    }
+    METER_READING {
+        number session_id PK_FK
+        number seq_no PK "partial key"
+        timestamp taken_at
+        number meter_kwh
+        number power_kw
+    }
+    INVOICE {
+        number invoice_id PK
+        number session_id UK_FK
+        varchar2 status
+        number total "derived - frozen"
+    }
+    INVOICE_LINE {
+        number invoice_id PK_FK
+        number line_no PK
+        varchar2 kind
+        number amount
+    }
+    PAYMENT {
+        number payment_id PK
+        number invoice_id FK
+        varchar2 method "WALLET - CARD_PAYMENT future"
+        varchar2 status
+    }
+    FAULT {
+        number fault_id PK
+        varchar2 connector_ref FK "or cp_id - exactly one"
+        varchar2 code
+        timestamp cleared_at
+    }
+    MAINTENANCE_RECORD {
+        number maint_id PK
+        number fault_id UK_FK
+        number performed_by FK
+        number parts_cost
+    }
+    REVIEW {
+        number review_id PK
+        number session_id UK_FK
+        number rating "1..5"
+    }
+    AUDIT_LOG {
+        number audit_id PK
+        number actor_user_id FK "nullable = system"
+        varchar2 entity_name
+        clob new_values "JSON"
+    }
+    OUTBOX_EVENT {
+        number event_id PK
+        varchar2 kind "METER_TICK|STATE|SESSION"
+        timestamp processed_at "relay cursor"
+    }

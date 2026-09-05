@@ -1,0 +1,45 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install --no-audit --no-fund
+      - run: node --check apps/api/src/server.js && node --check apps/api/src/routes.js && node --check apps/api/src/extended.js && node --check apps/worker/src/index.js
+      - run: npm install --no-audit --no-fund
+        working-directory: apps/web
+      - run: npm run build
+        working-directory: apps/web
+  db-tests:
+    runs-on: ubuntu-latest
+    services:
+      oracle:
+        image: gvenzl/oracle-free:23-slim
+        env: { ORACLE_PASSWORD: volthub_dev_pwd, APP_USER: volthub, APP_USER_PASSWORD: volthub_dev_pwd }
+        ports: ["1521:1521"]
+      timescale:
+        image: timescale/timescaledb:latest-pg16
+        env: { POSTGRES_DB: volthub, POSTGRES_USER: volthub, POSTGRES_PASSWORD: volthub_dev_pwd }
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install --no-audit --no-fund
+      - name: Migrate (Oracle + Timescale when clients exist)
+        run: bash scripts/migrate.sh
+      - run: npm run test -w apps/api
+      - run: npm run test:race -w apps/api
+      - run: npm run test:e2e
+      - run: node test/sql/run-invariants.js
+  e2e:
+    needs: db-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f infra/docker-compose.yml up -d --build
+      - run: sleep 45 && curl -sf http://localhost:4000/api/v1/health && curl -sf http://localhost:4000/api/v1/docs | grep -q openapi
+      - run: docker compose -f infra/docker-compose.yml down

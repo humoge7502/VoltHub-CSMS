@@ -1,0 +1,19 @@
+{
+  "name": "volthub-csms",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VoltHub CSMS — two-engine EV charging management (Oracle OLTP + TimescaleDB telemetry, OCPP 1.6J simulator)",
+  "workspaces": ["apps/api", "apps/worker", "apps/simulator", "packages/shared", "packages/ocpp-messages"],
+  "scripts": {
+    "dev:api": "npm run dev -w apps/api",
+    "seed": "node scripts/seed/generate.js",
+    "migrate": "bash scripts/migrate.sh",
+    "test": "npm run test -w apps/api && npm run test -w apps/simulator && node test/sql/run-invariants.js",
+    "test:race": "npm run test:race -w apps/api",
+    "test:e2e": "node test/e2e/run.js",
+    "test:load": "command -v k6 >/dev/null && k6 run test/load/k6-smoke.js || echo 'k6 not installed — skipping load (install k6 to run NFR-03/04 gates)'",
+    "test:all": "npm test && npm run test:race -w apps/api && npm run test:e2e",
+    "demo": "bash scripts/demo.sh"
+  },
+  "license": "MIT"
+}

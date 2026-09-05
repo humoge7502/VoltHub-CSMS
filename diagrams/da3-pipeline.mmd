@@ -1,0 +1,32 @@
+%% VoltHub CSMS — DA3 outbox pipeline: Oracle OLTP to TimescaleDB OLAP (Section 29)
+flowchart LR
+    subgraph OLTP["Oracle (system of record)"]
+        SP["CHARGE_SESSION_PKG.record_meter_tick"] -->|"same tx"| MR[("meter_reading<br/>(billing truth)")]
+        SP -->|"same tx"| OB[("OUTBOX_EVENT<br/>kind=METER_TICK<br/>processed_at NULL")]
+    end
+
+    subgraph Worker["apps/worker (relay loop, 2s)"]
+        R1["SELECT ... ORDER BY event_id<br/>FETCH FIRST 500 FOR UPDATE SKIP LOCKED"]
+        R2["map + COPY to sink"]
+        R3["UPDATE processed_at<br/>commit"]
+        R1 --> R2 --> R3
+    end
+
+    subgraph OLAP["TimescaleDB (analytics)"]
+        MT[("meter_tick<br/>PK (session_id, ts)<br/>= idempotency key")]
+        CSE[("connector_state_event")]
+        MT --> C1["tick_1m cagg"]
+        C1 --> C2["tick_1h cagg"]
+        CSE --> C3["state_1m cagg"]
+        POL["compress > 7d<br/>drop > 90d"] -.-> MT
+        POL -.-> CSE
+    end
+
+    DASH["Operator telemetry screens<br/>load curve - heatmap - traces"] --> C1
+    DASH --> C3
+
+    OB --> R1
+    R2 --> MT
+    R2 --> CSE
+
+    note["Crash safety: worker killed after R2?<br/>marks rolled back, sink dedupes on replay.<br/>At-least-once delivery + idempotent sink = effectively-once analytics."]

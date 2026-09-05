@@ -1,0 +1,45 @@
+%% VoltHub CSMS — Charging session + connector lifecycle (Section 3.3)
+stateDiagram-v2
+    direction LR
+
+    state "Connector: AVAILABLE" as cAvail
+    state "Connector: RESERVED" as cRes
+    state "Connector: OCCUPIED" as cOcc
+    state "Connector: FAULTED" as cFault
+    state "Connector: OFFLINE" as cOff
+
+    state Session {
+        [*] --> RESERVED : reservation created
+        RESERVED --> PREPARING : driver plugs in (OCPP Authorize ok)
+        PREPARING --> CHARGING : StartTransaction / first meter tick
+        CHARGING --> SUSPENDED : EV full / pause
+        SUSPENDED --> CHARGING : resumes
+        CHARGING --> COMPLETED : StopTransaction (final meter)
+        SUSPENDED --> COMPLETED : StopTransaction
+        PREPARING --> FAILED : auth rejected / fault
+        CHARGING --> FAILED : fault mid-session
+        PREPARING --> CANCELLED : cancelled
+        RESERVED --> CANCELLED : cancel / no-show expiry
+        COMPLETED --> [*]
+        FAILED --> [*]
+        CANCELLED --> [*]
+    }
+
+    state Billing {
+        [*] --> UNBILLED
+        UNBILLED --> BILLED : BILLING_PKG.bill_session (invoice + lines)
+        BILLED --> PAID : wallet payment (ledger entry)
+        UNBILLED --> FAILED : billing error
+        PAID --> [*]
+    }
+
+    cAvail --> cRes : reservation placed
+    cRes --> cAvail : cancelled / expired
+    cRes --> cOcc : plug-in (session PREPARING)
+    cAvail --> cOcc : walk-in session
+    cOcc --> cAvail : session terminal state
+    cOcc --> cFault : StatusNotification error
+    cAvail --> cFault : StatusNotification error
+    cFault --> cAvail : maintenance resolves
+    cAvail --> cOff : heartbeat lost
+    cOff --> cAvail : BootNotification

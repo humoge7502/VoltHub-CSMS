@@ -1,0 +1,19 @@
+{
+  "name": "@volthub/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "test": "node test/run.js",
+    "test:race": "node test/race.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "pino": "^9.4.0",
+    "ws": "^8.18.0"
+  }
+}

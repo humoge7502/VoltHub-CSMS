@@ -1,0 +1,24 @@
+%% VoltHub CSMS — The double-booking race, and how FOR UPDATE kills it (Sections 15.2, 31.1)
+sequenceDiagram
+    autonumber
+    participant A as Driver A (API call)
+    participant B as Driver B (API call)
+    participant DB as Oracle RESERVATION_PKG
+    participant C as connector row (17:2)
+
+    par concurrent request A
+        A->>DB: create_reservation(18:00-18:45)
+        DB->>C: SELECT status ... FOR UPDATE
+        Note over C: lock acquired by A
+        DB->>DB: overlap check -> 0 rows
+        DB->>DB: INSERT reservation (BOOKED)
+        DB-->>A: 201 reservation_id=5012 (commit, lock released)
+    and concurrent request B
+        B->>DB: create_reservation(18:15-18:45)
+        DB->>C: SELECT status ... FOR UPDATE
+        Note over C: B WAITS on A's lock
+        DB->>DB: overlap check -> 1 row (sees A's commit)
+        DB-->>B: ORA-20503 -> HTTP 409 RESERVATION_OVERLAP
+    end
+
+    Note over A,B,C: Without FOR UPDATE: both checks read 0 rows,<br/>both INSERT -> double booking (TOCTOU race).<br/>Test: test/races/r1-double-reservation.spec.ts
