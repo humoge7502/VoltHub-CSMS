@@ -4,6 +4,24 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+Nothing pending — see [1.2.0] below.
+
+## [1.2.0] — 2026-09-05
+
+### Repo / presentation (GitHub pack)
+
+- **README v2**: badge row (ci · release · OpenSSF Scorecard · Ask DeepWiki ·
+  node 20|22 · Oracle · TimescaleDB · license · docs site), "New here?" reading
+  paths, route/engine/package/ADR/CI/CVE stats row, "Stack, and why" trade-off
+  table, mermaid system diagram, and a docs map.
+- **GitHub Pages one-pager** at `docs/index.html` (deploys from `main` + `/docs`)
+  and a 1280×640 **social preview** `docs/social-preview.png`.
+- **YAML issue forms** (bug / feature / security-routing `config.yml`) replace the
+  old markdown templates; `.gitattributes` keeps the language bar honest.
+- **Tag-driven `release.yml`** (verify → GitHub Release with CHANGELOG notes) and
+  **OpenSSF `scorecard.yml`** (weekly + on push, SARIF → Code Scanning).
+- Profile README published at `humoge7502/humoge7502`.
+
 ### Security (HARDEN-2026-09)
 
 - **Zero known CVEs across both lockfiles**: express 4.19 → 5.2.1 (DoS CVE

@@ -2,10 +2,40 @@
 
 **Two-engine EV charging management: Oracle for ACID billing/reservations, TimescaleDB for telemetry — driven by an OCPP 1.6J gateway + simulator fleet, race-tested in CI on both database engines, with a typography-led Next.js operations console.**
 
-![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg) ![node](https://img.shields.io/badge/node-22-339933) ![license](https://img.shields.io/badge/license-MIT-blue) `oracle-23ai` `timescaledb` `modular-monolith` `ocpp-1.6j` `nextjs`
+<div align="center">
+
+[![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg)](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml)
+[![release](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/release.yml/badge.svg)](https://github.com/humoge7502/VoltHub-CSMS/releases)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/humoge7502/VoltHub-CSMS/badge)](https://scorecard.dev/viewer.html?url=github.com/humoge7502/VoltHub-CSMS)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/humoge7502/VoltHub-CSMS)
+![node](https://img.shields.io/badge/node-20%20%7C%2022-339933?logo=nodedotjs&logoColor=white)
+![oracle](https://img.shields.io/badge/Oracle-23ai-F80000?logo=oracle&logoColor=white)
+![timescale](https://img.shields.io/badge/TimescaleDB-telemetry-36BCA5)
+![license](https://img.shields.io/badge/license-MIT-blue)
+[![docs site](https://img.shields.io/badge/docs-site-c6f24e)](https://humoge7502.github.io/VoltHub-CSMS/)
+
+</div>
+
+> **New here? Pick a 5-minute path.**
+>
+> | You are…                   | Read, in this order                                                                                                                                                                                           |
+> | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+> | 🧭 **Recruiter / curious** | the [30-second demo](#30-second-demo) below → [What's actually here](#whats-actually-here) → the [docs site](https://humoge7502.github.io/VoltHub-CSMS/) → [`docs/resume-bullets.md`](docs/resume-bullets.md) |
+> | 🔧 **Engineer**            | [Quickstart](#quickstart) → [`ARCHITECTURE.md`](ARCHITECTURE.md) → [ADR index](docs/adr/) → run the [race suite](apps/api/test/race.js) yourself                                                              |
+> | 🔍 **Reviewer / sceptic**  | [ADRs](docs/adr/) (trade-offs named) → [`docs/verification.md`](docs/verification.md) (every claim has a receipt) → [`docs/perf.md`](docs/perf.md) (numbers, methodology) → [`SECURITY.md`](SECURITY.md)      |
+
+|              **48**              |              **2**               |             **7**              |         **7**          |         **5**         |             **0**             |
+| :------------------------------: | :------------------------------: | :----------------------------: | :--------------------: | :-------------------: | :---------------------------: |
+| REST routes, OpenAPI drift-gated | DB engines behind one store port | PL/SQL packages own the writes | ADRs, trade-offs named | CI jobs on every push | known CVEs, `npm audit` gated |
 
 <p align="center">
   <img src="docs/architecture-hero.png" alt="VoltHub CSMS architecture — Oracle money path + TimescaleDB telemetry joined by an outbox relay" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/demo-live.gif" alt="Live OCPP session: real MeterValues drive kWh/kW/cost in the UI" width="58%">
+  <br>
+  <em>Live session — real OCPP MeterValues tick the UI (re-record anytime: <code>scripts/screenshots/</code> — see its README).</em>
 </p>
 
 <p align="center">
@@ -15,16 +45,12 @@
   <img src="docs/screenshots/telemetry.png" alt="Telemetry load curve" width="46%">
   <img src="docs/screenshots/invoice.png" alt="Itemized invoice" width="46%">
   <br>
-  <em>Real pixels from the running stack (API :4000 + OCPP 1.6J WebSocket session + web console).</em>
+  <em>Real pixels from the running stack (API :4000 + OCPP 1.6J WebSocket session + web console). More at the <a href="https://humoge7502.github.io/VoltHub-CSMS/">documentation site</a>.</em>
 </p>
 
-<p align="center">
-  <img src="docs/screenshots/demo-live.gif" alt="Live OCPP session: real MeterValues drive kWh/kW/cost in the UI" width="60%">
-  <br>
-  <em>Live session — real OCPP MeterValues tick the UI (re-record anytime: `scripts/screenshots/` — see its README).</em>
-</p>
+## 30-second demo
 
-> **30-second demo:** two terminals reserve the same connector → one `201 BOOKED`, one `409 OVERLAP` → plug-in → live kWh/kW/cost → itemized invoice → wallet pay. (Record the terminal race with `scripts/demo.sh`.)
+> Two terminals reserve the same connector → one `201 BOOKED`, one `409 OVERLAP` → plug-in → live kWh/kW/cost → itemized invoice → wallet pay. (Record the terminal race with `scripts/demo.sh`.)
 
 ## Stack, and why (trade-offs, not fashion)
 
@@ -77,13 +103,14 @@ Mermaid renders natively on GitHub. Full 1-page version + ADR table: [`ARCHITECT
 
 | Layer            | Evidence                                                                                                                                                                                    |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Oracle OLTP**  | 25-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V005`                         |
+| **Oracle OLTP**  | 25-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V006`                         |
 | **Concurrency**  | `SELECT … FOR UPDATE` / `SKIP LOCKED` bulk expiry, error bands `-2050x…-209xx` mapped to HTTP once (`src/errors.js`), race suites in CI on both engines — `apps/api/test/race.js`           |
 | **OCPP 1.6J**    | WebSocket gateway with HTTP Basic auth on upgrade (Security Profile 1), per-CP credentials, 10 msg/s limit, 7 core messages + monotonic tick sequencing — `apps/api/src/ocpp/gateway.js`    |
 | **DA3 pipeline** | Outbox → 2s relay → hypertables → caggs; crash-after-COPY replays safely — `apps/worker/`, `db/timescale/`                                                                                  |
-| **API**          | ~40 REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                              |
+| **API**          | 48 spec'd REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                        |
 | **Web**          | 17 routes, "Grid Current" design system (Space Grotesk / IBM Plex Mono tabular numerals), zero chart dependencies, unified PageState + toasts + URL-as-state — `apps/web/`                  |
 | **CI**           | 5 jobs: lint (Node 20/22 matrix) · security (npm audit gate, both lockfiles) · quality · db-tests (Oracle + Timescale service containers) · e2e (full compose) — `.github/workflows/ci.yml` |
+| **Releases**     | tag-driven GitHub Releases with notes extracted from a Keep-a-Changelog `CHANGELOG.md`; conventional commits throughout — `.github/workflows/release.yml`                                   |
 
 ## Honest limits
 
@@ -110,10 +137,17 @@ node apps/simulator/src/index.js --scenario race   # expect exactly one 201 + on
 
 Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@123` · any seeded driver / `Driver@123`.
 
+## Status & releases
+
+- Current release: **[v1.2.0](https://github.com/humoge7502/VoltHub-CSMS/releases)** — tagged releases carry notes extracted from [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog / SemVer).
+- Engineering history is fully auditable: 29+ commits of conventional-commit breadcrumbs (`fix(oracle): …`, `ci(e2e): …`) — including the failures and their fixes.
+- Roadmap notes (OCPP 2.0.1 migration path, scale exits): [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`docs/masterplan/18-da-plans-and-roadmap.md`](docs/masterplan/18-da-plans-and-roadmap.md).
+
 ## Docs map
 
 | What                              | Where                                                                                                                                                                                                  |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Docs site (Pages)**             | [humoge7502.github.io/VoltHub-CSMS](https://humoge7502.github.io/VoltHub-CSMS/) — 1-page visual tour of this repo                                                                                      |
 | Masterplan (DA1→DA2→DA3)          | `docs/masterplan/` + polished PDF `docs/VoltHub-CSMS-Engineering-Masterplan.pdf`                                                                                                                       |
 | Architecture (1 page + diagram)   | `ARCHITECTURE.md`                                                                                                                                                                                      |
 | Decision records                  | `docs/adr/0001` modular monolith · `0002` TimescaleDB (4.90/5) · `0003` outbox pipeline · `0004` plain-JS divergence · `0005` store adapter · `0006` connector FK-native · `0007` OCPP remote commands |

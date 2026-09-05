@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in VoltHub behaves differently from its documented contract
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One behavior per report. If the behavior differs between engines
+        (`local` store vs `STORE=oracle` vs compose), say so — that distinction
+        has caught two real bugs already.
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding
+      description: One sentence. What is wrong, where?
+      placeholder: e.g. double-pay race on an invoice returns 200 twice under STORE=oracle
+    validations:
+      required: true
+  - type: input
+    id: audit-id
+    attributes:
+      label: Audit ID (if any)
+      description: B2G-/BUG-/SEC- ID from the hardening audit, or leave empty
+      placeholder: BUG-022
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine profile
+      options:
+        - local (in-process store)
+        - STORE=oracle (durable money path)
+        - compose (full stack)
+        - more than one (state where each was observed)
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: file:line or command output. Reports reproducible from a fresh `docker compose up` get priority.
+      placeholder: |
+        apps/api/src/routes.js:214 — second POST /invoices/:id/pay returns 200
+        CI run: <link>
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Documented contract
+      description: What the docs/ADR/OpenAPI say should happen instead
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: Reproduced on `main` (not a stale tag)
+        - label: Checked CHANGELOG.md — not already fixed on main
+        - label: Not a security vulnerability (those go to SECURITY.md, privately)

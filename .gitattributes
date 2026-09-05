@@ -1,0 +1,8 @@
+# Keep the GitHub language bar honest: generated artifacts are not "code
+# this project is written in", and the masterplan PDF is a document, not source.
+package-lock.json linguist-generated=true
+apps/web/package-lock.json linguist-generated=true
+infra/grafana/dashboards/*.json linguist-generated=true
+bench/results-local.json linguist-generated=true
+docs/VoltHub-CSMS-Engineering-Masterplan.pdf -linguist-detectable
+*.mmd linguist-language=Mermaid

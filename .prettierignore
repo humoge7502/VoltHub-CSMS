@@ -1,0 +1,2 @@
+# prettier has no parser for gitattributes attributes files
+.gitattributes

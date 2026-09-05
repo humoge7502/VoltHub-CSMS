@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private disclosure)
+    url: https://github.com/humoge7502/VoltHub-CSMS/blob/main/SECURITY.md
+    about: Do NOT open a public issue for security reports — see the disclosure policy first.
+  - name: Documentation & architecture questions
+    url: https://github.com/humoge7502/VoltHub-CSMS/discussions
+    about: Ask "why is it built this way?" here — the ADRs may already answer it.

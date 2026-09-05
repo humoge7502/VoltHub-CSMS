@@ -1,0 +1,1314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VoltHub CSMS — two-engine EV charging platform</title>
+    <meta
+      name="description"
+      content="Oracle 23ai money path + TimescaleDB telemetry + OCPP 1.6J gateway. Race-tested in CI on both engines. Open-source modular-monolith CSMS."
+    />
+    <meta property="og:title" content="VoltHub CSMS — Two engines. One transaction boundary." />
+    <meta
+      property="og:description"
+      content="EV charging management platform: Oracle 23ai · TimescaleDB · OCPP 1.6J · race-tested in CI."
+    />
+    <meta property="og:image" content="social-preview.png" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%230b0e11'/><text x='50' y='68' font-size='52' text-anchor='middle' fill='%23c6f24e' font-family='monospace' font-weight='bold'>V</text></svg>"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0b0e11;
+        --s1: #11151a;
+        --s2: #171c23;
+        --s3: #1f2630;
+        --tx: #e8eaed;
+        --tx2: #9aa3ad;
+        --tx3: #5c6670;
+        --lime: #c6f24e;
+        --blue: #6e96b8;
+        --ok: #3ecf8e;
+        --occ: #e8a13c;
+        --rsv: #7b8cff;
+        --bad: #e5484d;
+        --mono: 'IBM Plex Mono', ui-monospace, monospace;
+        --sans: 'Space Grotesk', Inter, system-ui, sans-serif;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        background: var(--bg);
+        color: var(--tx);
+        font-family: var(--sans);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::selection {
+        background: var(--lime);
+        color: var(--bg);
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      .wrap {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding: 0 28px;
+      }
+      .mono {
+        font-family: var(--mono);
+      }
+      .lime {
+        color: var(--lime);
+      }
+
+      /* ---------- nav ---------- */
+      nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(11, 14, 17, 0.86);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--s3);
+      }
+      nav .wrap {
+        display: flex;
+        align-items: center;
+        gap: 34px;
+        height: 62px;
+      }
+      .logo {
+        font-weight: 700;
+        font-size: 19px;
+        letter-spacing: -0.02em;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .logo .bolt {
+        width: 26px;
+        height: 26px;
+        border-radius: 6px;
+        background: var(--lime);
+        color: var(--bg);
+        display: grid;
+        place-items: center;
+        font-family: var(--mono);
+        font-weight: 700;
+        font-size: 15px;
+      }
+      .logo .csms {
+        font-family: var(--mono);
+        font-size: 11px;
+        background: var(--s2);
+        border: 1px solid var(--s3);
+        color: var(--tx2);
+        padding: 3px 7px;
+        border-radius: 4px;
+        letter-spacing: 0.08em;
+      }
+      nav .links {
+        display: flex;
+        gap: 26px;
+        margin-left: auto;
+      }
+      nav .links a {
+        font-size: 14.5px;
+        color: var(--tx2);
+        font-weight: 500;
+        transition: color 0.15s;
+      }
+      nav .links a:hover {
+        color: var(--lime);
+      }
+      nav .gh {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--mono);
+        font-size: 13.5px;
+        border: 1px solid var(--s3);
+        background: var(--s1);
+        padding: 8px 14px;
+        border-radius: 8px;
+        color: var(--tx);
+        transition: border-color 0.15s;
+      }
+      nav .gh:hover {
+        border-color: var(--lime);
+      }
+      @media (max-width: 860px) {
+        nav .links {
+          display: none;
+        }
+      }
+      @media (max-width: 640px) {
+        nav .gh-label {
+          display: none;
+        }
+        nav .gh {
+          padding: 8px 12px;
+        }
+        nav .wrap {
+          gap: 16px;
+        }
+      }
+
+      /* ---------- hero ---------- */
+      header {
+        position: relative;
+        overflow: hidden;
+        padding: 96px 0 74px;
+        border-bottom: 1px solid var(--s3);
+      }
+      .hero-grid {
+        position: absolute;
+        inset: 0;
+        opacity: 0.3;
+        background-image:
+          linear-gradient(var(--s3) 1px, transparent 1px), linear-gradient(90deg, var(--s3) 1px, transparent 1px);
+        background-size: 56px 56px;
+        -webkit-mask-image: radial-gradient(ellipse 900px 560px at 30% 20%, black 20%, transparent 75%);
+        mask-image: radial-gradient(ellipse 900px 560px at 30% 20%, black 20%, transparent 75%);
+      }
+      .hero-glow {
+        position: absolute;
+        width: 820px;
+        height: 520px;
+        left: -240px;
+        top: -220px;
+        background: radial-gradient(closest-side, rgba(198, 242, 78, 0.12), transparent 70%);
+      }
+      header .wrap {
+        position: relative;
+      }
+      .kicker {
+        font-family: var(--mono);
+        font-size: 13px;
+        letter-spacing: 0.3em;
+        color: var(--lime);
+        font-weight: 500;
+      }
+      .kicker .dim {
+        color: var(--tx3);
+      }
+      h1 {
+        font-size: clamp(42px, 6.4vw, 74px);
+        font-weight: 700;
+        letter-spacing: -0.045em;
+        line-height: 1.04;
+        margin: 22px 0 0;
+        max-width: 820px;
+      }
+      h1 b {
+        color: var(--lime);
+        font-weight: 600;
+      }
+      .hero-sub {
+        margin-top: 22px;
+        font-size: 18.5px;
+        color: var(--tx2);
+        max-width: 700px;
+      }
+      .hero-sub .m {
+        font-family: var(--mono);
+        font-size: 16px;
+        color: var(--blue);
+      }
+      .cta-row {
+        display: flex;
+        gap: 14px;
+        margin-top: 34px;
+        flex-wrap: wrap;
+      }
+      .btn {
+        font-family: var(--mono);
+        font-size: 14.5px;
+        font-weight: 600;
+        padding: 13px 22px;
+        border-radius: 9px;
+        transition:
+          transform 0.12s,
+          box-shadow 0.12s;
+        cursor: pointer;
+      }
+      .btn:active {
+        transform: translateY(1px);
+      }
+      .btn.primary {
+        background: var(--lime);
+        color: var(--bg);
+        box-shadow: 0 8px 30px rgba(198, 242, 78, 0.18);
+      }
+      .btn.primary:hover {
+        box-shadow: 0 10px 40px rgba(198, 242, 78, 0.32);
+      }
+      .btn.ghost {
+        border: 1px solid var(--s3);
+        background: var(--s1);
+        color: var(--tx);
+      }
+      .btn.ghost:hover {
+        border-color: var(--lime);
+      }
+      .hero-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 1px;
+        background: var(--s3);
+        border: 1px solid var(--s3);
+        border-radius: 14px;
+        overflow: hidden;
+        margin-top: 60px;
+      }
+      .hs {
+        background: var(--bg);
+        padding: 24px 26px;
+      }
+      .hs .n {
+        font-family: var(--mono);
+        font-size: 34px;
+        font-weight: 700;
+        color: var(--lime);
+        line-height: 1;
+      }
+      .hs .l {
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        color: var(--tx3);
+        margin-top: 9px;
+        font-weight: 500;
+      }
+
+      /* ---------- sections ---------- */
+      section {
+        padding: 88px 0;
+      }
+      section.alt {
+        background: var(--s1);
+        border-top: 1px solid var(--s3);
+        border-bottom: 1px solid var(--s3);
+      }
+      .sec-kicker {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        letter-spacing: 0.26em;
+        color: var(--lime);
+        font-weight: 500;
+      }
+      h2 {
+        font-size: clamp(28px, 3.6vw, 40px);
+        letter-spacing: -0.03em;
+        font-weight: 700;
+        margin-top: 14px;
+      }
+      .sec-sub {
+        color: var(--tx2);
+        font-size: 17px;
+        max-width: 760px;
+        margin-top: 14px;
+      }
+      .reveal {
+        opacity: 0;
+        transform: translateY(22px);
+        transition:
+          opacity 0.7s ease,
+          transform 0.7s ease;
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+      }
+
+      /* architecture */
+      .arch-img {
+        width: 100%;
+        border: 1px solid var(--s3);
+        border-radius: 16px;
+        background: var(--bg);
+        padding: 14px;
+        margin-top: 40px;
+      }
+      .seams {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        margin-top: 26px;
+      }
+      .seam {
+        background: var(--s2);
+        border: 1px solid var(--s3);
+        border-radius: 14px;
+        padding: 26px;
+      }
+      .seam .idx {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--lime);
+        letter-spacing: 0.2em;
+      }
+      .seam h3 {
+        font-size: 19px;
+        margin: 10px 0 8px;
+        letter-spacing: -0.01em;
+      }
+      .seam p {
+        font-size: 14.5px;
+        color: var(--tx2);
+      }
+      .seam code {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--blue);
+        background: var(--bg);
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+
+      /* proof / terminal */
+      .proof {
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 40px;
+        align-items: center;
+      }
+      @media (max-width: 960px) {
+        .proof {
+          grid-template-columns: 1fr;
+        }
+      }
+      .term {
+        background: var(--s1);
+        border: 1px solid var(--s3);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+      }
+      .term-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--s2);
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--s3);
+      }
+      .dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+      }
+      .d1 {
+        background: var(--bad);
+      }
+      .d2 {
+        background: var(--occ);
+      }
+      .d3 {
+        background: var(--ok);
+      }
+      .term-title {
+        margin-left: 8px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--tx3);
+      }
+      .term-body {
+        padding: 20px 22px;
+        font-family: var(--mono);
+        font-size: 14px;
+        line-height: 2.1;
+      }
+      .cmd {
+        color: var(--tx);
+      }
+      .path {
+        color: var(--tx3);
+      }
+      .ok {
+        color: var(--ok);
+        font-weight: 700;
+      }
+      .oc {
+        color: var(--occ);
+        font-weight: 700;
+      }
+      .rs {
+        color: var(--rsv);
+      }
+      .lm {
+        color: var(--lime);
+      }
+      .tick {
+        color: var(--tx2);
+      }
+      .rule {
+        height: 1px;
+        background: var(--s3);
+        margin: 10px 0;
+      }
+      .proof-points {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        margin-top: 6px;
+      }
+      .pp {
+        display: flex;
+        gap: 14px;
+      }
+      .pp .mark {
+        color: var(--lime);
+        font-family: var(--mono);
+        font-weight: 700;
+        font-size: 15px;
+        padding-top: 2px;
+      }
+      .pp p {
+        font-size: 15.5px;
+        color: var(--tx2);
+      }
+      .pp p b {
+        color: var(--tx);
+        font-weight: 600;
+      }
+      .pp a {
+        color: var(--blue);
+        border-bottom: 1px dotted rgba(110, 150, 184, 0.5);
+      }
+      .pp a:hover {
+        color: var(--lime);
+      }
+
+      /* engines */
+      .engines {
+        display: grid;
+        grid-template-columns: 1fr 72px 1fr;
+        gap: 0;
+        align-items: stretch;
+        margin-top: 44px;
+      }
+      @media (max-width: 860px) {
+        .engines {
+          grid-template-columns: 1fr;
+        }
+      }
+      .engine {
+        background: var(--s2);
+        border: 1px solid var(--s3);
+        border-radius: 16px;
+        padding: 34px;
+      }
+      .engine .tag {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.18em;
+        padding: 5px 10px;
+        border-radius: 5px;
+        font-weight: 600;
+      }
+      .engine.money .tag {
+        background: rgba(198, 242, 78, 0.14);
+        color: var(--lime);
+      }
+      .engine.telemetry .tag {
+        background: rgba(110, 150, 184, 0.14);
+        color: var(--blue);
+      }
+      .engine h3 {
+        font-size: 23px;
+        margin: 16px 0 4px;
+        letter-spacing: -0.02em;
+      }
+      .engine .role {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--tx3);
+      }
+      .engine ul {
+        list-style: none;
+        margin-top: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+      }
+      .engine li {
+        font-size: 14.5px;
+        color: var(--tx2);
+        padding-left: 20px;
+        position: relative;
+      }
+      .engine li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 9px;
+        width: 8px;
+        height: 2px;
+        background: var(--tx3);
+      }
+      .engine.money li::before {
+        background: var(--lime);
+      }
+      .engine.telemetry li::before {
+        background: var(--blue);
+      }
+      .relay {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+      .relay .line {
+        width: 1px;
+        flex: 1;
+        background: linear-gradient(var(--lime), var(--blue));
+      }
+      .relay .pulse {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        color: var(--tx3);
+        letter-spacing: 0.1em;
+        text-align: center;
+        writing-mode: initial;
+      }
+      @media (max-width: 860px) {
+        .relay {
+          flex-direction: row;
+          height: 56px;
+        }
+        .relay .line {
+          height: 1px;
+          width: auto;
+          flex: 1;
+        }
+      }
+
+      /* stack table */
+      .stack-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 40px;
+      }
+      .stack-table td {
+        border: 1px solid var(--s3);
+        padding: 16px 20px;
+        vertical-align: top;
+      }
+      .stack-table td:first-child {
+        width: 220px;
+        font-family: var(--mono);
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--lime);
+        white-space: nowrap;
+      }
+      .stack-table td:last-child {
+        font-size: 14.5px;
+        color: var(--tx2);
+      }
+      .stack-table td .to {
+        color: var(--tx3);
+        font-size: 13px;
+      }
+
+      /* gallery */
+      .gallery {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-top: 40px;
+      }
+      @media (max-width: 860px) {
+        .gallery {
+          grid-template-columns: 1fr;
+        }
+      }
+      .shot {
+        border: 1px solid var(--s3);
+        border-radius: 14px;
+        overflow: hidden;
+        background: var(--bg);
+        transition:
+          transform 0.18s,
+          border-color 0.18s;
+      }
+      .shot:hover {
+        transform: translateY(-4px);
+        border-color: var(--tx3);
+      }
+      .shot img {
+        width: 100%;
+        display: block;
+      }
+      .shot .cap {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--tx3);
+        padding: 12px 16px;
+        border-top: 1px solid var(--s3);
+      }
+      .gif {
+        grid-column: 1/-1;
+      }
+
+      /* ADR grid */
+      .adrs {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 14px;
+        margin-top: 40px;
+      }
+      .adr {
+        background: var(--s2);
+        border: 1px solid var(--s3);
+        border-radius: 12px;
+        padding: 22px 24px;
+        transition:
+          border-color 0.15s,
+          transform 0.15s;
+      }
+      .adr:hover {
+        border-color: var(--lime);
+        transform: translateY(-3px);
+      }
+      .adr .no {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--lime);
+        letter-spacing: 0.16em;
+      }
+      .adr h4 {
+        font-size: 16.5px;
+        margin: 8px 0 6px;
+        font-weight: 600;
+      }
+      .adr p {
+        font-size: 13.5px;
+        color: var(--tx2);
+      }
+
+      /* footer */
+      footer {
+        border-top: 1px solid var(--s3);
+        padding: 46px 0 60px;
+        background: var(--s1);
+      }
+      footer .wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 30px;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      footer .col h5 {
+        font-family: var(--mono);
+        font-size: 12px;
+        letter-spacing: 0.2em;
+        color: var(--tx3);
+        margin-bottom: 14px;
+      }
+      footer .col a {
+        display: block;
+        font-size: 14.5px;
+        color: var(--tx2);
+        margin-bottom: 9px;
+      }
+      footer .col a:hover {
+        color: var(--lime);
+      }
+      footer .fine {
+        width: 100%;
+        border-top: 1px solid var(--s3);
+        margin-top: 34px;
+        padding-top: 22px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--tx3);
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .reveal {
+          opacity: 1;
+          transform: none;
+          transition: none;
+        }
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <div class="wrap">
+        <a class="logo" href="#top"><span class="bolt">V</span>VoltHub<span class="csms">CSMS</span></a>
+        <div class="links">
+          <a href="#architecture">Architecture</a>
+          <a href="#proof">The proof</a>
+          <a href="#engines">Two engines</a>
+          <a href="#stack">Stack</a>
+          <a href="#gallery">Gallery</a>
+          <a href="#adrs">Decisions</a>
+        </div>
+        <a class="gh" href="https://github.com/humoge7502/VoltHub-CSMS" target="_blank" rel="noopener">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor">
+            <path
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+            />
+          </svg>
+          <span class="gh-label">humoge7502/VoltHub-CSMS</span>
+        </a>
+      </div>
+    </nav>
+
+    <header id="top">
+      <div class="hero-grid"></div>
+      <div class="hero-glow"></div>
+      <div class="wrap">
+        <div class="kicker">
+          OCPP 1.6J <span class="dim">·</span> MODULAR MONOLITH <span class="dim">·</span> RACE-TESTED IN CI
+        </div>
+        <h1>Two engines.<br /><b>One transaction boundary.</b></h1>
+        <p class="hero-sub">
+          An open-source EV charging management system where
+          <b style="color: var(--tx)">Oracle 23ai owns the money path</b> and
+          <b style="color: var(--tx)">TimescaleDB owns telemetry</b> — joined by an
+          <span class="m">outbox + relay</span>, with the concurrency re-proven on both engines at every push.
+        </p>
+        <div class="cta-row">
+          <a class="btn primary" href="https://github.com/humoge7502/VoltHub-CSMS" target="_blank" rel="noopener"
+            >View source on GitHub</a
+          >
+          <a
+            class="btn ghost"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/ARCHITECTURE.md"
+            target="_blank"
+            rel="noopener"
+            >ARCHITECTURE.md</a
+          >
+          <a
+            class="btn ghost"
+            href="https://github.com/humoge7502/VoltHub-CSMS#quickstart"
+            target="_blank"
+            rel="noopener"
+            >Run it in 3 commands</a
+          >
+        </div>
+        <div class="hero-stats">
+          <div class="hs">
+            <div class="n" data-count="48">0</div>
+            <div class="l">REST ROUTES · OPENAPI-GATED</div>
+          </div>
+          <div class="hs">
+            <div class="n" data-count="7">0</div>
+            <div class="l">PL/SQL PACKAGES</div>
+          </div>
+          <div class="hs">
+            <div class="n" data-count="2">0</div>
+            <div class="l">DB ENGINES, ONE STORE PORT</div>
+          </div>
+          <div class="hs">
+            <div class="n" data-count="5">0</div>
+            <div class="l">CI JOBS EVERY PUSH</div>
+          </div>
+          <div class="hs">
+            <div class="n" data-count="7">0</div>
+            <div class="l">ADRs, TRADE-OFFS NAMED</div>
+          </div>
+          <div class="hs">
+            <div class="n" data-count="0">0</div>
+            <div class="l">KNOWN CVES, AUDIT-GATED</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section id="architecture">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="sec-kicker">01 — SYSTEM SHAPE</div>
+          <h2>One API port. Two storage engines. No brokers.</h2>
+          <p class="sec-sub">
+            A modular monolith (ADR-0001): the Express API and the OCPP 1.6J WebSocket gateway share port :4000; a
+            2-second relay worker moves telemetry from the OLTP engine to the time-series engine. Every simplification
+            is a documented decision, not an omission.
+          </p>
+        </div>
+        <img
+          class="arch-img reveal"
+          src="architecture-hero.png"
+          alt="VoltHub CSMS architecture — Oracle money path + TimescaleDB telemetry joined by an outbox relay"
+        />
+        <div class="seams">
+          <div class="seam reveal">
+            <div class="idx">SEAM 1</div>
+            <h3>Store port <code>ADR-0005</code></h3>
+            <p>
+              Every route is written against <code>createStore()</code>'s surface. The in-process store is the test
+              double; Oracle wraps the same object with write-through PL/SQL package calls. Routes never know which
+              engine is behind them.
+            </p>
+          </div>
+          <div class="seam reveal">
+            <div class="idx">SEAM 2</div>
+            <h3>Outbox + relay <code>ADR-0003</code></h3>
+            <p>
+              <code>meter_reading</code> and <code>outbox_event</code> commit atomically. The relay delivers
+              at-least-once, the sink dedupes — billing never depends on TimescaleDB being up.
+            </p>
+          </div>
+          <div class="seam reveal">
+            <div class="idx">SEAM 3</div>
+            <h3>Error-band contract</h3>
+            <p>
+              <code>ORA-20501…209xx</code> maps to HTTP 422/409/402 exactly once, in <code>src/errors.js</code>. The
+              same bands are raised by <code>RAISE_APPLICATION_ERROR</code> in PL/SQL and mirrored in JS.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="proof" class="alt">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="sec-kicker">02 — THE PROOF</div>
+          <h2>Claims are cheap. CI replays the race on every push.</h2>
+          <p class="sec-sub">
+            The 30-second demo that sells the whole design: two clients reserve the same connector in the same window.
+            Exactly one wins — proven against the in-process store <b style="color: var(--tx)">and</b> real Oracle row
+            locks, in CI, on both engines.
+          </p>
+        </div>
+        <div class="proof" style="margin-top: 44px">
+          <div class="term reveal">
+            <div class="term-head">
+              <div class="dot d1"></div>
+              <div class="dot d2"></div>
+              <div class="dot d3"></div>
+              <div class="term-title">sim — double-reserve race, then a live session</div>
+            </div>
+            <div class="term-body">
+              <div><span class="path">$ </span><span class="cmd">simulator --scenario race</span></div>
+              <div><span class="path">POST /api/v1/reservations</span> <span class="ok">201 BOOKED</span></div>
+              <div><span class="path">POST /api/v1/reservations</span> <span class="oc">409 OVERLAP</span></div>
+              <div class="rule"></div>
+              <div><span class="tick">StatusNotification</span> <span class="rs">→ OCCUPYING</span></div>
+              <div><span class="tick">MeterValues</span> <span class="lm">→ kWh · kW · ₹ live</span></div>
+              <div><span class="path">POST /invoices/:id/pay</span> <span class="ok">200 SUCCESS</span></div>
+            </div>
+          </div>
+          <div class="proof-points reveal">
+            <div class="pp">
+              <div class="mark">→</div>
+              <p>
+                <b>Concurrency is asserted, not claimed.</b> Parallel double-reserves and double-pays fire in CI; the
+                suite fails unless exactly one wins. Source:
+                <a
+                  href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/apps/api/test/race.js"
+                  target="_blank"
+                  rel="noopener"
+                  >apps/api/test/race.js</a
+                >
+              </p>
+            </div>
+            <div class="pp">
+              <div class="mark">→</div>
+              <p>
+                <b>Money logic lives in PL/SQL, not app code.</b> Seven packages own the writes; a guard trigger blocks
+                direct <b style="color: var(--tx)">connector.status</b> UPDATEs. No DELETE grant exists anywhere.
+              </p>
+            </div>
+            <div class="pp">
+              <div class="mark">→</div>
+              <p>
+                <b>Every claim has a receipt.</b>
+                <a
+                  href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/verification.md"
+                  target="_blank"
+                  rel="noopener"
+                  >docs/verification.md</a
+                >
+                names what actually ran for each statement in the README — including what was measured and how.
+              </p>
+            </div>
+            <div class="pp">
+              <div class="mark">→</div>
+              <p>
+                <b>Performance numbers stay out of prose.</b>
+                <a
+                  href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/perf.md"
+                  target="_blank"
+                  rel="noopener"
+                  >docs/perf.md</a
+                >
+                carries the methodology + 5 reproducible experiments; tables only land from
+                <span class="mono">bench/</span> scripts.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="engines">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="sec-kicker">03 — THE TWO ENGINES</div>
+          <h2>Right engine for the right shape of data.</h2>
+          <p class="sec-sub">
+            Sessions and billing are ACID-relational. Meter ticks are immutable, time-ordered, and read as window
+            aggregates — the wrong shape for a row-store. Each engine gets what it is good at; the store port keeps them
+            swappable.
+          </p>
+        </div>
+        <div class="engines reveal">
+          <div class="engine money">
+            <span class="tag">MONEY PATH · OLTP</span>
+            <h3>Oracle 23ai</h3>
+            <div class="role">BCNF-honest schema · PL/SQL owns the writes</div>
+            <ul>
+              <li>25-relation schema, 7 PL/SQL packages — reservation, session, billing, tariff, maintenance, audit</li>
+              <li>Overlap exclusion via row locks; error bands map to HTTP exactly once</li>
+              <li>Least-privilege app role — no DELETE grant anywhere in the system</li>
+              <li>Guard trigger blocks direct status UPDATEs around the state machine</li>
+              <li>Runs as a CI service container on every push</li>
+            </ul>
+          </div>
+          <div class="relay">
+            <div class="line"></div>
+            <div class="pulse">OUTBOX<br />+ RELAY<br />2s · idempotent</div>
+            <div class="line"></div>
+          </div>
+          <div class="engine telemetry">
+            <span class="tag">TELEMETRY PATH · TIME-SERIES</span>
+            <h3>TimescaleDB</h3>
+            <div class="role">Hypertables · continuous aggregates · compression</div>
+            <ul>
+              <li>90%+ of rows are immutable meter ticks — append-heavy, window-read</li>
+              <li>1m/1h continuous aggregates; 7-day compression, 90-day retention</li>
+              <li>Relay inserts with ON CONFLICT DO NOTHING — crash replays are safe</li>
+              <li>Grafana reads caggs directly for the load dashboard</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="stack" class="alt">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="sec-kicker">04 — STACK, WITH THE TRADE-OFFS</div>
+          <h2>Choices with reasons, not fashion.</h2>
+          <p class="sec-sub">
+            The short version of the trade-off table — the full one, with the accepted costs, lives in the README.
+          </p>
+        </div>
+        <table class="stack-table reveal">
+          <tr>
+            <td>Oracle 23ai</td>
+            <td>
+              Row-lock semantics + PL/SQL packages own the money-path writes.
+              <span class="to"
+                >Trade-off: a real Oracle dependency — so CI runs it as a service container every push.</span
+              >
+            </td>
+          </tr>
+          <tr>
+            <td>TimescaleDB</td>
+            <td>
+              Hypertables / caggs / compression are the right shape for immutable ticks.
+              <span class="to"
+                >Trade-off: caggs query one hypertable — enrichment happens in query-time views + a relay-maintained
+                station_map.</span
+              >
+            </td>
+          </tr>
+          <tr>
+            <td>Outbox + relay</td>
+            <td>
+              Same-transaction publication, ack-after-COMMIT relay, idempotent replay.
+              <span class="to">Trade-off: single-writer worker, not a fan-out bus.</span>
+            </td>
+          </tr>
+          <tr>
+            <td>Express 5 + pino 10</td>
+            <td>
+              Boring, dependency-light API core; request-ID error envelopes; drift-gated OpenAPI.
+              <span class="to">Trade-off: hand-rolled middlewares instead of a framework galaxy.</span>
+            </td>
+          </tr>
+          <tr>
+            <td>Next.js 16 + React 19</td>
+            <td>
+              App Router with real client components; CSP at the Next layer; zero chart dependencies.
+              <span class="to">Trade-off: server/client boundary discipline is on the team.</span>
+            </td>
+          </tr>
+          <tr>
+            <td>Compose + Caddy</td>
+            <td>
+              One honest VM deploy target with graceful SIGTERM draining.
+              <span class="to">Trade-off: no Kubernetes story — by design, see ADR-0001.</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+    </section>
+
+    <section id="gallery">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="sec-kicker">05 — REAL PIXELS</div>
+          <h2>From the running stack, not a mockup tool.</h2>
+          <p class="sec-sub">
+            API on :4000, an OCPP 1.6J WebSocket session, and the Next.js operations console in "Grid Current". The GIF
+            is re-recordable in one command from <span class="mono">scripts/screenshots/</span>.
+          </p>
+        </div>
+        <div class="gallery">
+          <a
+            class="shot reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/apps/web/src/app/dashboard/page.js"
+            target="_blank"
+            rel="noopener"
+          >
+            <img src="screenshots/dashboard.png" alt="Operations dashboard" loading="lazy" />
+            <div class="cap">dashboard — fleet state at a glance</div>
+          </a>
+          <a
+            class="shot reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/apps/web/src/app/session/%5Bid%5D/page.js"
+            target="_blank"
+            rel="noopener"
+          >
+            <img src="screenshots/live-session.png" alt="Live charge session" loading="lazy" />
+            <div class="cap">live session — real MeterValues tick the UI</div>
+          </a>
+          <a
+            class="shot reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/apps/web/src/app/telemetry/page.js"
+            target="_blank"
+            rel="noopener"
+          >
+            <img src="screenshots/telemetry.png" alt="Telemetry load curves" loading="lazy" />
+            <div class="cap">telemetry — TimescaleDB caggs, zero chart deps</div>
+          </a>
+          <a
+            class="shot reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/apps/web/src/app/invoices/page.js"
+            target="_blank"
+            rel="noopener"
+          >
+            <img src="screenshots/invoice.png" alt="Itemized invoice" loading="lazy" />
+            <div class="cap">invoice — itemized, wallet-paid, Oracle-backed</div>
+          </a>
+          <a
+            class="shot gif reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/screenshots/demo-live.gif"
+            target="_blank"
+            rel="noopener"
+          >
+            <img src="screenshots/demo-live.gif" alt="Live OCPP session demo GIF" loading="lazy" />
+            <div class="cap">demo-live.gif — plug in and watch kWh · kW · ₹ move</div>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section id="adrs" class="alt">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="sec-kicker">06 — DECISION RECORDS</div>
+          <h2>Seven decisions, each with its accepted cost.</h2>
+          <p class="sec-sub">
+            If a reviewer disagrees with a choice, there is a document to disagree with — that is the point.
+          </p>
+        </div>
+        <div class="adrs">
+          <a
+            class="adr reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/adr/0001-modular-monolith.md"
+            target="_blank"
+            rel="noopener"
+            ><div class="no">ADR-0001</div>
+            <h4>Modular monolith</h4>
+            <p>Money invariants stay inside one transaction boundary; sagas would hide the graded correctness.</p></a
+          >
+          <a
+            class="adr reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/adr/0002-timescaledb-for-telemetry.md"
+            target="_blank"
+            rel="noopener"
+            ><div class="no">ADR-0002</div>
+            <h4>TimescaleDB for telemetry</h4>
+            <p>Append-heavy, immutable, window-read ticks. Weighted matrix: 4.90 vs InfluxDB 3.95.</p></a
+          >
+          <a
+            class="adr reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/adr/0003-outbox-pipeline.md"
+            target="_blank"
+            rel="noopener"
+            ><div class="no">ADR-0003</div>
+            <h4>Outbox + relay pipeline</h4>
+            <p>Atomic-with-write publication; dual-write diverges on crash; CDC is too heavy for scope.</p></a
+          >
+          <a
+            class="adr reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/adr/0004-plain-js-express.md"
+            target="_blank"
+            rel="noopener"
+            ><div class="no">ADR-0004</div>
+            <h4>Plain JS + Express</h4>
+            <p>Zero-build velocity; contracts carried by the OpenAPI drift gate + tests, not types.</p></a
+          >
+          <a
+            class="adr reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/adr/0005-store-adapter.md"
+            target="_blank"
+            rel="noopener"
+            ><div class="no">ADR-0005</div>
+            <h4>Hexagonal store port</h4>
+            <p>Replacement, not rewrite: routes unchanged between engines; hermetic tests preserved.</p></a
+          >
+          <a
+            class="adr reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/adr/0006-connector-fk-native.md"
+            target="_blank"
+            rel="noopener"
+            ><div class="no">ADR-0006</div>
+            <h4>Connector FK-native</h4>
+            <p>Referential integrity enforced in the database, not in application code.</p></a
+          >
+          <a
+            class="adr reveal"
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/adr/0007-ocpp-remote-commands.md"
+            target="_blank"
+            rel="noopener"
+            ><div class="no">ADR-0007</div>
+            <h4>OCPP remote commands</h4>
+            <p>RemoteStart/RemoteStop/Reset with audit trail — the operator's hand on any session.</p></a
+          >
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap">
+        <div class="col">
+          <h5>REPO</h5>
+          <a href="https://github.com/humoge7502/VoltHub-CSMS" target="_blank" rel="noopener">Source code</a>
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/README.md" target="_blank" rel="noopener"
+            >README</a
+          >
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/ARCHITECTURE.md" target="_blank" rel="noopener"
+            >ARCHITECTURE.md</a
+          >
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/releases" target="_blank" rel="noopener">Releases</a>
+        </div>
+        <div class="col">
+          <h5>ENGINEERING DOCS</h5>
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/tree/main/docs/masterplan" target="_blank" rel="noopener"
+            >Masterplan (DA1 → DA2 → DA3)</a
+          >
+          <a
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/verification.md"
+            target="_blank"
+            rel="noopener"
+            >Verification receipts</a
+          >
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/perf.md" target="_blank" rel="noopener"
+            >Performance methodology</a
+          >
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/SECURITY.md" target="_blank" rel="noopener"
+            >Security posture</a
+          >
+        </div>
+        <div class="col">
+          <h5>OPERATE IT</h5>
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/DEPLOY.md" target="_blank" rel="noopener"
+            >DEPLOY.md</a
+          >
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener"
+            >CONTRIBUTING.md</a
+          >
+          <a href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/bench/README.md" target="_blank" rel="noopener"
+            >bench/ — k6 scenarios</a
+          >
+          <a
+            href="https://github.com/humoge7502/VoltHub-CSMS/blob/main/docs/demo-script.md"
+            target="_blank"
+            rel="noopener"
+            >Demo script</a
+          >
+        </div>
+        <div class="fine">
+          <span>VoltHub CSMS — MIT licensed. Simulated chargers, real engineering (SteVe precedent).</span>
+          <span>OCPP 1.6J · Oracle 23ai · TimescaleDB · Node 22</span>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      // reveal on scroll
+      const io = new IntersectionObserver(
+        (es) => {
+          es.forEach((e) => {
+            if (e.isIntersecting) {
+              e.target.classList.add('in');
+              io.unobserve(e.target);
+            }
+          });
+        },
+        { threshold: 0.12 }
+      );
+      document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+
+      // count-up stats
+      const fmt = (v) => String(v);
+      const cio = new IntersectionObserver(
+        (es) => {
+          es.forEach((e) => {
+            if (!e.isIntersecting) return;
+            cio.unobserve(e.target);
+            const target = parseInt(e.target.dataset.count, 10);
+            if (matchMedia('(prefers-reduced-motion: reduce)').matches || target === 0) {
+              e.target.textContent = fmt(target);
+              return;
+            }
+            const t0 = performance.now(),
+              dur = 1100;
+            const step = (t) => {
+              const p = Math.min((t - t0) / dur, 1);
+              e.target.textContent = fmt(Math.round(target * (1 - Math.pow(1 - p, 3))));
+              if (p < 1) requestAnimationFrame(step);
+            };
+            requestAnimationFrame(step);
+          });
+        },
+        { threshold: 0.4 }
+      );
+      document.querySelectorAll('[data-count]').forEach((el) => cio.observe(el));
+    </script>
+  </body>
+</html>

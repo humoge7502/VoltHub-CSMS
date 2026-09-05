@@ -1,0 +1,62 @@
+name: Feature request
+description: Propose an enhancement — expect a trade-off conversation, not just a "yes"
+labels: [enhancement, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repo's bar for new surface area is high on purpose (ADR-0001).
+        Strong proposals name the problem first, the design second. If it
+        changes architecture or storage, it will likely become an ADR.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - API (apps/api)
+        - OCPP gateway / simulator
+        - Worker / outbox relay / telemetry
+        - Oracle schema / PL/SQL (db/oracle)
+        - TimescaleDB (db/timescale)
+        - Web console (apps/web)
+        - CI / tooling / docs
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem, not solution
+      description: What can't you do today? Who hits it, how often?
+      placeholder: e.g. an operator cannot force-release a stale OCCUPYING connector without DB access
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: Endpoint / migration / component sketch. Keep it small.
+    validations:
+      required: true
+  - type: dropdown
+    id: adr-worthiness
+    attributes:
+      label: Does this touch an architectural seam?
+      description: Store port, outbox pipeline, error-band contract, or a new storage engine
+      options:
+        - 'No — additive within an existing module'
+        - 'Yes — new ADR will be needed'
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoff
+    attributes:
+      label: Accepted trade-off
+      description: Every line added here has a maintenance cost. Name the one you accept.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: Searched existing issues and ADRs for this idea
+        - label: Not asking to remove the two-engine design (that ship has sailed, ADR-0002/0005)

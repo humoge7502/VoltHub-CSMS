@@ -1,0 +1,32 @@
+name: scorecard
+# OpenSSF Scorecard — supply-chain posture of THIS repo, computed publicly.
+# Results appear as a badge in the README and in the scorecard.dev viewer.
+on:
+  push:
+    branches: [main]
+  branch_protection_rule:
+  schedule:
+    - cron: '23 4 * * 1' # weekly, Monday
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # SARIF upload to Code Scanning
+      id-token: write # OIDC token for scorecard's verified provenance
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@v2.4.1
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true # makes the badge + public score available
+      - name: Upload SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif

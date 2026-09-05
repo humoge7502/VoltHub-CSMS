@@ -1,0 +1,61 @@
+name: release
+# Tag-driven: push a v* tag -> re-verify -> publish a GitHub Release whose
+# notes are extracted from CHANGELOG.md (Keep-a-Changelog section for the tag).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # Never publish a release the pipeline can't stand behind.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install --no-audit --no-fund
+      - name: Static gates (match ci.yml)
+        run: |
+          npx eslint . --max-warnings 0
+          npx prettier --check .
+      - name: Hermetic test suites (local store)
+        run: |
+          npm run test -w apps/api
+          npm run test -w apps/worker --if-present
+          npm run test -w apps/simulator --if-present
+
+  github-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Extract changelog section for this tag
+        id: notes
+        run: |
+          # tags are v1.2.0; CHANGELOG.md sections are "## [1.2.0] — date" (no v)
+          TAG="${GITHUB_REF#refs/tags/}"; TAG="${TAG#v}"
+          # Keep-a-Changelog: take the section "## [TAG]" up to the next "## ["
+          awk -v t="$TAG" '
+            $0 ~ "^## \\["t"\\]" {found=1; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG.md section for $TAG — falling back to auto-generated notes only."
+            echo "" > release-notes.md
+          fi
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          generate_release_notes: true # appends the auto commit log under the changelog excerpt
+          make_latest: true
