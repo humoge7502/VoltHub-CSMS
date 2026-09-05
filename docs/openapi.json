@@ -1,0 +1,734 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "VoltHub CSMS API",
+    "version": "1.0.0",
+    "description": "Two-engine EV charging management. Oracle error bands (-205xx..-208xx) map to HTTP in `error.ora`."
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "ora": {
+                "type": "integer",
+                "nullable": true
+              },
+              "requestId": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "security": [],
+        "summary": "Service index: name + pointers to /api/v1/health and this document",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "security": [],
+        "summary": "Liveness + mode/outbox lag (see /health/deep for engine probes)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/health/deep": {
+      "get": {
+        "security": [],
+        "summary": "Deep probes: SELECT 1 FROM DUAL + pool + Timescale reachability",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "security": [],
+        "summary": "Prometheus text: req rate, p95 ring, outbox depth, pool, OCPP, sessions",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/docs": {
+      "get": {
+        "security": [],
+        "summary": "This OpenAPI document",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "security": [],
+        "summary": "Driver register (welcome ₹500 credit)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "security": [],
+        "summary": "Login → 15-min JWT + rotating refresh",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "summary": "Rotate refresh token (family revocation on reuse)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "summary": "Profile + wallet",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/me/wallet/topup": {
+      "post": {
+        "summary": "Prepaid top-up (append-only ledger)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/me/vehicles": {
+      "get": {
+        "summary": "My EVs",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      },
+      "post": {
+        "summary": "Register EV (battery 5..250 kWh)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/me/vehicles/{id}": {
+      "patch": {
+        "summary": "Rename / set default EV",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/me/notifications": {
+      "get": {
+        "summary": "In-app events (reservation/session/invoice)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/me/notifications/{id}/read": {
+      "post": {
+        "summary": "Mark notification read",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/stations": {
+      "get": {
+        "security": [],
+        "summary": "Search: q/std/minKw/lat/lng/radius/page (RSC, 15s revalidate)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/stations/{id}": {
+      "get": {
+        "security": [],
+        "summary": "Detail: charge points, live connectors, amenities, rating",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/stations/{id}/connectors/live": {
+      "get": {
+        "security": [],
+        "summary": "Live connector feed (15s poll)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/stations/{id}/sessions/active": {
+      "get": {
+        "summary": "Active sessions on this station (auth: driver sees own scope, staff scoped)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/stations/{id}/analytics": {
+      "get": {
+        "summary": "Revenue/energy/util/active/faults (operator)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/stations/{id}/faults": {
+      "post": {
+        "summary": "Manual fault report (connector → FAULTED)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/stations/{id}/reviews": {
+      "get": {
+        "security": [],
+        "summary": "Station reviews",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/tariffs/active": {
+      "get": {
+        "security": [],
+        "summary": "Current tariff versions + ToU bands (public preview)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/reservations": {
+      "get": {
+        "summary": "My bookings (driver) / all (staff)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      },
+      "post": {
+        "summary": "Reserve 15–120 min. 409 OVERLAP / NOT_BOOKABLE, Idempotency-Key replay",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/reservations/{id}/cancel": {
+      "post": {
+        "summary": "Optimistic cancel pre-start",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions/start": {
+      "post": {
+        "summary": "Plug-in: RESERVED→PREPARING (converts reservation)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions": {
+      "get": {
+        "summary": "History, keyset cursor pagination",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions/active/{ref}": {
+      "get": {
+        "summary": "Active session on connector (auth required)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/live": {
+      "get": {
+        "summary": "Live kWh/kW/elapsed/est-cost + 60-pt trace, 5s poll (auth: owner or staff)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/state": {
+      "patch": {
+        "summary": "Operator transition: SUSPENDED↔CHARGING (matrix-enforced)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/remote-stop": {
+      "post": {
+        "summary": "Remote stop → COMPLETED + RemoteStopTransaction to CP",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions/remote-start": {
+      "post": {
+        "summary": "Operator RemoteStartTransaction to CP (allow-list idTag)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/bill": {
+      "post": {
+        "summary": "Bill exactly once → DUE invoice (409 if already billed)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/review": {
+      "post": {
+        "summary": "One 1–5 review per session",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/invoices": {
+      "get": {
+        "summary": "Due worklist + history",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/invoices/{id}": {
+      "get": {
+        "summary": "Invoice + itemized lines + payments",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/invoices/{id}/pay": {
+      "post": {
+        "summary": "Wallet pay. 402 INSUFFICIENT_FUNDS, 409 if not DUE",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/faults": {
+      "get": {
+        "summary": "Fault queue (?open=1, ?station=)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/faults/{id}/maintenance": {
+      "post": {
+        "summary": "Open maintenance record (operator)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/maintenance/{id}/complete": {
+      "patch": {
+        "summary": "Resolve → connector back to AVAILABLE",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/telemetry/load-curve": {
+      "get": {
+        "summary": "Gap-filled load curve (?station&from&to&bucket). Timescale cagg when TS_HOST set, else local rollup (auth required)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/telemetry/utilization-heatmap": {
+      "get": {
+        "summary": "7×24 utilization matrix (auth required)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/admin/users": {
+      "post": {
+        "summary": "Create operator (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/admin/users/{id}": {
+      "patch": {
+        "summary": "Suspend / assign station (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/admin/stations": {
+      "get": {
+        "summary": "All stations incl. inactive (staff)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create station + charge points + connectors (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/admin/stations/{id}": {
+      "patch": {
+        "summary": "Activate/deactivate, reassign operator (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/admin/charge-points": {
+      "post": {
+        "summary": "Provision charge point → OCPP identity (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/admin/tariff-plans": {
+      "get": {
+        "summary": "Version timeline (staff)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      },
+      "post": {
+        "summary": "New immutable version, supersedes active (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/admin/audit-logs": {
+      "get": {
+        "summary": "Mutation trail with old/new JSON (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    }
+  }
+}

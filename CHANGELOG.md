@@ -2,6 +2,21 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
+## [1.3.1] — 2026-09-05
+
+### Added
+
+- **Publishable REST contract**: `docs/openapi.json` — the full OpenAPI 3.0 spec
+  (48 paths / 52 operations) captured from the live `/api/v1/docs` endpoint and
+  committed as a static artifact, so the API surface is reviewable without
+  booting the stack; the CI drift gate keeps it honest against routes.js.
+- **Community-health complete**: `CODE_OF_CONDUCT.md` (precise, honest, useful —
+  receipts bar applies to conduct too), `SUPPORT.md` (routing table with honest
+  response expectations), `CITATION.cff` (repo is now citable; GitHub renders a
+  **Cite this repository** button), and `.vscode/extensions.json` recommending
+  the actual toolchain (eslint/prettier/mermaid/Oracle dev tools/rest-client).
+- README docs map + `docs/README.md` index the new contract artifact.
+
 ## [1.3.0] — 2026-09-06
 
 ### Added

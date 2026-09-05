@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: >-
+  If you use VoltHub CSMS in your work, please cite it using this
+  metadata.
+title: VoltHub CSMS — two-engine EV charging management system
+authors:
+  - alias: humoge7502
+    name-suffix: Krishna Puri
+note: >-
+  Two-engine EV charging platform: Oracle 23ai money path (25 relations,
+  7 PL/SQL packages), TimescaleDB telemetry (hypertables, caggs,
+  compression, retention), OCPP 1.6J gateway with simulator fleet,
+  outbox-relay join, race-tested in CI on both engines.
+repository-code: https://github.com/humoge7502/VoltHub-CSMS
+url: https://humoge7502.github.io/VoltHub-CSMS/
+abstract: >-
+  An open reference implementation of an EV charging management system
+  (CSMS) demonstrating production patterns for ACID billing/reservation
+  (Oracle PL/SQL), immutable telemetry (TimescaleDB hypertables),
+  effectively-once cross-engine pipelines (transactional outbox +
+  ack-after-COMMIT relay), and an OCPP 1.6J WebSocket gateway.
+keywords:
+  - csms
+  - ev-charging
+  - ocpp
+  - oracle
+  - plsql
+  - timescaledb
+  - outbox-pattern
+  - race-testing
+  - ci-cd
+license: MIT
+commit: 59bf94c8409fb79b983674e42e0a7fab1aaee10e
+version: v1.3.0
+date-released: 2026-09-05
