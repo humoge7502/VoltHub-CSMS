@@ -18,6 +18,57 @@ export async function api(path, opts = {}) {
 export const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 export const kwh = (n) => `${Number(n || 0).toFixed(2)} kWh`;
 export function Pill({ s }) { return <span className={`pill p-${s}`}> <i />{s}</span>; }
+// PageState (§9.5-1): one loading/error-with-retry/empty-with-action pattern for all pages.
+export function PageState({ loading, error, empty, onRetry, retryLabel = 'Retry', children }) {
+  if (loading) return <div className="skel" style={{ height: 120 }} aria-busy="true" aria-label="Loading" />;
+  if (error) return (
+    <div className="card" role="alert">
+      <div className="micro">REQUEST FAILED</div>
+      <p className="err">{String(error)}</p>
+      {onRetry && <button className="btn" onClick={onRetry}>{retryLabel}</button>}
+    </div>
+  );
+  if (empty) return <p style={{ color: 'var(--tx2)' }}>{empty}</p>;
+  return children;
+}
+// Toasts (§9.5-2): API error codes are toast-ready (409 OVERLAP, 402 funds, 201 wins).
+let _push = null;
+export const toast = (msg, kind = 'info') => { try { _push?.({ msg, kind, id: Date.now() + Math.random() }); } catch {} };
+export function Toasts() {
+  const { useState, useEffect } = require('react');
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    _push = (t) => {
+      setItems((xs) => [...xs.slice(-3), t]);
+      setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== t.id)), 4200);
+    };
+    return () => { _push = null; };
+  }, []);
+  if (!items.length) return null;
+  return (
+    <div aria-live="polite" style={{ position: 'fixed', bottom: 16, right: 16, display: 'grid', gap: 8, zIndex: 50 }}>
+      {items.map((t) => (
+        <div key={t.id} className="card" style={{ borderColor: t.kind === 'err' ? 'var(--bad)' : 'var(--hair2)', maxWidth: 320 }}>
+          <span className={t.kind === 'err' ? 'err' : 'okmsg'}>{t.msg}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+// AuthGate: client-side guard — unauthenticated /staff renders a login CTA, not silent 403s.
+export function AuthGate({ error, children }) {
+  const code = error?.code ?? error?.status;
+  if (code === 401 || code === 'NO_TOKEN' || code === 'BAD_TOKEN' || /login/i.test(String(error?.message || ''))) {
+    return (
+      <div className="card" role="alert">
+        <div className="micro">LOGIN REQUIRED</div>
+        <p style={{ color: 'var(--tx2)' }}>This view needs a signed-in account.</p>
+        <a href="/login"><button className="btn pri">Go to login</button></a>
+      </div>
+    );
+  }
+  return children;
+}
 export function Kpi({ l, v, sub }) {
   return <div className="card kpi"><div className="micro">{l}</div><div className="v num">{v}</div>{sub ? <div className="micro">{sub}</div> : null}</div>;
 }

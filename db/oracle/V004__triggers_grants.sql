@@ -15,19 +15,15 @@ END;
 /
 
 -- BR-07: connector status only via gateway/packages. API role cannot UPDATE.
--- Gateway sets CLIENT_IDENTIFIER='ocpp-gw'; packages run as definer.
+-- Gateway sets CLIENT_IDENTIFIER='ocpp-gw'; packages run as definer and set 'pkg:<proc>'.
+-- BUG-003 fix: allow-list (was: NULL identifier silently passed + only 'api:%' rejected).
 CREATE OR REPLACE TRIGGER trg_connector_guard
 BEFORE UPDATE OF status ON connector FOR EACH ROW
 DECLARE v_ci VARCHAR2(64);
 BEGIN
   v_ci := SYS_CONTEXT('USERENV','CLIENT_IDENTIFIER');
   IF v_ci IS NULL OR (v_ci != 'ocpp-gw' AND v_ci NOT LIKE 'pkg:%') THEN
-    -- Allow only gateway + package-owned writes; API direct writes rejected.
-    -- NOTE: package bodies set CLIENT_IDENTIFIER via DBMS_SESSION before DML
-    -- in production deploy; local dev sets 'pkg:seed'.
-    IF v_ci LIKE 'api:%' THEN
-      RAISE_APPLICATION_ERROR(-20801, 'CONNECTOR_GUARD: status via OCPP gateway only');
-    END IF;
+    RAISE_APPLICATION_ERROR(-20801, 'CONNECTOR_GUARD: status via OCPP gateway/packages only (got ' || NVL(v_ci,'NULL') || ')');
   END IF;
 END;
 /

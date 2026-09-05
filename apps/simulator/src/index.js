@@ -42,7 +42,13 @@ async function loginDriver() {
 }
 
 async function normalFlow(identity, cpId, connNo, token, faultMid = false) {
-  const ws = new WebSocket(`${WS}/ocpp/${identity}`);
+  // SEC-003: Security Profile 1 — Basic(identity:secret) on the WS upgrade.
+  // Demo seeds use deterministic `dev-<identity>`; provisioned CPs use the secret
+  // returned once by POST /admin/stations|charge-points (env OCPP_SECRET_<n> override for fleets).
+  const secret = process.env[`OCPP_SECRET_${identity}`] || process.env.OCPP_SECRET || `dev-${identity}`;
+  const ws = new WebSocket(`${WS}/ocpp/${identity}`, {
+    headers: { Authorization: `Basic ${Buffer.from(`${identity}:${secret}`).toString('base64')}` },
+  });
   await new Promise((r, j) => { ws.on('open', r); ws.on('error', j); });
   await ocppCall(ws, 'BootNotification', { chargePointVendor: 'VoltHub', chargePointModel: 'VH-DC60' });
   await ocppCall(ws, 'StatusNotification', { connectorId: connNo, status: 'Available', errorCode: 'NoError' });

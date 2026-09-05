@@ -41,7 +41,7 @@ async function main() {
     const r = await api('/sessions/start', { method: 'POST', headers: H(), body: JSON.stringify({ cpId: cp, connectorNo: no, reservationId: res.reservation_id, planId: 2 }) });
     assert.equal(r.status, 201); sid = r.j.session.session_id;
     for (let i = 1; i <= 6; i++) await store.recordTick(sid, i, new Date().toISOString(), i * 2, 30 + i, 400, 75);
-    const live = await api(`/sessions/${sid}/live`);
+    const live = await api(`/sessions/${sid}/live`, { headers: H() });
     assert.ok(live.j.live.energy_kwh >= 10);
   });
   await t('stops, bills, pays in full', async () => {
@@ -69,7 +69,7 @@ async function main() {
   });
   await t('admin versions a tariff', async () => {
     const adm = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }) });
-    const v = await api('/admin/tariff-plans', { method: 'POST', headers: { Authorization: `Bearer ${adm.j.accessToken}` }, body: JSON.stringify({ group_id: 1, name: 'E2E vX', session_fee: 20, bands: [{ day_scope: 'ALL', start_time: '00:00', end_time: '24:00', price_per_kwh: 23 }] }) });
+    const v = await api('/admin/tariff-plans', { method: 'POST', headers: { Authorization: `Bearer ${adm.j.accessToken}` }, body: JSON.stringify({ group_id: 1, name: 'E2E vX', session_fee: 20, bands: [{ day_scope: 'ALL', start_time: '00:00', end_time: '23:59', price_per_kwh: 23 }] }) });
     assert.equal(v.status, 201);
   });
   console.log(`\nE2E: ${n} steps passed (register→reserve→charge→pay→review→triage→tariff)`);

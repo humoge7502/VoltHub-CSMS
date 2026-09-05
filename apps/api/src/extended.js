@@ -1,16 +1,11 @@
 // Extended modules: tariffs-public, reviews-read, notifications, vehicle-default,
 // operator session control, admin station hardware CRUD. Mounted at /api/v1.
 'use strict';
+const crypto = require('crypto');
 const express = require('express');
 const spec = require('./docs');
 const { authRequired, roles } = require('./middleware/auth');
-
-function oraStatus(e) {
-  if (e.num === -20501) return 422;
-  if ([-20502, -20503, -20504, -20601, -20602, -20603, -20702, -20703, -20704].includes(e.num)) return 409;
-  if (e.num === -20705) return 402;
-  return e.status || 500;
-}
+const { oraStatus } = require('./errors');
 
 module.exports = function extended(store) {
   const r = express.Router();
@@ -38,12 +33,17 @@ module.exports = function extended(store) {
     const out = [...store.reviews.values()]
       .filter(r => { const s = store.sessions.get(r.session_id); return s && cpIds.has(s.connector_ref.split(':')[0]); })
       .sort((a, b) => b.review_id - a.review_id).slice(0, 50)
-      .map(x => ({ ...x, driver: store.users.get(x.user_id)?.full_name?.split(' ')[0] + ' ' + (store.users.get(x.user_id)?.full_name?.split(' ')[1]?.[0] || '') + '.' }));
+      // BUG-018 fix: never render "undefined" — single-token / missing names degrade gracefully.
+      .map(x => {
+        const full = (store.users.get(x.user_id)?.full_name || '').trim().split(/\s+/).filter(Boolean);
+        const driver = full.length >= 2 ? `${full[0]} ${full[1][0]}.` : (full[0] || 'Driver');
+        return { ...x, driver };
+      });
     res.json({ reviews: out });
   }));
 
-  // active sessions per station (O1 active table)
-  r.get('/stations/:id/sessions/active', safe(async (req, res) => {
+  // active sessions per station (O1 active table) — SEC-001: auth required (per-driver presence data).
+  r.get('/stations/:id/sessions/active', authRequired, safe(async (req, res) => {
     const sid = String(req.params.id);
     const cpIds = new Set([...store.cps.values()].filter(c => String(c.station_id) === sid).map(c => String(c.cp_id)));
     res.json({
@@ -53,10 +53,16 @@ module.exports = function extended(store) {
   }));
 
   // operator state control: SUSPENDED <-> CHARGING (matrix-enforced, 409 otherwise)
+  // Station scope: operators may only transition sessions on their assigned stations.
   r.patch('/sessions/:id/state', authRequired, safe(async (req, res) => {
     const s = store.sessions.get(Number(req.params.id));
     if (!s) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'session' } });
     if (req.user.role === 'DRIVER' && s.user_id !== req.user.id) return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your session' } });
+    if (req.user.role === 'OPERATOR') {
+      const cpId = Number(String(s.connector_ref).split(':')[0]);
+      const stationId = store.cps.get(cpId)?.station_id;
+      if (stationId && !(req.user.stationScope || []).includes(stationId)) return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+    }
     try { res.json({ session: await store.transition(req.params.id, req.body.to, req.body.reason || 'OPERATOR') }); }
     catch (e) { res.status(oraStatus(e)).json({ error: { code: e.code, message: e.message, ora: e.num || null } }); }
   }));
@@ -97,35 +103,11 @@ module.exports = function extended(store) {
     });
   }));
   r.post('/admin/stations', authRequired, roles('ADMIN'), safe(async (req, res) => {
-    const b = req.body;
-    if (!(b.name && Number.isFinite(Number(b.latitude)) && Number.isFinite(Number(b.longitude)))) {
-      return res.status(422).json({ error: { code: 'INVALID_STATION', message: 'name + latitude + longitude required' } });
-    }
-    const station_id = ++store.seq.station;
-    const st = {
-      station_id, name: b.name, latitude: Number(b.latitude), longitude: Number(b.longitude),
-      address_line: b.address_line || '', city: b.city || 'Chennai', state: b.state || 'Tamil Nadu',
-      pincode: b.pincode || null, status: 'ACTIVE', operator_id: b.operator_id || null,
-      created_at: new Date().toISOString(),
-    };
-    store.stations.set(station_id, st);
-    (b.amenities || []).forEach(a => store.amenities.push({ station_id, amenity: a }));
-    // inline hardware provision: [{vendor, model, connectors:[{standard, max_power_kw}]}]
-    const provisioned = [];
-    for (const [i, p] of (b.charge_points || []).entries()) {
-      const cp_id = ++store.seq.cp;
-      const ocpp_identity = p.ocpp_identity || `VH-${station_id}-CP${i + 1}`;
-      if (store.cpsByOcpp.has(ocpp_identity)) return res.status(409).json({ error: { code: 'DUPLICATE_OCPP_ID', message: ocpp_identity } });
-      store.cps.set(cp_id, { cp_id, station_id, ocpp_identity, vendor: p.vendor || 'VoltHub', model: p.model || 'VH-AC22', firmware_version: '1.6.5', status: 'ONLINE', last_boot_at: null, last_seen_at: null });
-      store.cpsByOcpp.set(ocpp_identity, cp_id);
-      (p.connectors || [{ standard: 'TYPE2', max_power_kw: 22 }]).forEach((c, k) => {
-        const stdRow = store.standards.find(t => t.code === c.standard) || store.standards[0];
-        store.connectors.set(`${cp_id}:${k + 1}`, { cp_id, connector_no: k + 1, standard_id: stdRow.standard_id, max_power_kw: Number(c.max_power_kw || 22), status: 'AVAILABLE', last_state_change_at: new Date().toISOString() });
-      });
-      provisioned.push({ cp_id, ocpp_identity });
-    }
-    store.auditLog(req.user.id, 'STATION', station_id, 'CREATE', null, { name: st.name });
-    res.status(201).json({ station: st, provisioned });
+    try {
+      const { station, provisioned } = store.provisionStation(req.user.id, req.body);
+      // Return secrets once at provision time (operator configures the physical charger).
+      res.status(201).json({ station, provisioned });
+    } catch (e) { res.status(e.status || 500).json({ error: { code: e.code || 'PROVISION_FAILED', message: e.message } }); }
   }));
   r.patch('/admin/stations/:id', authRequired, roles('ADMIN'), safe(async (req, res) => {
     const s = store.stations.get(Number(req.params.id));
@@ -143,10 +125,10 @@ module.exports = function extended(store) {
     const ocpp_identity = b.ocpp_identity || `VH-${b.station_id}-CP${n}`;
     if (store.cpsByOcpp.has(ocpp_identity)) return res.status(409).json({ error: { code: 'DUPLICATE_OCPP_ID', message: ocpp_identity } });
     const cp_id = ++store.seq.cp;
-    const cp = { cp_id, station_id: Number(b.station_id), ocpp_identity, vendor: b.vendor || 'VoltHub', model: b.model || 'VH-DC60', firmware_version: '1.6.5', status: 'ONLINE', last_boot_at: null, last_seen_at: null };
+    const cp = { cp_id, station_id: Number(b.station_id), ocpp_identity, auth_secret: b.auth_secret || crypto.randomBytes(18).toString('hex'), vendor: b.vendor || 'VoltHub', model: b.model || 'VH-DC60', firmware_version: '1.6.5', status: 'ONLINE', last_boot_at: null, last_seen_at: null };
     store.cps.set(cp_id, cp); store.cpsByOcpp.set(ocpp_identity, cp_id);
     store.auditLog(req.user.id, 'CHARGE_POINT', cp_id, 'PROVISION', null, { ocpp_identity });
-    res.status(201).json({ charge_point: cp, ws_url: `/ocpp/${ocpp_identity}` });
+    res.status(201).json({ charge_point: { ...cp }, ws_url: `/ocpp/${ocpp_identity}` });
   }));
 
   return r;

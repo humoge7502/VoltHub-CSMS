@@ -6,9 +6,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
-      - run: node --check apps/api/src/server.js && node --check apps/api/src/routes.js && node --check apps/api/src/extended.js && node --check apps/worker/src/index.js
+      - run: node --check apps/api/src/server.js && node --check apps/api/src/routes.js && node --check apps/api/src/extended.js && node --check apps/api/src/errors.js && node --check apps/api/src/db/oracle.js && node --check apps/api/src/db/index.js && node --check apps/api/src/observability.js && node --check apps/worker/src/index.js && node --check apps/worker/src/relay-timescale.js && node --check apps/api/src/ocpp/gateway.js
+      - run: npm run test -w apps/api
+      - run: npm run test:race -w apps/api
+      - run: node apps/api/test/security.js
+      - run: node apps/api/test/xlayer.js
+      - run: node test/sql/run-invariants.js
+      - run: node scripts/check-openapi.js
+      - run: npm run test -w apps/simulator
+      - run: npm run test:e2e
       - run: npm install --no-audit --no-fund
         working-directory: apps/web
       - run: npm run build
@@ -20,26 +28,58 @@ jobs:
         image: gvenzl/oracle-free:23-slim
         env: { ORACLE_PASSWORD: volthub_dev_pwd, APP_USER: volthub, APP_USER_PASSWORD: volthub_dev_pwd }
         ports: ["1521:1521"]
+        options: >-
+          --health-cmd "echo 'select 1 from dual;' | sqlplus -S volthub/volthub_dev_pwd@localhost/freepdb1 || exit 1"
+          --health-interval 10s --health-timeout 5s --health-retries 30 --health-start-period 60s
       timescale:
         image: timescale/timescaledb:latest-pg16
         env: { POSTGRES_DB: volthub, POSTGRES_USER: volthub, POSTGRES_PASSWORD: volthub_dev_pwd }
         ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U volthub"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      ORACLE_HOST: localhost
+      ORACLE_PORT: 1521
+      ORACLE_SERVICE: freepdb1
+      ORACLE_USER: volthub
+      ORACLE_PASSWORD: volthub_dev_pwd
+      TS_HOST: localhost
+      TS_PORT: 5432
+      TS_DB: volthub
+      TS_USER: volthub
+      TS_PASSWORD: volthub_dev_pwd
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
-      - name: Migrate (Oracle + Timescale when clients exist)
+      - run: npm install --no-audit --no-fund oracledb pg
+        working-directory: apps/api
+      - name: Wait for Oracle + Timescale
+        run: |
+          for i in $(seq 1 30); do (echo > /dev/tcp/localhost/1521) 2>/dev/null && break; echo "wait oracle $i"; sleep 10; done
+          for i in $(seq 1 12); do (echo > /dev/tcp/localhost/5432) 2>/dev/null && break; echo "wait ts $i"; sleep 5; done
+      - name: Migrate (in-container sqlplus when runner lacks it + psql)
         run: bash scripts/migrate.sh
-      - run: npm run test -w apps/api
-      - run: npm run test:race -w apps/api
-      - run: npm run test:e2e
-      - run: node test/sql/run-invariants.js
+      - name: Contract tests (local store, fast)
+        run: npm run test -w apps/api
+      - name: Race suite (local mutex semantics)
+        run: npm run test:race -w apps/api
+      - name: Security + cross-layer suites
+        run: node apps/api/test/security.js && node apps/api/test/xlayer.js
+      - name: DB-backed suites (STORE=oracle — adapter write-through)
+        run: STORE=oracle npm run test -w apps/api && STORE=oracle npm run test:race -w apps/api
+      - name: Invariants gate (real runner — 0 rows or red)
+        run: node test/sql/run-invariants.js
+      - name: Timescale migrate + cagg smoke
+        run: PGPASSWORD=volthub_dev_pwd psql -h localhost -U volthub -d volthub -f db/timescale/T001__hypertables.sql && PGPASSWORD=volthub_dev_pwd psql -h localhost -U volthub -d volthub -f db/timescale/T002__caggs.sql
   e2e:
     needs: db-tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker compose -f infra/docker-compose.yml up -d --build
-      - run: sleep 45 && curl -sf http://localhost:4000/api/v1/health && curl -sf http://localhost:4000/api/v1/docs | grep -q openapi
+      - run: sleep 45 && curl -sf http://localhost:4000/api/v1/health/deep | grep -q '"status":"ok"' && curl -sf http://localhost:4000/api/v1/docs | grep -q openapi && curl -sf http://localhost:4000/api/v1/metrics | grep -q volthub_requests_total
+      - run: npm run test:e2e
       - run: docker compose -f infra/docker-compose.yml down

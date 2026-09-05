@@ -42,6 +42,8 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     v_overlap NUMBER;
     v_ref VARCHAR2(72);
   BEGIN
+    -- V004 guard: mark package-owned connector writes so trg_connector_guard allow-lists them.
+    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:reservation_pkg.create_reservation'); EXCEPTION WHEN OTHERS THEN NULL; END;
     -- BR-04: 15-120 min window, future start
     v_mins := (CAST(p_end AS DATE) - CAST(p_start AS DATE)) * 24 * 60;
     IF p_end <= p_start OR v_mins < 15 OR v_mins > 120 OR p_start < SYSTIMESTAMP - INTERVAL '1' MINUTE THEN
@@ -141,6 +143,7 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
   PROCEDURE transition(p_session IN NUMBER, p_to IN VARCHAR2, p_reason IN VARCHAR2 DEFAULT NULL) IS
     v_from VARCHAR2(16); v_ref VARCHAR2(72); v_end NUMBER;
   BEGIN
+    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:charge_session_pkg.transition'); EXCEPTION WHEN OTHERS THEN NULL; END;
     SELECT state, connector_ref INTO v_from, v_ref FROM charging_session
      WHERE session_id = p_session FOR UPDATE;
     IF NOT is_legal(v_from, p_to) THEN
@@ -154,7 +157,8 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
     INSERT INTO outbox_event (kind, dedupe_key, payload) VALUES (
       'SESSION_EVENT', 'sess:' || p_session || ':' || p_to || ':' || TO_CHAR(SYSTIMESTAMP,'YYYYMMDDHH24MISSFF'),
       JSON_OBJECT('session_id' VALUE p_session, 'from' VALUE v_from, 'to' VALUE p_to));
-    audit_pkg.log(NULL, 'CHARGING_SESSION', TO_CHAR(p_session), 'TRANSITION', v_from, p_to);
+    -- BUG-014: audit row comes from trg_session_audit (covers billing_state too). No explicit
+    -- audit_pkg.log here — the old call doubled every transition row.
   END;
 
   PROCEDURE start_session(p_user IN NUMBER, p_vehicle IN NUMBER, p_cp IN NUMBER, p_conn IN NUMBER,
@@ -162,6 +166,7 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
     v_ref VARCHAR2(72) := p_cp || ':' || p_conn;
     v_cstat VARCHAR2(16);
   BEGIN
+    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:charge_session_pkg.start_session'); EXCEPTION WHEN OTHERS THEN NULL; END;
     SELECT status INTO v_cstat FROM connector WHERE cp_id = p_cp AND connector_no = p_conn FOR UPDATE;
     IF v_cstat NOT IN ('AVAILABLE','RESERVED') THEN
       RAISE_APPLICATION_ERROR(-20502, 'NOT_BOOKABLE: connector ' || v_ref || ' is ' || v_cstat);
@@ -206,11 +211,17 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
   END;
 
   PROCEDURE stop_session(p_session IN NUMBER, p_reason IN VARCHAR2 DEFAULT 'REMOTE_STOP') IS
-    v_end NUMBER;
+    v_end NUMBER; v_state VARCHAR2(16);
   BEGIN
     SELECT NVL(MAX(meter_kwh),0) INTO v_end FROM meter_reading WHERE session_id = p_session;
     UPDATE charging_session SET end_meter_kwh = v_end WHERE session_id = p_session;
-    transition(p_session, 'COMPLETED', p_reason);
+    -- BUG-007: mirror the JS contract — a no-energy remote stop is a CANCEL, not a completion.
+    SELECT state INTO v_state FROM charging_session WHERE session_id = p_session;
+    IF v_state = 'PREPARING' THEN
+      transition(p_session, 'CANCELLED', p_reason);
+    ELSE
+      transition(p_session, 'COMPLETED', p_reason);
+    END IF;
   END;
 END charge_session_pkg;
 /
@@ -224,16 +235,18 @@ END tariff_pkg;
 /
 CREATE OR REPLACE PACKAGE BODY tariff_pkg AS
   FUNCTION resolve_band_price(p_plan IN NUMBER, p_at IN TIMESTAMP) RETURN NUMBER IS
-    v_price NUMBER; v_dow VARCHAR2(3);
+    v_price NUMBER; v_dow VARCHAR2(3); v_frac NUMBER;
   BEGIN
     v_dow := TO_CHAR(p_at, 'DY', 'NLS_DATE_LANGUAGE=AMERICAN');
+    -- BUG-008: half-open [start, end) to match the JS resolver (mins >= start AND mins < end).
+    -- Midnight-closing bands are stored as 23:59:59 (see V005); BETWEEN (closed) mis-prices edge ticks.
+    v_frac := CAST(p_at AS DATE) - TRUNC(CAST(p_at AS DATE));
     SELECT price_per_kwh INTO v_price FROM tariff_band
      WHERE plan_id = p_plan
        AND (day_scope = 'ALL' OR (day_scope='WEEKDAY' AND v_dow NOT IN ('SAT','SUN'))
             OR (day_scope='WEEKEND' AND v_dow IN ('SAT','SUN')))
-       AND CAST(p_at AS DATE) - TRUNC(CAST(p_at AS DATE))
-           BETWEEN (CAST(start_time AS DATE) - TRUNC(CAST(start_time AS DATE)))
-           AND (CAST(end_time AS DATE) - TRUNC(CAST(end_time AS DATE)))
+       AND v_frac >= (CAST(start_time AS DATE) - TRUNC(CAST(start_time AS DATE)))
+       AND v_frac <  (CAST(end_time AS DATE) - TRUNC(CAST(end_time AS DATE)))
      FETCH FIRST 1 ROW ONLY;
     RETURN v_price;
   EXCEPTION WHEN NO_DATA_FOUND THEN
@@ -346,7 +359,7 @@ CREATE OR REPLACE PACKAGE BODY maintenance_pkg AS
       BEGIN
         UPDATE connector SET status='FAULTED', last_state_change_at=SYSTIMESTAMP
          WHERE cp_id=v_cp AND connector_no=v_cn;
-      EXCEPTION WHEN OTHERS THEN NULL; END;
+      EXCEPTION WHEN NO_DATA_FOUND THEN NULL; WHEN DUP_VAL_ON_INDEX THEN NULL; END;
     END IF;
     audit_pkg.log(p_by, 'FAULT', TO_CHAR(p_fault), 'REPORT', NULL, p_code);
   END;
@@ -362,7 +375,7 @@ CREATE OR REPLACE PACKAGE BODY maintenance_pkg AS
       BEGIN
         UPDATE connector SET status='AVAILABLE', last_state_change_at=SYSTIMESTAMP
          WHERE cp_id=v_cp AND connector_no=v_cn AND status='FAULTED';
-      EXCEPTION WHEN OTHERS THEN NULL; END;
+      EXCEPTION WHEN NO_DATA_FOUND THEN NULL; WHEN DUP_VAL_ON_INDEX THEN NULL; END;
     END IF;
     audit_pkg.log(NULL, 'MAINTENANCE_RECORD', TO_CHAR(p_record), 'RESOLVE', NULL, p_resolution);
   END;

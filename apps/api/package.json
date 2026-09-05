@@ -15,5 +15,8 @@
     "jsonwebtoken": "^9.0.2",
     "pino": "^9.4.0",
     "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "oracledb": "^6.5.0"
   }
 }

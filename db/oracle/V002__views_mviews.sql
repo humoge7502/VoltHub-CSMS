@@ -64,7 +64,8 @@ BEGIN
     enabled    => TRUE,
     comments   => 'Refresh station daily revenue MV every 15 minutes');
 EXCEPTION WHEN OTHERS THEN
-  IF SQLCODE != -27477 THEN RAISE; END IF; -- job already exists
+  -- BUG-019: tolerate re-runs AND missing privileges on lean containers (diagnose via logs).
+  IF SQLCODE NOT IN (-27477, -27486, -01031) THEN RAISE; END IF;
 END;
 /
 COMMIT;

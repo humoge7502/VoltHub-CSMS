@@ -55,6 +55,17 @@ function createStore() {
   };
   const ref = (cp, no) => `${cp}:${no}`;
   s._ref = ref;
+  // BUG-013 fix: plan id is resolved from the active tariff group, never a literal.
+  // Group 1 = City (latest version), fallback = lowest plan_id.
+  s.defaultPlanId = () => {
+    const actives = [...s.plans.values()];
+    if (!actives.length) return 2;
+    const g1 = actives.filter(p => p.group_id === 1);
+    const pool = g1.length ? g1 : actives;
+    return pool.reduce((a, b) => (b.version_no > a.version_no ? b : a)).plan_id;
+  };
+  // Per-session reading-seq index: O(1) dedupe instead of O(n) scan (perf §11.1 item 2).
+  s._seqSeen = new Map(); // session_id -> Set(seq_no)
 
   // ---- lookups ----
   s.standards = [
@@ -96,11 +107,14 @@ function createStore() {
   };
   s.topup = (uid, amount) => {
     if (!(amount > 0)) throw err('INVALID_AMOUNT', 'amount > 0', 422);
+    // SEC-008: demo-economy caps — single top-up <= 10000, welcome credit handled by caller.
+    if (amount > 10000) throw err('INVALID_AMOUNT', 'top-up capped at Rs.10000 per transaction (demo economy)', 422);
     const w = s.wallets.get(uid) || { user_id: uid, balance: 0, currency: 'INR' };
     const seq = s.ledgers.filter(l => l.user_id === uid).length + 1;
     w.balance = +(w.balance + amount).toFixed(2); w.updated_at = new Date().toISOString();
     s.wallets.set(uid, w);
     s.ledgers.push({ user_id: uid, seq_no: seq, kind: 'TOPUP', amount, balance_after: w.balance, payment_id: null, note: 'top-up', created_at: new Date().toISOString() });
+    s.auditLog(uid, 'WALLET', uid, 'TOPUP', null, { amount, balance_after: w.balance });
     return w;
   };
 
@@ -212,11 +226,14 @@ function createStore() {
       if (!['PREPARING', 'CHARGING', 'SUSPENDED'].includes(sess.state)) {
         const e = new Error('TICK_REJECTED: session not active'); e.num = ORA.TICK_REJECTED; e.code = 'TICK_REJECTED'; e.status = 409; throw e;
       }
-      if (s.readings.some(r => r.session_id === Number(sid) && r.seq_no === seq)) return { deduped: true }; // idempotent replay
+      let seen = s._seqSeen.get(Number(sid));
+      if (!seen) { seen = new Set(s.readings.filter(r => r.session_id === Number(sid)).map(r => r.seq_no)); s._seqSeen.set(Number(sid), seen); }
+      if (seen.has(seq)) return { deduped: true }; // idempotent replay
       const last = s.readings.filter(r => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), -1);
       if (kwh < last - 0.001) { const e = new Error('METER_REGRESSION'); e.num = ORA.METER_REGRESSION; e.code = 'METER_REGRESSION'; e.status = 409; throw e; }
       const ts = at ? new Date(at).toISOString() : new Date().toISOString();
       s.readings.push({ session_id: Number(sid), seq_no: seq, taken_at: ts, meter_kwh: kwh, power_kw: kw ?? null, voltage_v: v ?? null, current_a: a ?? null, source: 'OCPP' });
+      seen.add(seq);
       if (sess.state === 'PREPARING' && seq >= 1) sess.state = 'CHARGING';
       s.emitOutbox('METER_TICK', `tick:${sid}:${seq}`, { session_id: Number(sid), seq, connector_ref: sess.connector_ref, meter_kwh: kwh, power_kw: kw ?? null, ts });
       s.ticks.push({ ts, session_id: Number(sid), connector_ref: sess.connector_ref, meter_kwh: kwh, power_kw: kw ?? null, voltage_v: v ?? null, current_a: a ?? null });
@@ -290,6 +307,54 @@ function createStore() {
       s.auditLog(uid, 'INVOICE', invId, 'PAY', 'DUE', 'PAID');
       return s.payments.get(payment_id);
     });
+  };
+  // ---- TD-05: route-level writes live behind the store interface (adapter covers them) ----
+  s.createVehicle = (uid, body) => {
+    const vehicle_id = ++s.seq.vehicle;
+    const v = { vehicle_id, user_id: uid, nickname: body.nickname || null, make: body.make, model: body.model, battery_kwh: Number(body.battery_kwh), is_default: body.is_default ? 'Y' : 'N', created_at: new Date().toISOString() };
+    s.vehicles.set(vehicle_id, v);
+    (body.standards || ['TYPE2', 'CCS2']).forEach(code => {
+      const st = s.standards.find(x => x.code === code);
+      if (st) s.vehicleStd.push({ vehicle_id, standard_id: st.standard_id });
+    });
+    s.auditLog(uid, 'VEHICLE', vehicle_id, 'CREATE', null, v);
+    return v;
+  };
+  // Atomic station provisioning: pre-validate ALL ocpp identities before any write.
+  s.provisionStation = (adminId, b) => {
+    if (!(b.name && Number.isFinite(Number(b.latitude)) && Number.isFinite(Number(b.longitude)))) {
+      throw err('INVALID_STATION', 'name + latitude + longitude required', 422);
+    }
+    const nextStationId = Math.max(0, ...[...s.stations.keys()]) + 1;
+    const predicted = (b.charge_points || []).map((p, i) => p.ocpp_identity || `VH-${nextStationId}-CP${i + 1}`);
+    const dupReq = predicted.find((v, i) => predicted.indexOf(v) !== i);
+    if (dupReq) { const e = new Error(`DUPLICATE_OCPP_ID: ${dupReq}`); e.code = 'DUPLICATE_OCPP_ID'; e.status = 409; throw e; }
+    const clash = predicted.find(v => s.cpsByOcpp.has(v));
+    if (clash) { const e = new Error(`DUPLICATE_OCPP_ID: ${clash}`); e.code = 'DUPLICATE_OCPP_ID'; e.status = 409; throw e; }
+    const station_id = ++s.seq.station;
+    const st = {
+      station_id, name: b.name, latitude: Number(b.latitude), longitude: Number(b.longitude),
+      address_line: b.address_line || '', city: b.city || 'Chennai', state: b.state || 'Tamil Nadu',
+      pincode: b.pincode || null, status: 'ACTIVE', operator_id: b.operator_id || null,
+      created_at: new Date().toISOString(),
+    };
+    s.stations.set(station_id, st);
+    (b.amenities || []).forEach(a => s.amenities.push({ station_id, amenity: a }));
+    const provisioned = [];
+    for (const [i, p] of (b.charge_points || []).entries()) {
+      const cp_id = ++s.seq.cp;
+      const ocpp_identity = p.ocpp_identity || `VH-${station_id}-CP${i + 1}`;
+      const auth_secret = p.auth_secret || crypto.randomBytes(18).toString('hex');
+      s.cps.set(cp_id, { cp_id, station_id, ocpp_identity, auth_secret, vendor: p.vendor || 'VoltHub', model: p.model || 'VH-AC22', firmware_version: '1.6.5', status: 'ONLINE', last_boot_at: null, last_seen_at: null });
+      s.cpsByOcpp.set(ocpp_identity, cp_id);
+      (p.connectors || [{ standard: 'TYPE2', max_power_kw: 22 }]).forEach((c, k) => {
+        const stdRow = s.standards.find(t => t.code === c.standard) || s.standards[0];
+        s.connectors.set(`${cp_id}:${k + 1}`, { cp_id, connector_no: k + 1, standard_id: stdRow.standard_id, max_power_kw: Number(c.max_power_kw || 22), status: 'AVAILABLE', last_state_change_at: new Date().toISOString() });
+      });
+      provisioned.push({ cp_id, ocpp_identity, auth_secret: s.cps.get(cp_id).auth_secret });
+    }
+    s.auditLog(adminId, 'STATION', station_id, 'CREATE', null, { name: st.name });
+    return { station: st, provisioned };
   };
   return s;
 }

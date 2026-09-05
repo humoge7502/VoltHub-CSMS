@@ -67,7 +67,7 @@ async function main() {
     await store.recordTick(sess.session_id, 1, new Date().toISOString(), 2.5, 30, 400, 75);
     await store.recordTick(sess.session_id, 2, new Date().toISOString(), 5.0, 32, 400, 80);
     assert.equal(store.sessions.get(sess.session_id).state, 'CHARGING');
-    const live = await api(`/sessions/${sess.session_id}/live`);
+    const live = await api(`/sessions/${sess.session_id}/live`, { headers: H() });
     assert.ok(live.j.live.energy_kwh >= 5);
     await api(`/sessions/${sess.session_id}/remote-stop`, { method: 'POST', headers: H() });
     assert.equal(store.sessions.get(sess.session_id).state, 'COMPLETED');

@@ -6,13 +6,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { vRegister, vReservation, vVehicle } = require('@volthub/shared');
 const { signAccess, issueRefresh, authRequired, roles, scopeCheck } = require('./middleware/auth');
-
-function oraStatus(e) {
-  if (e.num === -20501) return 422;
-  if ([-20502, -20503, -20504, -20601, -20602, -20603, -20702, -20703, -20704].includes(e.num)) return 409;
-  if (e.num === -20705) return 402;
-  return e.status || 500;
-}
+const { oraStatus } = require('./errors');
 
 module.exports = function routes(store) {
   const r = express.Router();
@@ -22,23 +16,32 @@ module.exports = function routes(store) {
   r.post('/auth/register', safe(async (req, res) => {
     vRegister(req.body);
     const u = store.createUser({ email: req.body.email, password: req.body.password, full_name: req.body.full_name, role: 'DRIVER' });
-    store.topup(u.user_id, 500); // welcome credit
-    res.status(201).json({ user: pub(u), accessToken: signAccess(u), refreshToken: issueRefresh(store, u, req.body.device) });
+    store.topup(u.user_id, 500); // welcome credit (capped demo economy; see topup caps)
+    store.auditLog(u.user_id, 'APP_USER', u.user_id, 'REGISTER', null, { email: u.email });
+    res.status(201).json({ user: pub(u), accessToken: signAccess(u, store), refreshToken: issueRefresh(store, u, req.body.device) });
   }));
   r.post('/auth/login', safe(async (req, res) => {
     const u = [...store.users.values()].find(x => x.email === req.body.email);
     const { verifyPassword } = require('./db/store');
-    if (!u || !verifyPassword(req.body.password || '', u.password_hash)) return res.status(401).json({ error: { code: 'BAD_CREDENTIALS', message: 'invalid email/password' } });
+    if (!u || !verifyPassword(req.body.password || '', u.password_hash)) {
+      store.auditLog(u?.user_id ?? null, 'APP_USER', u?.user_id ?? 0, 'LOGIN_FAIL', null, { email: req.body.email });
+      return res.status(401).json({ error: { code: 'BAD_CREDENTIALS', message: 'invalid email/password' } });
+    }
     if (u.status !== 'ACTIVE') return res.status(403).json({ error: { code: 'SUSPENDED', message: 'account suspended' } });
-    res.json({ user: pub(u), accessToken: signAccess(u), refreshToken: issueRefresh(store, u, req.body.device) });
+    store.auditLog(u.user_id, 'APP_USER', u.user_id, 'LOGIN_SUCCESS', null, { at: new Date().toISOString() });
+    res.json({ user: pub(u), accessToken: signAccess(u, store), refreshToken: issueRefresh(store, u, req.body.device) });
   }));
   r.post('/auth/refresh', safe(async (req, res) => {
-    const h = crypto.createHash('sha256').update(String(req.body.refreshToken || '')).digest('hex');
-    const t = store.refresh.get(h);
-    if (!t || t.revoked_at || new Date(t.expires_at) < new Date()) return res.status(401).json({ error: { code: 'BAD_REFRESH', message: 'refresh invalid/expired' } });
-    t.revoked_at = new Date().toISOString(); // rotation + family revocation on reuse
+    const { consumeRefresh } = require('./middleware/auth');
+    const c = consumeRefresh(store, req.body.refreshToken);
+    if (!c.ok) {
+      if (c.familyRevoked) store.auditLog(null, 'APP_USER', 0, 'REFRESH_REUSE', null, { at: new Date().toISOString() });
+      return res.status(401).json({ error: { code: 'BAD_REFRESH', message: c.reason === 'revoked-reuse' ? 'refresh reuse detected — family revoked' : 'refresh invalid/expired' } });
+    }
+    const t = c.token;
+    t.revoked_at = new Date().toISOString(); // rotation
     const u = store.users.get(t.user_id);
-    res.json({ accessToken: signAccess(u), refreshToken: issueRefresh(store, u, t.device_label) });
+    res.json({ accessToken: signAccess(u, store), refreshToken: issueRefresh(store, u, t.device_label, t.family_id) });
   }));
   r.get('/me', authRequired, safe(async (req, res) => {
     const u = store.users.get(req.user.id);
@@ -53,15 +56,7 @@ module.exports = function routes(store) {
   }));
   r.post('/me/vehicles', authRequired, safe(async (req, res) => {
     vVehicle(req.body);
-    const vehicle_id = ++store.seq.vehicle;
-    const v = { vehicle_id, user_id: req.user.id, nickname: req.body.nickname || null, make: req.body.make, model: req.body.model, battery_kwh: Number(req.body.battery_kwh), is_default: req.body.is_default ? 'Y' : 'N', created_at: new Date().toISOString() };
-    store.vehicles.set(vehicle_id, v);
-    (req.body.standards || ['TYPE2', 'CCS2']).forEach(code => {
-      const st = store.standards.find(s => s.code === code);
-      if (st) store.vehicleStd.push({ vehicle_id, standard_id: st.standard_id });
-    });
-    store.auditLog(req.user.id, 'VEHICLE', vehicle_id, 'CREATE', null, v);
-    res.status(201).json({ vehicle: v });
+    res.status(201).json({ vehicle: store.createVehicle(req.user.id, req.body) });
   }));
 
   // ---- stations / discovery ----
@@ -141,23 +136,30 @@ module.exports = function routes(store) {
   // ---- sessions ----
   r.post('/sessions/start', authRequired, safe(async (req, res) => {
     try {
-      const s = await store.startSession({ uid: req.user.id, vehicleId: req.body.vehicleId, cpId: req.body.cpId, connNo: req.body.connectorNo, planId: req.body.planId || 2, reservationId: req.body.reservationId, idTag: req.body.idTag || `TAG-${req.user.id}` });
+      const planId = req.body.planId ? Number(req.body.planId) : (store.defaultPlanId ? store.defaultPlanId() : 2);
+      const s = await store.startSession({ uid: req.user.id, vehicleId: req.body.vehicleId, cpId: req.body.cpId, connNo: req.body.connectorNo, planId, reservationId: req.body.reservationId, idTag: req.body.idTag || `TAG-${req.user.id}` });
       res.status(201).json({ session: s });
     } catch (e) { res.status(oraStatus(e)).json({ error: { code: e.code, message: e.message } }); }
   }));
-  r.get('/sessions/active/:ref', safe(async (req, res) => {
+  // SEC-001: per-connector active session exposes user_id/id_tag — auth required.
+  r.get('/sessions/active/:ref', authRequired, safe(async (req, res) => {
     const s = [...store.sessions.values()].find(x => x.connector_ref === req.params.ref && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(x.state));
     res.json({ session: s || null });
   }));
-  r.get('/sessions/:id/live', safe(async (req, res) => {
+  // SEC-001: live session exposes energy profile + user_id — driver-own or staff only.
+  r.get('/sessions/:id/live', authRequired, safe(async (req, res) => {
     const s = store.sessions.get(Number(req.params.id));
     if (!s) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'session' } });
+    if (req.user.role === 'DRIVER' && s.user_id !== req.user.id) return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your session' } });
     const ticks = store.readings.filter(x => x.session_id === s.session_id);
-    const energy = ticks.length ? +(ticks[ticks.length - 1].meter_kwh - (ticks[0]?.meter_kwh || 0) + (ticks[0]?.meter_kwh || 0)).toFixed(3) : 0;
+    // BUG-016 fix: energy from session's stored start_meter_kwh (real chargers report absolute registers).
+    const energy = ticks.length ? +(ticks[ticks.length - 1].meter_kwh - (s.start_meter_kwh ?? 0)).toFixed(3) : 0;
     const kw = ticks.length ? ticks[ticks.length - 1].power_kw : null;
-    let price = 20; try { price = store.resolveBandPrice(s.tariff_plan_id, s.started_at); } catch { /* keep */ }
+    let price = 20, fee = 0;
+    try { price = store.resolveBandPrice(s.tariff_plan_id, s.started_at); } catch { /* keep */ }
+    try { fee = Number(store.plans.get(Number(s.tariff_plan_id))?.session_fee || 0); } catch { /* keep */ }
     const elapsed_s = Math.floor((new Date(s.ended_at || Date.now()) - new Date(s.started_at)) / 1000);
-    res.json({ session: s, live: { energy_kwh: energy, power_kw: kw, elapsed_s, est_cost: +((energy * price) + 20).toFixed(2), ticks: ticks.slice(-60) } });
+    res.json({ session: s, live: { energy_kwh: energy, power_kw: kw, elapsed_s, est_cost: +((energy * price) + fee).toFixed(2), ticks: ticks.slice(-60) } });
   }));
   r.post('/sessions/:id/remote-stop', authRequired, safe(async (req, res) => {
     try { res.json({ session: await store.stopSession(req.params.id, 'REMOTE_STOP') }); }
@@ -262,7 +264,8 @@ module.exports = function routes(store) {
   }));
 
   // ---- telemetry (DA3 reads; prod hits TimescaleDB caggs) ----
-  r.get('/telemetry/load-curve', safe(async (req, res) => {
+  // SEC-001: station-aggregate telemetry is auth-gated (prevents longitudinal presence mining).
+  r.get('/telemetry/load-curve', authRequired, safe(async (req, res) => {
     const { station, from, to, bucket = '5m' } = req.query;
     let ticks = store.ticks;
     if (station) {
@@ -280,7 +283,7 @@ module.exports = function routes(store) {
     });
     res.json({ points: [...buckets.values()].map(o => ({ bucket: o.bucket, avg_kw: +(o.sum / Math.max(o.n, 1)).toFixed(2), peak_kw: +o.max.toFixed(2) })).sort((a, b) => a.bucket.localeCompare(b.bucket)), source: process.env.TS_HOST ? 'timescaledb' : 'local-rollup' });
   }));
-  r.get('/telemetry/utilization-heatmap', safe(async (req, res) => {
+  r.get('/telemetry/utilization-heatmap', authRequired, safe(async (req, res) => {
     // 7x24 matrix from stateEvents (prod: state_1m cagg)
     const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
     store.stateEvents.forEach(e => {
@@ -327,7 +330,7 @@ module.exports = function routes(store) {
     const plan = { plan_id, group_id: group, version_no: max + 1, name: req.body.name || `Plan v${max + 1}`, currency: 'INR', session_fee: Number(req.body.session_fee || 0), idle_fee_per_30min: 0, active_from: new Date().toISOString(), active_to: null, supersedes_plan_id: prev?.plan_id || null, created_by: req.user.id, created_at: new Date().toISOString() };
     store.plans.set(plan_id, plan);
     if (prev) prev.active_to = plan.active_from;
-    (req.body.bands || [{ day_scope: 'ALL', start_time: '00:00', end_time: '24:00', price_per_kwh: 22 }]).forEach(b => {
+    (req.body.bands || [{ day_scope: 'ALL', start_time: '00:00', end_time: '23:59', price_per_kwh: 22 }]).forEach(b => {
       store.bands.push({ band_id: ++store.seq.band, plan_id, day_scope: b.day_scope, start_time: b.start_time, end_time: b.end_time, price_per_kwh: Number(b.price_per_kwh) });
     });
     store.auditLog(req.user.id, 'TARIFF_PLAN', plan_id, 'VERSION', prev?.plan_id ?? null, plan.name);
@@ -338,24 +341,60 @@ module.exports = function routes(store) {
   }));
 
   // ---- internal (worker) ----
-  r.get('/internal/outbox', safe(async (req, res) => {
-    if (req.headers['x-internal'] !== (process.env.INTERNAL_TOKEN || 'dev-internal')) return res.status(403).json({ error: { code: 'FORBIDDEN', message: '' } });
+  // SEC-007: constant-time compare; fail-closed only in production (demo compose uses
+  // the documented dev default pair, which logs a warning — see middleware/auth.js).
+  function internalOk(req) {
+    const want = process.env.INTERNAL_TOKEN;
+    const prod = process.env.NODE_ENV === 'production';
+    if (!want || want === 'dev-internal') {
+      if (prod) return false;
+      return (req.headers['x-internal'] || '') === 'dev-internal';
+    }
+    const got = Buffer.from(String(req.headers['x-internal'] || ''));
+    const exp = Buffer.from(String(want));
+    if (got.length !== exp.length) return false;
+    try { return crypto.timingSafeEqual(got, exp); } catch { return false; }
+  }
+  const requireInternal = (req, res, next) => {
+    if (!internalOk(req)) return res.status(403).json({ error: { code: 'FORBIDDEN', message: '' } });
+    next();
+  };
+  r.get('/internal/outbox', requireInternal, safe(async (req, res) => {
     res.json({ events: store.outbox.filter(e => !e.processed_at).slice(0, 500) });
   }));
-  r.post('/internal/outbox/ack', safe(async (req, res) => {
-    if (req.headers['x-internal'] !== (process.env.INTERNAL_TOKEN || 'dev-internal')) return res.status(403).json({ error: { code: 'FORBIDDEN', message: '' } });
+  r.post('/internal/outbox/ack', requireInternal, safe(async (req, res) => {
     (req.body.ids || []).forEach(id => { const e = store.outbox.find(x => x.event_id === Number(id)); if (e) e.processed_at = new Date().toISOString(); });
     res.json({ ok: true });
   }));
-  r.post('/internal/expire', safe(async (req, res) => {
-    if (req.headers['x-internal'] !== (process.env.INTERNAL_TOKEN || 'dev-internal')) return res.status(403).json({ error: { code: 'FORBIDDEN', message: '' } });
+  r.post('/internal/expire', requireInternal, safe(async (req, res) => {
     res.json({ expired: await store.expireStale() });
   }));
 
   // ---- health ----
   r.get('/health', safe(async (req, res) => {
     const lag = store.outbox.filter(e => !e.processed_at).length;
-    res.json({ status: 'ok', oracle: process.env.ORACLE_HOST ? 'configured' : 'local-store', timescale: process.env.TS_HOST ? 'configured' : 'local-rollup', outbox_lag: lag, now: new Date().toISOString() });
+    res.json({ status: 'ok', mode: store._mode || 'local', oracle: store._pool ? 'connected' : (process.env.ORACLE_HOST ? (store._mode || 'connecting') : 'local-store'), timescale: process.env.TS_HOST ? 'configured' : 'local-rollup', outbox_lag: lag, now: new Date().toISOString() });
+  }));
+  // /health/deep: real SELECT 1 FROM DUAL + pool presence + Timescale reachability when wired.
+  r.get('/health/deep', safe(async (req, res) => {
+    const out = { status: 'ok', mode: store._mode || 'local', checks: {}, now: new Date().toISOString() };
+    if (store._pool) {
+      try {
+        const c = await store._pool.getConnection();
+        try { await c.execute('SELECT 1 FROM DUAL'); out.checks.oracle = 'connected'; }
+        finally { try { await c.close(); } catch {} }
+      } catch (e) { out.status = 'degraded'; out.checks.oracle = `error: ${e.message.slice(0, 120)}`; }
+    } else {
+      out.checks.oracle = process.env.ORACLE_HOST ? (store._oracleError ? `unreachable: ${String(store._oracleError).slice(0, 120)}` : (store._mode || 'connecting')) : 'local-store';
+    }
+    out.checks.timescale = process.env.TS_HOST ? 'configured (see worker relay-timescale)' : 'local-rollup';
+    out.checks.outbox_lag = store.outbox.filter(e => !e.processed_at).length;
+    res.status(out.status === 'ok' ? 200 : 503).json(out);
+  }));
+  // /metrics: Prometheus text (see observability.js) — Grafana scrapes this, no exporter zoo.
+  r.get('/metrics', safe(async (req, res) => {
+    res.setHeader('content-type', 'text/plain; version=0.0.4');
+    res.send(require('./observability').render(store));
   }));
 
   function pub(u) { const { password_hash, ...rest } = u; return rest; }

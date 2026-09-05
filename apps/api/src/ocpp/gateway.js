@@ -2,12 +2,35 @@
 // Handles Boot/Heartbeat/Status/Authorize/Start/Meter/Stop; mirrors connector
 // state into the store (CLIENT_IDENTIFIER='ocpp-gw' equivalent) exactly like
 // the Oracle trigger expects in prod.
+// SEC-003: OCPP 1.6 Security Profile 1 — HTTP Basic on upgrade (username=ocpp_identity,
+// password=charge_point.auth_secret). Enforced when the CP has a secret or OCPP_AUTH=require.
 'use strict';
+const crypto = require('crypto');
 const { parse, result, callError } = require('@volthub/ocpp-messages');
+
+function checkBasic(req, identity, cp) {
+  const secret = cp?.auth_secret;
+  const mode = process.env.OCPP_AUTH || 'per-cp'; // per-cp | require | off
+  if (mode === 'off') return true;
+  if (!secret && mode !== 'require') return true; // legacy CPs without secret (dev/seeds migrating)
+  const h = String(req.headers?.authorization || '');
+  const m = /^Basic (.+)$/.exec(h);
+  if (!m) return false;
+  let decoded = '';
+  try { decoded = Buffer.from(m[1], 'base64').toString('utf8'); } catch { return false; }
+  const idx = decoded.indexOf(':');
+  if (idx < 0) return false;
+  const user = decoded.slice(0, idx), pass = decoded.slice(idx + 1);
+  if (user !== identity) return false;
+  const a = Buffer.from(pass), b = Buffer.from(String(secret || ''));
+  if (a.length !== b.length) return false;
+  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+}
 
 function mountOcpp(wss, store, log) {
   const registry = new Map(); // ocpp_identity -> ws
   const lastMsg = new Map();
+  const seqByTx = new Map(); // BUG-006: monotonic per-session seq (OCPP has no seq; gateway owns it)
 
   wss.on('connection', (ws, req) => {
     const m = String(req.url || '').match(/\/ocpp\/([^/?]+)/);
@@ -17,7 +40,15 @@ function mountOcpp(wss, store, log) {
     }
     const cpId = store.cpsByOcpp.get(identity);
     const cp = store.cps.get(cpId);
+    if (!checkBasic(req, identity, cp)) {
+      try { ws.close(4401, 'ocpp basic auth required (Security Profile 1)'); } catch {}
+      (log.warn || log.info)({ identity }, 'ocpp rejected: bad basic auth');
+      return;
+    }
     cp.status = 'ONLINE'; cp.last_seen_at = new Date().toISOString();
+    // Duplicate connection: close the stale socket so one identity == one socket (OCPP 1.6J §4).
+    const prev = registry.get(identity);
+    if (prev && prev !== ws) { try { prev.close(4400, 'duplicate charge point identity'); } catch {} }
     registry.set(identity, ws);
     log.info({ identity }, 'ocpp connected');
 
@@ -26,7 +57,7 @@ function mountOcpp(wss, store, log) {
       const now = Date.now();
       const arr = (lastMsg.get(identity) || []).filter(t => now - t < 1000);
       arr.push(now); lastMsg.set(identity, arr);
-      if (arr.length > 10) { ws.send(callError('0', 'RateLimitExceeded')); return; }
+      if (arr.length > 10) { ws.send(callError('0', 'FormationViolation', 'rate limit 10 msg/s per charge point')); return; }
       let msg; try { msg = parse(raw); } catch { ws.send(callError('0', 'FormationViolation')); return; }
       if (msg.kind !== 'CALL') return;
       const p = msg.payload || {};
@@ -57,14 +88,22 @@ function mountOcpp(wss, store, log) {
             break;
           }
           case 'Authorize': {
-            const ok = [...store.users.values()].some(u => u.user_id === Number(p.idTag?.replace('TAG-', '')) || p.idTag);
+            // BUG-002 fix: allow-list only. TAG-<user_id> of an existing user => Accepted, else Invalid.
+            const m2 = /^TAG-(\d+)$/.exec(String(p.idTag || ''));
+            const ok = !!(m2 && store.users.has(Number(m2[1])));
             ws.send(result(msg.uid, { idTagInfo: { status: ok ? 'Accepted' : 'Invalid' } }));
             break;
           }
           case 'StartTransaction': {
             const tagUid = /^TAG-(\d+)$/.exec(p.idTag || '');
-            const uid = tagUid ? Number(tagUid[1]) : 1;
-            const sess = await store.startSession({ uid: store.users.has(uid) ? uid : 1, vehicleId: null, cpId, connNo: p.connectorId, planId: 2, reservationId: null, idTag: p.idTag });
+            // BUG-002 follow-on: reject unknown tags instead of silently billing user 1.
+            if (!tagUid || !store.users.has(Number(tagUid[1]))) {
+              ws.send(result(msg.uid, { transactionId: 0, idTagInfo: { status: 'Invalid' } }));
+              break;
+            }
+            const uid = Number(tagUid[1]);
+            const sess = await store.startSession({ uid, vehicleId: null, cpId, connNo: p.connectorId, planId: store.defaultPlanId ? store.defaultPlanId() : 2, reservationId: null, idTag: p.idTag });
+            seqByTx.set(sess.session_id, 0);
             ws.send(result(msg.uid, { transactionId: sess.session_id, idTagInfo: { status: 'Accepted' } }));
             break;
           }
@@ -73,14 +112,25 @@ function mountOcpp(wss, store, log) {
             const vals = [...(p.meterValue || [])].flatMap(mv => mv.sampledValue || []);
             const e = vals.find(v => v.measurand === 'Energy.Active.Import.Register');
             const pr = vals.find(v => v.measurand === 'Power.Active.Import');
-            if (tx && e) await store.recordTick(tx, Date.now() % 100000, new Date().toISOString(), Number(e.value) / 1000, pr ? Number(pr.value) / 1000 : null, null, null);
+            // BUG-006 fix: monotonic per-session counter, never Date.now() (collides + breaks (session_id,seq_no) PK).
+            if (tx && e) {
+              const next = (seqByTx.get(Number(tx)) || 0) + 1;
+              seqByTx.set(Number(tx), next);
+              await store.recordTick(tx, next, new Date().toISOString(), Number(e.value) / 1000, pr ? Number(pr.value) / 1000 : null, null, null);
+            }
             ws.send(result(msg.uid, {}));
             break;
           }
           case 'StopTransaction': {
             if (p.transactionId) {
               const sess = store.sessions.get(Number(p.transactionId));
-              if (sess) { sess.end_meter_kwh = Number(p.meterStop) / 1000 || sess.end_meter_kwh; await store.transition(p.transactionId, 'COMPLETED', 'OCPP_STOP'); }
+              if (sess) {
+                // BUG-020 fix: 0 Wh is valid — only fall back when meterStop is absent/NaN.
+                const stopKwh = Number(p.meterStop);
+                sess.end_meter_kwh = Number.isFinite(stopKwh) ? stopKwh / 1000 : sess.end_meter_kwh;
+                seqByTx.delete(Number(p.transactionId));
+                await store.transition(p.transactionId, 'COMPLETED', 'OCPP_STOP');
+              }
             }
             ws.send(result(msg.uid, { idTagInfo: { status: 'Accepted' } }));
             break;
@@ -99,4 +149,4 @@ function mountOcpp(wss, store, log) {
   return registry;
 }
 
-module.exports = { mountOcpp };
+module.exports = { mountOcpp, checkBasic };

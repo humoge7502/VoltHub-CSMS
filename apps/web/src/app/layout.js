@@ -18,7 +18,7 @@ export default function RootLayout({ children }) {
         <main>{children}</main>
         <footer style={{ borderTop: '1px solid var(--hair)', marginTop: 48, padding: '20px 24px' }} className="micro">
           VOLTHUB CSMS · ORACLE OLTP + TIMESCALEDB TELEMETRY · SIMULATED CHARGERS, PREPAID WALLET (NO CARD DATA) ·
-          TESTED: 50 CHARGERS × 5s TICKS, P95 &lt;300MS LAPTOP · OPENAPI AT /api/v1/docs
+          BENCHMARKS: SEE docs/perf.md (MEASURED ONLY) · OPENAPI AT /api/v1/docs
         </footer>
       </body>
     </html>

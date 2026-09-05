@@ -33,7 +33,8 @@ async function main() {
   const { j: mine } = await api('/reservations', { headers: H });
   const wins = mine.reservations.filter(r => r.connector_ref === c.connector_ref && r.status === 'BOOKED');
   assert.equal(wins.length, 1, 'exactly one BOOKED row (Q25 invariant)');
-  console.log('R1-OK: exactly one winner, overlap prevented in DB layer');
+  // BUG-021 fix: backend-aware message — local mutex today, Oracle row lock when STORE=oracle.
+  console.log(`R1-OK: exactly one winner, overlap prevented in ${process.env.ORACLE_HOST ? 'Oracle row lock (FOR UPDATE)' : 'in-process mutex (dev; Oracle FOR UPDATE in prod)'}`);
 
   // R4 double-pay: build a billable session on another connector
   const c2 = disc.stations[0].connectors.find(x => x.status === 'AVAILABLE' && x.connector_ref !== c.connector_ref) || c;

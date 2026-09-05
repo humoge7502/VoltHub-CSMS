@@ -2,7 +2,7 @@
 
 **Two-engine EV charging management: Oracle for ACID billing/reservations, TimescaleDB for telemetry — driven by an OCPP 1.6J simulator, race-proof core, typography-led Next.js dashboard.**
 
-![ci](https://github.com/example/volthub-csms/actions/workflows/ci.yml/badge.svg) `oracle-23ai` `timescaledb` `nestjs-style-modular-monolith` `ocpp-1.6j` `nextjs`
+![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg) `oracle-23ai` `timescaledb` `modular-monolith-express` `ocpp-1.6j` `nextjs`
 
 > 30-second GIF: two terminals reserve the same connector → one `201 BOOKED`, one `409 OVERLAP` → plug-in → live kWh/kW/cost → itemized invoice → wallet pay. (Record with `scripts/demo.sh`.)
 
@@ -27,12 +27,14 @@ Run it and click through — every number below is reproducible on a laptop.
 - **Race-proof reservations** (`SELECT … FOR UPDATE` + overlap check, ORA-20503 → 409) → `db/oracle/V003__packages.sql` (`RESERVATION_PKG`), live demo `npm run test:race -w apps/api`.
 - **Money in packages, not app code** (`BILLING_PKG.bill_session/pay_invoice`, `CHARGE_SESSION_PKG` state machine, 2 triggers only) → `db/oracle/V003__packages.sql`, `V004__triggers_grants.sql`.
 - **Outbox → hypertables → 1m/1h caggs** → `db/timescale/T001__hypertables.sql`, `T002__caggs.sql`, relay `apps/worker/src/index.js`.
-- **26-query portfolio + invariants that fail CI on any row** → `db/oracle/queries.sql`, `db/oracle/invariants.sql`, `db/timescale/queries.sql`.
+- **26-query portfolio + invariants that gate CI (0 rows = pass)** → `db/oracle/queries.sql`, `db/oracle/invariants.sql`, `test/sql/run-invariants.js`, `db/timescale/queries.sql`.
 
 ## Honest limits (NFR-11)
 
-- Tested scale: 50 chargers × 5s ticks, p95 <300ms on laptop; telemetry lag <30s over a 10-min burst. No scale claims beyond `docs/perf.md`.
+- Local profile runs on an in-process store (no DB) for fast iteration; set `ORACLE_HOST`/
+  `TS_HOST` (full compose profile) for the durable two-engine path — see `apps/api/src/db/index.js`.
 - Chargers are **simulated** (SteVe precedent); payments are a **prepaid wallet** (no card data, ever); single-VM Compose, not K8s.
+- No performance numbers are claimed here — see `docs/perf.md` (methodology + reproduce steps; measured tables land after the benchmark suite runs).
 
 ## Quickstart
 

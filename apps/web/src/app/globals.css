@@ -30,7 +30,8 @@ a { color: inherit; }
 .cards { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .card { background: var(--s1); border: 1px solid var(--hair); border-radius: var(--r-m); padding: 16px; }
 .kpi .v { font-family: 'IBM Plex Mono'; font-size: 28px; font-weight: 500; }
-.kpi .l { composes: micro; }
+/* BUG-017 fix: `composes:` is CSS-Modules syntax — invalid in global CSS. Inline the .micro rules. */
+.kpi .l { font: 600 11px/1.2 Inter; text-transform: uppercase; letter-spacing: .08em; color: var(--tx2); }
 .btn { height: 36px; padding: 0 16px; border-radius: var(--r-s); border: 1px solid var(--hair2);
   background: transparent; color: var(--tx); font-weight: 600; cursor: pointer; }
 .btn.pri { background: var(--cream); color: var(--carbon); border-color: var(--cream); }

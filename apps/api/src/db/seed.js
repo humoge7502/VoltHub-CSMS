@@ -48,7 +48,9 @@ function seedStore(s, profile = 'demo') {
     for (let p = 0; p < 2; p++) {
       const cp_id = ++s.seq.cp;
       const ocpp = `VH-${station_id}-CP${p + 1}`;
-      s.cps.set(cp_id, { cp_id, station_id, ocpp_identity: ocpp, vendor: 'VoltHub', model: p === 0 ? 'VH-DC60' : 'VH-AC22', firmware_version: '1.6.5', status: 'ONLINE', last_boot_at: new Date().toISOString(), last_seen_at: new Date().toISOString() });
+      // SEC-003: per-CP Basic secret (Security Profile 1). Deterministic in demo seeds so the
+      // simulator can derive it; production provisions random secrets via SQL (V005 default).
+      s.cps.set(cp_id, { cp_id, station_id, ocpp_identity: ocpp, auth_secret: `dev-${ocpp}`, vendor: 'VoltHub', model: p === 0 ? 'VH-DC60' : 'VH-AC22', firmware_version: '1.6.5', status: 'ONLINE', last_boot_at: new Date().toISOString(), last_seen_at: new Date().toISOString() });
       s.cpsByOcpp.set(ocpp, cp_id);
       const defs = p === 0 ? [[1, 1, 22], [2, 2, 60]] : [[1, 1, 22], [2, 2, 120]];
       defs.forEach(([std, no, kw], k) => {
@@ -74,11 +76,11 @@ function seedStore(s, profile = 'demo') {
   const v1 = mkPlan(1, 1, 'City Day v1', 20, new Date(Date.now() - 60 * 86400000).toISOString(), null);
   const v2 = mkPlan(1, 2, 'City Day v2', 20, new Date(Date.now() - 15 * 86400000).toISOString(), v1);
   const h1 = mkPlan(2, 1, 'Highway Flat v1', 49, new Date(Date.now() - 60 * 86400000).toISOString(), null);
-  const t = (d) => d; // times stored as HH:MM strings
+  const t = (d) => d; // times stored as HH:MM strings (B8: '24:00' unrepresentable in Oracle TIMESTAMP — canonical '23:59')
   [[v1, 18], [v2, 22], [h1, 25]].forEach(([p, day]) => {
     const b1 = ++s.seq.band; s.bands.push({ band_id: b1, plan_id: p, day_scope: 'ALL', start_time: '00:00', end_time: '18:00', price_per_kwh: day });
     const b2 = ++s.seq.band; s.bands.push({ band_id: b2, plan_id: p, day_scope: 'ALL', start_time: '18:00', end_time: '22:00', price_per_kwh: day + 6 });
-    const b3 = ++s.seq.band; s.bands.push({ band_id: b3, plan_id: p, day_scope: 'ALL', start_time: '22:00', end_time: '24:00', price_per_kwh: day });
+    const b3 = ++s.seq.band; s.bands.push({ band_id: b3, plan_id: p, day_scope: 'ALL', start_time: '22:00', end_time: '23:59', price_per_kwh: day });
   });
 
   // sessions: diurnal (18-21h 2.5x), some invoiced+paid
@@ -103,15 +105,17 @@ function seedStore(s, profile = 'demo') {
       s.ticks.push({ ts, session_id: sid, connector_ref: key, meter_kwh: mk, power_kw: 30, voltage_v: 400, current_a: 80 });
     }
     // bill 94%, pay most (driver[0] keeps failing -> insufficient funds story visible)
+    // BUG-013 fix: invoice math routes through the same band resolver + plan fee as billSession.
     if (R() < 0.94) {
       try {
-        const price = s.resolveBandPrice ? 20 : 20;
-        const p = [...s.bands].find(b => b.plan_id === planId);
-        const amt = +((kwh * (p ? p.price_per_kwh : 20)) + 20).toFixed(2);
+        const bandPrice = s.resolveBandPrice(planId, start.toISOString());
+        const plan = s.plans.get(planId);
+        const fee = plan ? Number(plan.session_fee) : 0;
+        const amt = +((kwh * bandPrice) + fee).toFixed(2);
         const inv = ++s.seq.inv;
         s.invoices.set(inv, { invoice_id: inv, session_id: sid, tariff_plan_id: planId, status: 'DUE', total: amt, currency: 'INR', issued_at: end.toISOString() });
-        s.lines.push({ invoice_id: inv, line_no: 1, kind: 'ENERGY', description: `Energy ${kwh} kWh`, quantity: kwh, unit: 'kWh', unit_price: 20, amount: +(amt - 20).toFixed(2) });
-        s.lines.push({ invoice_id: inv, line_no: 2, kind: 'SESSION_FEE', description: 'Session fee', quantity: 1, unit: null, unit_price: 20, amount: 20 });
+        s.lines.push({ invoice_id: inv, line_no: 1, kind: 'ENERGY', description: `Energy ${kwh} kWh @ Rs.${bandPrice}`, quantity: kwh, unit: 'kWh', unit_price: bandPrice, amount: +((kwh * bandPrice).toFixed(2)) });
+        if (fee > 0) s.lines.push({ invoice_id: inv, line_no: 2, kind: 'SESSION_FEE', description: 'Session fee', quantity: 1, unit: null, unit_price: fee, amount: fee });
         const sess = s.sessions.get(sid); sess.billing_state = 'BILLED';
         const w = s.wallets.get(d.user_id);
         if (w && w.balance >= amt && R() < 0.9) {

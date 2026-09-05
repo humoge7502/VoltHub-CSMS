@@ -3,5 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "scripts": { "start": "node src/index.js" },
-  "dependencies": {}
+  "dependencies": {},
+  "optionalDependencies": { "pg": "^8.12.0" }
 }

@@ -19,3 +19,6 @@ JOIN meter_reading m2 ON m2.session_id=m1.session_id AND m2.seq_no=m1.seq_no-1
 WHERE m1.meter_kwh < m2.meter_kwh - 0.001;
 -- 6. One review per session enforced by UNIQUE (expect 0 rows):
 SELECT session_id, COUNT(*) FROM review GROUP BY session_id HAVING COUNT(*) > 1;
+-- 7. PAID invoice has >=1 SUCCESS payment; no PAID invoice on FAILED-only history (expect 0 rows):
+SELECT i.invoice_id FROM invoice i WHERE i.status='PAID'
+ AND NOT EXISTS (SELECT 1 FROM payment p WHERE p.invoice_id=i.invoice_id AND p.status='SUCCESS');
