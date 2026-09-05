@@ -25,35 +25,63 @@ charge point over WS with Basic auth, drives both REST legs:
   `uq_band_slot_minute`; `migrate.sh` globs `V00*.sql` so no script change needed.
 - Invariant 11 gates the pair (NULL + dangling, both tables); local mirror in
   `test/sql/run-invariants.js` checks the JS store writes the pair natively.
-- Oracle execution: PENDING (no Oracle runtime in this environment; covered by
-  CI `db-tests` migrate step on every push).
+- Oracle execution: **CLOSED 2026-09-05** — CI `db-tests` now applies V001–V006
+  - seed to a fresh Oracle service and runs the DB-backed suites against it on
+    every push (see the receipts below).
 
-## P2V-01 — `tick_1m` correlated subquery on `station_map` (PENDING)
+## P2V-01 — `tick_1m` correlated subquery on `station_map` (CLOSED 2026-09-05)
 
-- Attempted 2026-09-05: `docker pull timescale/timescaledb:2.17.2-pg16` →
-  **blocked, daemon disk full** (`/var/lib` 100%; running research containers
-  untouched). No local Timescale available.
-- Coverage: CI `db-tests` applies `T001`+`T002` to a fresh Timescale service on
-  every push (DDL acceptance continuously proven) — config VERIFIED in
-  `.github/workflows/ci.yml`.
-- To close: `docker compose exec timescale psql -U volthub -d volthub -c
-"CALL refresh_continuous_aggregate('tick_1m', NULL, NULL);"`
-  Fallback (unchanged): move enrichment to `v_tick_enriched`, drop the subquery.
+- Local attempt was blocked by the full host disk; the blocker was instead
+  proven **for real on a fresh Timescale service in CI**: the correlated
+  subquery (and `MODE()`, see P2V-02) is rejected inside a continuous
+  aggregate, so `T002` never applied end-to-end.
+- Fix shipped: `T002__caggs.sql` rewritten join-free — `tick_1m`/`tick_1h` are
+  connector-scoped with station enrichment moved to query-time views
+  (`v_tick_1m_enriched`, `v_tick_1h_enriched`); `tick_1h` is hierarchical over
+  `tick_1m` (its `GROUP BY` must name the hour-bucket expression — plain
+  `bucket` collides with the minute column).
+- Verified: CI `db-tests` `Timescale cagg refresh smoke` step runs
+  `CALL refresh_continuous_aggregate` on `tick_1m`, `tick_1h`, `state_1m` and
+  reads the enriched views with `ON_ERROR_STOP=1` on every push. Green since
+  2026-09-05.
 
-## P2V-02 — `MODE() WITHIN GROUP` in `state_1m` (PENDING)
+## P2V-02 — `MODE() WITHIN GROUP` in `state_1m` (CLOSED 2026-09-05)
 
-- Same blocker and same CI coverage as P2V-01.
-- To close: same `CALL refresh_continuous_aggregate('state_1m', NULL, NULL);`
-  Fallback: `COUNT(*) FILTER` variants only.
+- Confirmed on the real service: ordered-set aggregates are rejected inside
+  continuous aggregates (timescale/timescaledb#2872).
+- Fix shipped: `state_1m` now carries per-state `COUNT(*) FILTER` columns and
+  `dominant_state` is derived at query time in `v_state_1m` (greatest-count
+  with fault/offline-first tie-break, NULL when no known state moved).
+  Consumers (`db/timescale/queries.sql` T2, Grafana `load.json`) read the
+  views / join `station_map` at query time — joins against caggs are fine.
+- Verified: same CI refresh-smoke step (green).
 
-## P2V-03 — V001–V006 entrypoint re-runs on fresh Oracle volume (PENDING)
+## P2V-03 — V001–V006 + seed on a fresh Oracle volume (CLOSED 2026-09-05)
 
-- `db-tests` uses `scripts/migrate.sh`, not the `docker-entrypoint-initdb.d`
-  path, so second-`up` tolerance is unobserved in CI either.
-- To close: `docker compose down -v && docker compose up` (first boot only),
-  watch Oracle logs for tolerated `-27477` on the scheduler job and V005/V006
-  re-run guards. V006's `NOT NULL` enforcement warns (never fails) on legacy
-  NULLs; invariant 11 reports any leftovers.
+- Proven on fresh Oracle services in CI and in the compose e2e stack. This
+  surfaced and fixed four latent defects that had silently broken every
+  migration run:
+  1. V002/V003 referenced the `cp_id`/`connector_no` FK pair before V005 added
+     it — V001 now owns the pair (V005's guarded ALTERs no-op on fresh DBs).
+  2. `audit_log.old_value/new_value` carried `CHECK (... IS JSON)` but
+     `audit_pkg.log` writes plain text / NULL — V001 no longer creates them;
+     V006 drops them on already-migrated DBs.
+  3. `maintenance_pkg.report_fault`/`resolve_maintenance` updated connector
+     status without the `pkg:` `CLIENT_IDENTIFIER` the V004 guard requires
+     (ORA-20801) — identifiers added.
+  4. The seed ran stations → fault → tariffs in one giant transaction while
+     `audit_pkg.log` is autonomous (ORA-00060 self-deadlock) — the seed now
+     COMMITs per story; the fault seed also used an illegal PL/SQL scalar
+     subquery as a procedure argument.
+  5. Least-privilege role: `CREATE ROLE` needs privileges the schema-owner
+     migrate account (gvenzl APP_USER) lacks — V004 now creates the role +
+     grants when privileged and otherwise prints one note (the connector-write
+     gate that actually protects the API is `trg_connector_guard`). Migrate
+     output is clean in the standard path.
+- `migrate.sh` now fails loudly when Oracle (sqlplus/docker-exec) or Timescale
+  (psql `ON_ERROR_STOP`) migrations error — no more green-then-red CI.
+- Verified: `db-tests` + `e2e` green (lint/quality/db-tests/e2e), compose stack
+  boots with seeded schema and healthy deep-health, 2026-09-05.
 
 ## Bench evidence (EXECUTED, local profile)
 

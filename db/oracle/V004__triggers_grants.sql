@@ -30,52 +30,65 @@ END;
 /
 
 -- ---- least-privilege role for the API --------------------------------------
--- Re-runnable: drop if exists pattern for fresh containers.
-BEGIN EXECUTE IMMEDIATE 'DROP ROLE volthub_app_role'; EXCEPTION WHEN OTHERS THEN
-  IF SQLCODE != -01919 THEN RAISE; END IF; END;
+-- Re-runnable. Requires CREATE ROLE privilege: migrate.sh runs as the schema owner
+-- (gvenzl APP_USER) which lacks it, so the role layer is skipped with one note — the
+-- app connects as the owner and connector writes are enforced by trg_connector_guard
+-- (the real gate). Run migrations as a privileged user to materialize the role fully.
+DECLARE
+  v_ok BOOLEAN := FALSE;
+  PROCEDURE attempt(p_sql IN VARCHAR2) IS BEGIN EXECUTE IMMEDIATE p_sql; END;
+BEGIN
+  BEGIN attempt('DROP ROLE volthub_app_role'); EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN attempt('CREATE ROLE volthub_app_role'); v_ok := TRUE; EXCEPTION WHEN OTHERS THEN v_ok := FALSE; END;
+  IF v_ok THEN
+    attempt('GRANT CONNECT TO volthub_app_role');
+    attempt('GRANT SELECT ON app_user TO volthub_app_role');
+    attempt('GRANT SELECT ON wallet_account TO volthub_app_role');
+    attempt('GRANT SELECT ON wallet_ledger TO volthub_app_role');
+    attempt('GRANT SELECT ON vehicle TO volthub_app_role');
+    attempt('GRANT SELECT ON vehicle_standard_support TO volthub_app_role');
+    attempt('GRANT SELECT ON station TO volthub_app_role');
+    attempt('GRANT SELECT ON station_amenity TO volthub_app_role');
+    attempt('GRANT SELECT ON charge_point TO volthub_app_role');
+    attempt('GRANT SELECT ON connector TO volthub_app_role');
+    attempt('GRANT SELECT ON tariff_plan TO volthub_app_role');
+    attempt('GRANT SELECT ON tariff_band TO volthub_app_role');
+    attempt('GRANT SELECT ON reservation TO volthub_app_role');
+    attempt('GRANT SELECT ON charging_session TO volthub_app_role');
+    attempt('GRANT SELECT ON meter_reading TO volthub_app_role');
+    attempt('GRANT SELECT ON invoice TO volthub_app_role');
+    attempt('GRANT SELECT ON invoice_line TO volthub_app_role');
+    attempt('GRANT SELECT ON payment TO volthub_app_role');
+    attempt('GRANT SELECT ON fault TO volthub_app_role');
+    attempt('GRANT SELECT ON maintenance_record TO volthub_app_role');
+    attempt('GRANT SELECT ON review TO volthub_app_role');
+    attempt('GRANT SELECT ON notification TO volthub_app_role');
+    -- API may insert/update business rows only through packages; direct DML limited:
+    attempt('GRANT INSERT, UPDATE ON reservation TO volthub_app_role');
+    attempt('GRANT INSERT, UPDATE ON charging_session TO volthub_app_role');
+    attempt('GRANT INSERT ON meter_reading TO volthub_app_role');
+    attempt('GRANT INSERT, UPDATE ON invoice TO volthub_app_role');
+    attempt('GRANT INSERT ON invoice_line TO volthub_app_role');
+    attempt('GRANT INSERT ON payment TO volthub_app_role');
+    attempt('GRANT INSERT, UPDATE ON vehicle TO volthub_app_role');
+    attempt('GRANT INSERT ON notification TO volthub_app_role');
+    attempt('GRANT INSERT ON fault TO volthub_app_role');
+    attempt('GRANT INSERT, UPDATE ON maintenance_record TO volthub_app_role');
+    -- No DELETE anywhere. No UPDATE/DELETE on ledger, audit, readings.
+    -- No direct UPDATE on connector.status / wallet_account.balance.
+    attempt('GRANT EXECUTE ON reservation_pkg TO volthub_app_role');
+    attempt('GRANT EXECUTE ON charge_session_pkg TO volthub_app_role');
+    attempt('GRANT EXECUTE ON billing_pkg TO volthub_app_role');
+    attempt('GRANT EXECUTE ON tariff_pkg TO volthub_app_role');
+    attempt('GRANT EXECUTE ON maintenance_pkg TO volthub_app_role');
+    attempt('GRANT SELECT ON v_connector_live TO volthub_app_role');
+    attempt('GRANT SELECT ON v_station_summary TO volthub_app_role');
+    attempt('GRANT SELECT ON mv_station_daily TO volthub_app_role');
+    DBMS_OUTPUT.PUT_LINE('V004: role volthub_app_role created + least-privilege grants applied');
+  ELSE
+    DBMS_OUTPUT.PUT_LINE('V004 note: CREATE ROLE not permitted for ' || USER ||
+      ' - role layer skipped (owner-account app; trg_connector_guard enforces connector writes)');
+  END IF;
+END;
 /
-CREATE ROLE volthub_app_role;
-GRANT CONNECT TO volthub_app_role;
-GRANT SELECT ON app_user TO volthub_app_role;
-GRANT SELECT ON wallet_account TO volthub_app_role;
-GRANT SELECT ON wallet_ledger TO volthub_app_role;
-GRANT SELECT ON vehicle TO volthub_app_role;
-GRANT SELECT ON vehicle_standard_support TO volthub_app_role;
-GRANT SELECT ON station TO volthub_app_role;
-GRANT SELECT ON station_amenity TO volthub_app_role;
-GRANT SELECT ON charge_point TO volthub_app_role;
-GRANT SELECT ON connector TO volthub_app_role;
-GRANT SELECT ON tariff_plan TO volthub_app_role;
-GRANT SELECT ON tariff_band TO volthub_app_role;
-GRANT SELECT ON reservation TO volthub_app_role;
-GRANT SELECT ON charging_session TO volthub_app_role;
-GRANT SELECT ON meter_reading TO volthub_app_role;
-GRANT SELECT ON invoice TO volthub_app_role;
-GRANT SELECT ON invoice_line TO volthub_app_role;
-GRANT SELECT ON payment TO volthub_app_role;
-GRANT SELECT ON fault TO volthub_app_role;
-GRANT SELECT ON maintenance_record TO volthub_app_role;
-GRANT SELECT ON review TO volthub_app_role;
-GRANT SELECT ON notification TO volthub_app_role;
--- API may insert/update business rows only through packages; direct DML limited:
-GRANT INSERT, UPDATE ON reservation TO volthub_app_role;
-GRANT INSERT, UPDATE ON charging_session TO volthub_app_role;
-GRANT INSERT ON meter_reading TO volthub_app_role;
-GRANT INSERT, UPDATE ON invoice TO volthub_app_role;
-GRANT INSERT ON invoice_line TO volthub_app_role;
-GRANT INSERT ON payment TO volthub_app_role;
-GRANT INSERT, UPDATE ON vehicle TO volthub_app_role;
-GRANT INSERT ON notification TO volthub_app_role;
-GRANT INSERT ON fault TO volthub_app_role;
-GRANT INSERT, UPDATE ON maintenance_record TO volthub_app_role;
--- No DELETE anywhere. No UPDATE/DELETE on ledger, audit, readings.
--- No direct UPDATE on connector.status / wallet_account.balance.
-GRANT EXECUTE ON reservation_pkg TO volthub_app_role;
-GRANT EXECUTE ON charge_session_pkg TO volthub_app_role;
-GRANT EXECUTE ON billing_pkg TO volthub_app_role;
-GRANT EXECUTE ON tariff_pkg TO volthub_app_role;
-GRANT EXECUTE ON maintenance_pkg TO volthub_app_role;
-GRANT SELECT ON v_connector_live TO volthub_app_role;
-GRANT SELECT ON v_station_summary TO volthub_app_role;
-GRANT SELECT ON mv_station_daily TO volthub_app_role;
 COMMIT;

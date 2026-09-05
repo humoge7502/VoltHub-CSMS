@@ -4,6 +4,36 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed (migrations were never run end-to-end — “CI partly theater” closed)
+
+- `db/oracle`: V001 now owns the `cp_id`/`connector_no` FK pair so V002/V003
+  compile on a fresh DB (V005's guarded ALTERs no-op for fresh runs, still
+  repair legacy DBs).
+- `db/oracle`: `audit_log.old_value/new_value` dropped their `CHECK (IS JSON)`
+  — `audit_pkg.log` writes plain text/NULL diffs, so the seed's tariff and
+  package audits raised ORA-02290; V006 drops the constraint on legacy DBs.
+- `db/oracle`: `maintenance_pkg` now sets the `pkg:` `CLIENT_IDENTIFIER` the
+  V004 connector guard allow-list requires (seed fault story raised ORA-20801).
+- `db/oracle/seed`: COMMIT per story (autonomous audits self-deadlocked a
+  single giant transaction with ORA-00060); fixed an illegal scalar subquery
+  in the fault story's procedure argument.
+- `db/oracle/V004`: least-privilege role bootstrap now guards for the missing
+  `CREATE ROLE` privilege on the schema-owner migrate account — one note
+  instead of 90 ORA lines when skipped; full grants when run privileged.
+- `db/timescale/T002`: continuous aggregates can only query one hypertable —
+  rewritten join-free (P2V-01) with `MODE()` replaced by per-state `FILTER`
+  counts + `v_state_1m` (P2V-02); enrichment moved to query-time views
+  `v_tick_1m_enriched`/`v_tick_1h_enriched`.
+- `scripts/migrate.sh`: Oracle migrations exec sqlplus inside the running
+  container (never a silent skip via `docker run`), and both Oracle and
+  Timescale paths now fail loudly when a migration errors.
+- CI: the local-store suites (contract/race/security/xlayer) blank
+  `ORACLE_HOST` so they can't nondeterministically attach the Oracle adapter
+  mid-run; `db-tests` adds a Timescale cagg-refresh smoke (closes P2V-01/02 on
+  every push); the e2e job provisions DBs via `scripts/migrate.sh` (initdb
+  mounts hid the Timescale image's setup scripts and ran `queries.sql`) and
+  waits for stable Oracle connects before migrating.
+
 ## [1.1.0] — 2026-09-05
 
 ### Added & fixed (Audit Round 3 — B3G register + verification kit)
