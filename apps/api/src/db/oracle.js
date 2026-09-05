@@ -14,7 +14,7 @@ function driver() {
     try {
       _oracledb = require('oracledb');
     } catch (e) {
-      throw new Error('oracledb not installed (npm i -w apps/api oracledb)');
+      throw new Error('oracledb not installed (npm i -w apps/api oracledb)', { cause: e });
     }
   }
   return _oracledb;

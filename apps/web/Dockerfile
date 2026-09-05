@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /srv/web
 COPY apps/web/package.json apps/web/package-lock.json* ./
 RUN npm install --no-audit --no-fund

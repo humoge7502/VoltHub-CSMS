@@ -22,7 +22,10 @@ async function main() {
         }
       }
     };
-    walk(app._router?.stack);
+    // Express 5 removed the private app._router; app.router is the supported getter.
+    // Fall back to _router only for pre-5 runtimes (this file predates the upgrade).
+    const stack = app.router?.stack || app._router?.stack;
+    walk(stack);
     // The hand-spec uses {id} params; normalize Express :id the same way for comparison.
     const norm = (p) => p.replace(/:(\w+)/g, '{$1}');
     const foundNorm = new Set([...found].map(norm));

@@ -1,8 +1,11 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import { api, Pill, Line, Toasts, toast, kwh, inr } from '../../../lib/ui';
 
-export default function LiveSession({ params }) {
+export default function LiveSession() {
+  // Next 16: dynamic-route params come from useParams(), not the page props.
+  const params = useParams();
   const [d, setD] = useState(null);
   const [msg, setMsg] = useState('');
   const id = params.id;

@@ -60,7 +60,7 @@ function checkBasic(req, identity, cp) {
   const h = String(req.headers?.authorization || '');
   const m = /^Basic (.+)$/.exec(h);
   if (!m) return false;
-  let decoded = '';
+  let decoded;
   try {
     decoded = Buffer.from(m[1], 'base64').toString('utf8');
   } catch {

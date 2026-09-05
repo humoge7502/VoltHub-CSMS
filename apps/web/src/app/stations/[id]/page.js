@@ -1,8 +1,11 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import { api, Pill, inr } from '../../../lib/ui';
 
-export default function Station({ params }) {
+export default function Station() {
+  // Next 16: dynamic-route params come from useParams(), not the page props.
+  const params = useParams();
   const [s, setS] = useState(null);
   const [sel, setSel] = useState(null);
   const [msg, setMsg] = useState('');

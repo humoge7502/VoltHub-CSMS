@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /srv/volthub
 COPY package.json package-lock.json* ./
 COPY apps/api/package.json apps/api/

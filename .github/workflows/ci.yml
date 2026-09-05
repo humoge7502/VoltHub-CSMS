@@ -1,22 +1,45 @@
 name: ci
 on: [push, pull_request]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
+  # Static gate on BOTH supported runtimes (engines >=20 stays honest).
   lint:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
       - run: npm install --no-audit --no-fund
       - run: npx eslint . --max-warnings 0
       - run: npx prettier --check .
-  quality:
+  # Dependency audit gate: 0 findings on BOTH lockfiles or the pipeline stops.
+  security:
     needs: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm }
+      - run: npm install --no-audit --no-fund
+      - name: Audit gate (workspace lockfile)
+        run: npm audit
+      - name: Audit gate (web lockfile)
+        working-directory: apps/web
+        run: npm audit
+  quality:
+    needs: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm }
       - run: npm install --no-audit --no-fund
       - run: node --check apps/api/src/server.js && node --check apps/api/src/routes.js && node --check apps/api/src/extended.js && node --check apps/api/src/errors.js && node --check apps/api/src/db/oracle.js && node --check apps/api/src/db/index.js && node --check apps/api/src/observability.js && node --check apps/worker/src/index.js && node --check apps/worker/src/relay-timescale.js && node --check apps/api/src/ocpp/gateway.js
       - run: npm run test -w apps/api
@@ -63,9 +86,9 @@ jobs:
       TS_USER: volthub
       TS_PASSWORD: volthub_dev_pwd
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm }
       - run: npm install --no-audit --no-fund
       - run: npm install --no-audit --no-fund oracledb pg
         working-directory: apps/api
@@ -107,9 +130,9 @@ jobs:
     needs: db-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm }
       - run: npm install --no-audit --no-fund
       # DBs first (bare containers, like db-tests), then the canonical migrate.sh
       # provisioning path (DEPLOY.md §3). The former timescale initdb mount hid the
