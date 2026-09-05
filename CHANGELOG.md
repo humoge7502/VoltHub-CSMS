@@ -12,6 +12,9 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   `v_tick_1h_enriched` and the Grafana per-station dashboard have data in prod.
   Relay unit tests (`apps/worker/test/relay.test.js`) wired into `npm test` and
   CI; e2e verifies `station_map` is populated by the live worker.
+- The API Dockerfile never copied `apps/worker` (compose runs the worker from the
+  same image), so the worker silently exited in the compose stack — B2G-001's
+  relay was never live in e2e. The image now ships `apps/worker`.
 - CI actions bumped to `checkout`/`setup-node` v5 (drops Node 20 deprecation
   warnings on the runner).
 
