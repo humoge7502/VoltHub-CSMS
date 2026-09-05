@@ -17,6 +17,6 @@
     "ws": "^8.18.0"
   },
   "optionalDependencies": {
-    "oracledb": "^6.5.0"
+    "oracledb": "^7.0.1"
   }
 }
