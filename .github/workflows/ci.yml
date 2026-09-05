@@ -165,6 +165,8 @@ jobs:
             }
             echo "wait station_map $i"; sleep 5
           done
+          echo '--- worker logs ---'
+          docker compose -f infra/docker-compose.yml logs --no-color worker 2>&1 | tail -60 || true
           echo 'station_map never populated'; exit 1
       - run: npm run test:e2e
       - run: docker compose -f infra/docker-compose.yml down
