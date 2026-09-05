@@ -4,8 +4,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
       - run: npx eslint . --max-warnings 0
@@ -14,13 +14,14 @@ jobs:
     needs: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
       - run: node --check apps/api/src/server.js && node --check apps/api/src/routes.js && node --check apps/api/src/extended.js && node --check apps/api/src/errors.js && node --check apps/api/src/db/oracle.js && node --check apps/api/src/db/index.js && node --check apps/api/src/observability.js && node --check apps/worker/src/index.js && node --check apps/worker/src/relay-timescale.js && node --check apps/api/src/ocpp/gateway.js
       - run: npm run test -w apps/api
       - run: npm run test:race -w apps/api
+      - run: node apps/worker/test/relay.test.js
       - run: node apps/api/test/security.js
       - run: node apps/api/test/xlayer.js
       - run: node apps/api/test/ocpp-remote.js
@@ -61,8 +62,8 @@ jobs:
       TS_USER: volthub
       TS_PASSWORD: volthub_dev_pwd
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
       - run: npm install --no-audit --no-fund oracledb pg
@@ -105,8 +106,8 @@ jobs:
     needs: db-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
       # DBs first (bare containers, like db-tests), then the canonical migrate.sh
@@ -153,5 +154,17 @@ jobs:
             echo "wait api $i"; sleep 5
           done
           echo 'API never became healthy'; exit 1
+      - name: Verify worker populated Timescale station_map (enrichment)
+        run: |
+          for i in $(seq 1 24); do
+            n=$(PGPASSWORD=volthub_dev_pwd psql -h localhost -U volthub -d volthub -tAc "SELECT count(*) FROM station_map" 2>/dev/null || echo 0)
+            [ "$n" -ge 1 ] && {
+              echo "station_map rows: $n";
+              PGPASSWORD=volthub_dev_pwd psql -h localhost -U volthub -d volthub -c "SELECT connector_ref, station_id, station_name, standard_code FROM station_map ORDER BY connector_ref LIMIT 4"
+              exit 0
+            }
+            echo "wait station_map $i"; sleep 5
+          done
+          echo 'station_map never populated'; exit 1
       - run: npm run test:e2e
       - run: docker compose -f infra/docker-compose.yml down

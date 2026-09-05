@@ -33,7 +33,13 @@ function loadSeen() {
 async function relayOnce() {
   // Prod path (TS_HOST set): batched COPY into hypertables; ack only after COMMIT.
   if (process.env.TS_HOST) {
-    const { relayToTimescale } = require('./relay-timescale');
+    const { relayToTimescale, syncStationMap } = require('./relay-timescale');
+    // Masterplan §26.5: keep Timescale station_map in step with Oracle-owned station
+    // metadata (cheap full upsert; powers v_tick_*_enriched + Grafana). Failures log
+    // and back off with the loop — they must not stall event relay.
+    await syncStationMap(API, TOKEN).catch((e) => {
+      console.error('[worker] station-map sync:', e.message);
+    });
     return relayToTimescale(API, TOKEN);
   }
   const r = await fetch(`${API}/internal/outbox`, { headers: { 'x-internal': TOKEN } });

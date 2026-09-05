@@ -4,6 +4,17 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Worker now syncs Timescale `station_map` from `GET /internal/station-map` on
+  every loop (masterplan §26.5, previously unimplemented): Oracle-owned station
+  metadata denormalized for query-time cagg enrichment, so `v_tick_1m_enriched` /
+  `v_tick_1h_enriched` and the Grafana per-station dashboard have data in prod.
+  Relay unit tests (`apps/worker/test/relay.test.js`) wired into `npm test` and
+  CI; e2e verifies `station_map` is populated by the live worker.
+- CI actions bumped to `checkout`/`setup-node` v5 (drops Node 20 deprecation
+  warnings on the runner).
+
 ### Fixed (migrations were never run end-to-end — “CI partly theater” closed)
 
 - `db/oracle`: V001 now owns the `cp_id`/`connector_no` FK pair so V002/V003

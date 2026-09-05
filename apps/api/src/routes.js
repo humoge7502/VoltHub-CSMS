@@ -862,6 +862,29 @@ module.exports = function routes(store) {
       res.json({ events: store.outbox.filter((e) => !e.processed_at).slice(0, 500) });
     })
   );
+  // Masterplan §26.5: Oracle-owned station metadata denormalized into Timescale
+  // station_map by the worker relay (caggs may not join it inside their definitions,
+  // so enrichment happens at query time — v_tick_*_enriched, Grafana per-station).
+  r.get(
+    '/internal/station-map',
+    requireInternal,
+    safe(async (req, res) => {
+      const rows = [];
+      for (const [connector_ref, c] of store.connectors) {
+        const cp = store.cps.get(c.cp_id);
+        const st = cp ? store.stations.get(cp.station_id) : null;
+        if (!cp || !st) continue;
+        rows.push({
+          connector_ref,
+          station_id: st.station_id,
+          station_name: st.name,
+          standard_code: store.standards.find((t) => t.standard_id === c.standard_id)?.code || null,
+          max_power_kw: Number(c.max_power_kw),
+        });
+      }
+      res.json({ rows });
+    })
+  );
   r.post(
     '/internal/outbox/ack',
     requireInternal,

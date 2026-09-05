@@ -5,6 +5,7 @@
 'use strict';
 
 let _pg = null;
+let _poolFactory = null; // test seam: _setPoolFactory(fn) replaces the real pg Pool.
 function pg() {
   if (!_pg) {
     try {
@@ -25,6 +26,12 @@ function pool() {
     password: process.env.TS_PASSWORD || process.env.TS_PASS || 'volthub_dev_pwd',
     max: 4,
   });
+}
+function makePool() {
+  return _poolFactory ? _poolFactory() : pool();
+}
+function _setPoolFactory(fn) {
+  _poolFactory = fn;
 }
 
 // Split outbox events into INSERT-ready rows. PK alignment: meter_tick(session_id, seq_no, ts),
@@ -88,6 +95,46 @@ async function insertBatch(client, table, cols, rows, conflict) {
   return n;
 }
 
+// Masterplan §26.5: station_map is Oracle-owned metadata that continuous aggregates
+// may not join inside their definitions (P2V-01), so the relay keeps a denormalized
+// copy in Timescale for query-time enrichment (v_tick_*_enriched, Grafana). The API
+// serves the authoritative rows at GET /internal/station-map from its hydrated store.
+async function syncStationMap(apiBase, internalToken, fetchImpl) {
+  const fetchFn = fetchImpl || fetch;
+  const r = await fetchFn(`${apiBase}/internal/station-map`, { headers: { 'x-internal': internalToken } });
+  if (!r.ok) throw new Error(`station-map poll ${r.status}`);
+  const { rows } = await r.json();
+  if (!rows || !rows.length) return { synced: 0 };
+  const p = makePool();
+  const client = await p.connect();
+  try {
+    await client.query('BEGIN');
+    const n = await insertBatch(
+      client,
+      'station_map (connector_ref, station_id, station_name, standard_code, max_power_kw)',
+      ['connector_ref', 'station_id', 'station_name', 'standard_code', 'max_power_kw'],
+      rows.map((x) => [
+        String(x.connector_ref),
+        Number(x.station_id),
+        String(x.station_name || ''),
+        String(x.standard_code || ''),
+        Number(x.max_power_kw),
+      ]),
+      'ON CONFLICT (connector_ref) DO UPDATE SET station_id = EXCLUDED.station_id, station_name = EXCLUDED.station_name, standard_code = EXCLUDED.standard_code, max_power_kw = EXCLUDED.max_power_kw'
+    );
+    await client.query('COMMIT');
+    return { synced: n };
+  } catch (e) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw e;
+  } finally {
+    client.release();
+    await p.end().catch(() => {});
+  }
+}
+
 async function relayToTimescale(apiBase, internalToken, fetchImpl) {
   const fetchFn = fetchImpl || fetch;
   const r = await fetchFn(`${apiBase}/internal/outbox`, { headers: { 'x-internal': internalToken } });
@@ -95,7 +142,7 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
   const { events } = await r.json();
   if (!events.length) return { relayed: 0, ticks: 0, states: 0 };
   const { ticks, states } = toRows(events);
-  const p = pool();
+  const p = makePool();
   const client = await p.connect();
   try {
     await client.query('BEGIN');
@@ -132,4 +179,4 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
   }
 }
 
-module.exports = { relayToTimescale, toRows, insertBatch, copyBatch: insertBatch };
+module.exports = { relayToTimescale, syncStationMap, toRows, insertBatch, copyBatch: insertBatch, _setPoolFactory };
