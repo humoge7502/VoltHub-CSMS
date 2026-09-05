@@ -37,6 +37,7 @@ const P = (summary, extra = {}) => ({
   responses: { 200: { description: 'ok' }, '4xx': { description: 'client error' } },
 });
 Object.assign(spec.paths, {
+  '/': { get: P('Service index: name + pointers to /api/v1/health and this document', { security: [] }) },
   '/health': { get: P('Liveness + mode/outbox lag (see /health/deep for engine probes)', { security: [] }) },
   '/health/deep': { get: P('Deep probes: SELECT 1 FROM DUAL + pool + Timescale reachability', { security: [] }) },
   '/metrics': { get: P('Prometheus text: req rate, p95 ring, outbox depth, pool, OCPP, sessions', { security: [] }) },
@@ -70,7 +71,8 @@ Object.assign(spec.paths, {
   '/sessions/active/{ref}': { get: P('Active session on connector (auth required)') },
   '/sessions/{id}/live': { get: P('Live kWh/kW/elapsed/est-cost + 60-pt trace, 5s poll (auth: owner or staff)') },
   '/sessions/{id}/state': { patch: P('Operator transition: SUSPENDED↔CHARGING (matrix-enforced)') },
-  '/sessions/{id}/remote-stop': { post: P('Remote stop → COMPLETED') },
+  '/sessions/{id}/remote-stop': { post: P('Remote stop → COMPLETED + RemoteStopTransaction to CP') },
+  '/sessions/remote-start': { post: P('Operator RemoteStartTransaction to CP (allow-list idTag)') },
   '/sessions/{id}/bill': { post: P('Bill exactly once → DUE invoice (409 if already billed)') },
   '/sessions/{id}/review': { post: P('One 1–5 review per session') },
   '/invoices': { get: P('Due worklist + history') },

@@ -5,10 +5,22 @@
 ![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg) ![node](https://img.shields.io/badge/node-20-339933) ![license](https://img.shields.io/badge/license-MIT-blue) `oracle-23ai` `timescaledb` `modular-monolith` `ocpp-1.6j` `nextjs`
 
 <p align="center">
-  <em>Screenshot strip placeholder — replace with docs/screenshots/*.png (dashboard · live session · telemetry load curve · invoice)</em>
+  <img src="docs/screenshots/dashboard.png" alt="Operations dashboard" width="46%">
+  <img src="docs/screenshots/live-session.png" alt="Live charge session" width="46%">
+  <br>
+  <img src="docs/screenshots/telemetry.png" alt="Telemetry load curve" width="46%">
+  <img src="docs/screenshots/invoice.png" alt="Itemized invoice" width="46%">
+  <br>
+  <em>Real pixels from the running stack (API :4000 + OCPP 1.6J WebSocket session + web console).</em>
 </p>
 
-> **30-second demo:** two terminals reserve the same connector → one `201 BOOKED`, one `409 OVERLAP` → plug-in → live kWh/kW/cost → itemized invoice → wallet pay. (Record with `scripts/demo.sh` — GIF lands here.)
+<p align="center">
+  <img src="docs/screenshots/demo-live.gif" alt="Live OCPP session: real MeterValues drive kWh/kW/cost in the UI" width="60%">
+  <br>
+  <em>Live session — real OCPP MeterValues tick the UI (re-record anytime: `scripts/screenshots/` — see its README).</em>
+</p>
+
+> **30-second demo:** two terminals reserve the same connector → one `201 BOOKED`, one `409 OVERLAP` → plug-in → live kWh/kW/cost → itemized invoice → wallet pay. (Record the terminal race with `scripts/demo.sh`.)
 
 ## Why two databases (4 lines)
 
