@@ -4,7 +4,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
@@ -14,7 +14,7 @@ jobs:
     needs: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
@@ -62,7 +62,7 @@ jobs:
       TS_USER: volthub
       TS_PASSWORD: volthub_dev_pwd
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
@@ -106,7 +106,7 @@ jobs:
     needs: db-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
