@@ -4,8 +4,30 @@
 'use strict';
 const express = require('express');
 const crypto = require('crypto');
+
+// SEC-012: minimal RFC 6265 cookie reader (parse-only; no cookie-parser dep —
+// hand-rolled middlewares are a named trade-off in the README's stack table).
+function readCookie(header, name) {
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=');
+    if (i === -1) continue;
+    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return null;
+}
 const { vRegister, vReservation, vVehicle } = require('@volthub/shared');
-const { signAccess, issueRefresh, authRequired, roles, scopeCheck, requireOwned } = require('./middleware/auth');
+const {
+  signAccess,
+  issueRefresh,
+  authRequired,
+  roles,
+  scopeCheck,
+  requireOwned,
+  setRefreshCookie,
+  clearRefreshCookie,
+  REFRESH_COOKIE,
+} = require('./middleware/auth');
 const { checkLoginThrottle } = require('./middleware/security');
 const { oraStatus } = require('./errors');
 
@@ -26,10 +48,12 @@ module.exports = function routes(store) {
       });
       store.topup(u.user_id, 500); // welcome credit (capped demo economy; see topup caps)
       store.auditLog(u.user_id, 'APP_USER', u.user_id, 'REGISTER', null, { email: u.email });
+      const rt = issueRefresh(store, u, req.body.device);
+      setRefreshCookie(res, rt); // SEC-012: register grants the same cookie as login
       res.status(201).json({
         user: pub(u),
         accessToken: signAccess(u, store),
-        refreshToken: issueRefresh(store, u, req.body.device),
+        refreshToken: rt,
       });
     })
   );
@@ -50,10 +74,14 @@ module.exports = function routes(store) {
       if (u.status !== 'ACTIVE')
         return res.status(403).json({ error: { code: 'SUSPENDED', message: 'account suspended' } });
       store.auditLog(u.user_id, 'APP_USER', u.user_id, 'LOGIN_SUCCESS', null, { at: new Date().toISOString() });
+      const rt = issueRefresh(store, u, req.body.device);
+      // SEC-012: browser clients get the refresh token as an httpOnly cookie;
+      // the JSON body field stays for non-browser clients (CLI, tests, SDKs).
+      setRefreshCookie(res, rt);
       res.json({
         user: pub(u),
         accessToken: signAccess(u, store),
-        refreshToken: issueRefresh(store, u, req.body.device),
+        refreshToken: rt,
       });
     })
   );
@@ -61,7 +89,10 @@ module.exports = function routes(store) {
     '/auth/refresh',
     safe(async (req, res) => {
       const { consumeRefresh } = require('./middleware/auth');
-      const c = consumeRefresh(store, req.body.refreshToken);
+      // SEC-012: accept the httpOnly cookie first, body field as fallback for
+      // non-browser clients (CLI/tests). Same token, same rotation semantics.
+      const raw = readCookie(req.headers.cookie, REFRESH_COOKIE) || req.body.refreshToken;
+      const c = consumeRefresh(store, raw);
       if (!c.ok) {
         if (c.familyRevoked)
           store.auditLog(null, 'APP_USER', 0, 'REFRESH_REUSE', null, { at: new Date().toISOString() });
@@ -76,10 +107,32 @@ module.exports = function routes(store) {
       const t = c.token;
       t.revoked_at = new Date().toISOString(); // rotation
       const u = store.users.get(t.user_id);
+      const rt = issueRefresh(store, u, t.device_label, t.family_id);
+      setRefreshCookie(res, rt);
       res.json({
         accessToken: signAccess(u, store),
-        refreshToken: issueRefresh(store, u, t.device_label, t.family_id),
+        refreshToken: rt,
       });
+    })
+  );
+  r.post(
+    '/auth/logout',
+    safe(async (req, res) => {
+      // SEC-012: server-side revocation + cookie clear. Family-wide: a stolen
+      // sibling cannot outlive an explicit logout on any device.
+      const { consumeRefresh } = require('./middleware/auth');
+      const raw = readCookie(req.headers.cookie, REFRESH_COOKIE) || req.body.refreshToken;
+      if (raw) {
+        const c = consumeRefresh(store, raw);
+        if (c.ok) {
+          const t = c.token;
+          for (const sib of store.refresh.values())
+            if (sib.family_id === t.family_id) sib.revoked_at = sib.revoked_at || new Date().toISOString();
+          store.auditLog(t.user_id, 'APP_USER', t.user_id, 'LOGOUT', null, { at: new Date().toISOString() });
+        }
+      }
+      clearRefreshCookie(res);
+      res.json({ ok: true });
     })
   );
   r.get(

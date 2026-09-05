@@ -2,6 +2,7 @@
 // TEST-SEC-AUTHZ5: 5 formerly-public endpoints now 401 without token.
 // TEST-OCPP-AUTH: Authorize("X") => Invalid; TAG-<seeded> => Accepted.
 // TEST-REFRESH-FAMILY: reuse of revoked refresh burns the family.
+// TEST-SEC-COOKIE: httpOnly refresh cookie set/rotate/revoke + graceful logout (SEC-012).
 // Run: node apps/api/test/security.js (RATE_LIMIT_OFF=1).
 'use strict';
 process.env.RATE_LIMIT_OFF = '1';
@@ -18,6 +19,7 @@ async function main() {
     return { status: r.status, j: await r.json().catch(() => ({})) };
   };
   let pass = 0;
+  let rtCookie = null;
   const t = async (name, fn) => {
     await fn();
     pass++;
@@ -248,6 +250,67 @@ async function main() {
       Math.abs(med(known) - med(unknown)) < 120,
       `timing gap too wide: known=${med(known)}ms unknown=${med(unknown)}ms`
     );
+  });
+
+  await t('TEST-SEC-COOKIE-1: login sets an httpOnly, SameSite=Lax, auth-path-scoped refresh cookie', async () => {
+    const r = await fetch(B + '/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password: 'Driver@123' }),
+    });
+    assert.equal(r.status, 200);
+    const sc = (r.headers.getSetCookie ? r.headers.getSetCookie() : [r.headers.get('set-cookie')]).find((c) =>
+      c.startsWith('vh_rt=')
+    );
+    assert.ok(sc, 'vh_rt cookie missing on login');
+    assert.ok(/httponly/i.test(sc), 'cookie must be HttpOnly');
+    assert.ok(/samesite=lax/i.test(sc), 'cookie must be SameSite=Lax');
+    assert.ok(/path=\/api\/v1\/auth/i.test(sc), 'cookie must be scoped to the auth paths');
+    rtCookie = sc.split(';')[0]; // "vh_rt=<raw>" for the next tests
+  });
+
+  await t('TEST-SEC-COOKIE-2: /auth/refresh accepts the cookie alone (no body token) and rotates', async () => {
+    const r = await fetch(B + '/auth/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: rtCookie },
+      body: '{}',
+    });
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.ok(j.accessToken, 'rotated refresh must return a fresh access token');
+    const sc = (r.headers.getSetCookie ? r.headers.getSetCookie() : [r.headers.get('set-cookie')]).find((c) =>
+      c.startsWith('vh_rt=')
+    );
+    assert.ok(sc, 'rotation must re-set the cookie');
+    rtCookie = sc.split(';')[0];
+  });
+
+  await t('TEST-SEC-COOKIE-3: logout revokes the family server-side; the old cookie is dead after', async () => {
+    const lo = await fetch(B + '/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: rtCookie },
+      body: '{}',
+    });
+    assert.equal(lo.status, 200);
+    const again = await fetch(B + '/auth/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: rtCookie },
+      body: '{}',
+    });
+    assert.equal(again.status, 401, 'revoked family must not refresh');
+  });
+
+  await t('TEST-SEC-COOKIE-4: logout without a cookie/body is graceful (200, clears cookie)', async () => {
+    const lo = await fetch(B + '/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(lo.status, 200);
+    const sc = (lo.headers.getSetCookie ? lo.headers.getSetCookie() : [lo.headers.get('set-cookie')]).find((c) =>
+      c.startsWith('vh_rt=')
+    );
+    assert.ok(sc && /max-age=0/i.test(sc), 'logout must clear the cookie (max-age=0)');
   });
 
   console.log(`\nSecurity tests: ${pass} passed`);

@@ -1,12 +1,20 @@
 'use client';
 import { useState, useEffect } from 'react';
-// Minimal API client: token in localStorage, shared INR/kWh formatters.
-// B2G-010 note: short-lived access token in localStorage (XSS-stealable); httpOnly
-// refresh cookie is the tracked P2 upgrade (see SECURITY.md).
+// Minimal API client: 15-min access token in localStorage; the 30-day refresh
+// rides an httpOnly cookie (SEC-012) — XSS can only steal a 15-min window, and
+// POST /auth/logout revokes the whole refresh family server-side.
 export const API = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000/api/v1';
 export const getToken = () => (typeof window === 'undefined' ? null : localStorage.getItem('vh_token'));
 export const setToken = (t) => localStorage.setItem('vh_token', t);
-export const logout = () => localStorage.removeItem('vh_token');
+export async function logout() {
+  // Best-effort server revocation (family-wide) + local token drop.
+  try {
+    await fetch(`${API}/auth/logout`, { method: 'POST', credentials: 'include' });
+  } catch {
+    /* offline: local drop still applies */
+  }
+  localStorage.removeItem('vh_token');
+}
 
 export async function api(path, opts = {}) {
   const { headers, ...rest } = opts;

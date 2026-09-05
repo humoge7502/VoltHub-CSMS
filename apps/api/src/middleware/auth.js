@@ -1,10 +1,14 @@
 // Auth: scrypt (local) / Argon2id-note (prod docs) + 15-min JWT + rotating refresh with family revocation.
+// SEC-012 (P2 closed): the refresh token rides an httpOnly cookie scoped to the auth paths;
+// the JSON body field remains for non-browser clients (documented, both are accepted).
 'use strict';
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { verifyPassword } = require('../db/store');
 
 const JWT_TTL = '15m';
+const REFRESH_TTL_DAYS = 30;
+const REFRESH_COOKIE = 'vh_rt';
 const DEV_SECRET = 'dev-only-32-byte-secret-0123456789';
 // SEC-002: fail-fast when a production deploy boots with a missing/known-default secret.
 // Demo compose (ORACLE_HOST set, NODE_ENV unset) boots with a loud warning instead —
@@ -83,6 +87,28 @@ function consumeRefresh(store, raw) {
   }
   if (new Date(t.expires_at) < new Date()) return { ok: false, reason: 'expired' };
   return { ok: true, token: t };
+}
+// SEC-012: refresh-token cookie helpers — httpOnly keeps the token out of any
+// script-reachable store; Path scope keeps it off every other request; Secure in
+// production; SameSite=Lax tops up the CSRF story (rotation + family revocation
+// already bound replay).
+function setRefreshCookie(res, raw) {
+  res.cookie(REFRESH_COOKIE, raw, {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/api/v1/auth',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: REFRESH_TTL_DAYS * 86400000,
+  });
+}
+function clearRefreshCookie(res) {
+  res.cookie(REFRESH_COOKIE, '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/api/v1/auth',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 0,
+  });
 }
 function authRequired(req, res, next) {
   const h = req.headers.authorization || '';
@@ -165,4 +191,8 @@ module.exports = {
   verifyPassword,
   secret,
   stationScopeFor,
+  setRefreshCookie,
+  clearRefreshCookie,
+  REFRESH_COOKIE,
+  REFRESH_TTL_DAYS,
 };

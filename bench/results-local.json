@@ -6,7 +6,7 @@
     "mem_gb": 1771.7,
     "platform": "linux 6.17.0-1010-azure",
     "profile": "local (in-process store, no Docker)",
-    "at": "2026-09-05T06:50:03.655Z"
+    "at": "2026-09-05T17:52:48.370Z"
   },
   "exp1": {
     "n": 200,
@@ -18,18 +18,18 @@
   },
   "exp2": {
     "n": 20,
-    "p50": 34,
-    "p95": 47,
-    "p99": 47,
+    "p50": 36,
+    "p95": 54,
+    "p99": 54,
     "winners": 1,
     "conflicts": 19,
-    "wall_ms": 53,
+    "wall_ms": 59,
     "note": "20 parallel same-window reserves on 1 hot connector (expect exactly 1x201)"
   },
   "exp3": {
     "ticks": 2000,
-    "wall_ms": 87,
-    "ticks_per_s": 22989,
+    "wall_ms": 104,
+    "ticks_per_s": 19231,
     "outbox_lag_after": 2002,
     "note": "2000 sequential recordTick on one session (local profile; relay drains via worker JSONL mirror)"
   },
@@ -43,16 +43,16 @@
     },
     "vu50": {
       "n": 50,
-      "p50": 52,
-      "p95": 94,
-      "p99": 95,
+      "p50": 53,
+      "p95": 93,
+      "p99": 94,
       "errors": 0
     },
     "vu100": {
       "n": 100,
-      "p50": 56,
-      "p95": 96,
-      "p99": 99,
+      "p50": 60,
+      "p95": 97,
+      "p99": 100,
       "errors": 0
     },
     "note": "single concurrent batch per level (local profile, poolMax n/a)"

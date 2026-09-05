@@ -35,13 +35,14 @@ Hardware: AMD EPYC 7V12 (96 vCPU), 1771.7 GB RAM, Linux 6.17 Azure, Node v20.20.
 Profile: in-process store, no Docker. Raw results: `bench/results-local.json`.
 Scope honesty: these numbers characterize the **local test-double path only** —
 DB-backed claims still require the full compose profile (experiments 3–5 below).
+Latest run is post-SEC-012 (httpOnly refresh cookie) — auth-path overhead unchanged.
 
-| Exp | Workload                                          | p50                                              | p95                                              | p99                                              | Extra                                                            |
-| --- | ------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------ | ------------------------------------------------ | ---------------------------------------------------------------- |
-| 1   | 200× sequential `GET /stations`                   | 1 ms                                             | 2 ms                                             | 3 ms                                             | 0 errors                                                         |
-| 2   | 20 parallel same-window reserves, 1 hot connector | 34 ms                                            | 47 ms                                            | 47 ms                                            | **exactly 1×201 + 19×409** (lock scope proven)                   |
-| 3   | 2000 sequential `recordTick` on one session       | —                                                | —                                                | —                                                | 22,989 ticks/s, 87 ms wall; outbox lag 2002 (relay drains async) |
-| 5   | concurrent `GET /stations` step-load              | 10 VU: 8 ms / 50 VU: 52 ms / 100 VU: 56 ms (p50) | 10 VU: 9 ms / 50 VU: 94 ms / 100 VU: 96 ms (p95) | 10 VU: 9 ms / 50 VU: 95 ms / 100 VU: 99 ms (p99) | 0 errors at all levels                                           |
+| Exp | Workload                                          | p50                                              | p95                                              | p99                                               | Extra                                                             |
+| --- | ------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------ | ------------------------------------------------- | ----------------------------------------------------------------- |
+| 1   | 200× sequential `GET /stations`                   | 1 ms                                             | 2 ms                                             | 3 ms                                              | 0 errors                                                          |
+| 2   | 20 parallel same-window reserves, 1 hot connector | 36 ms                                            | 54 ms                                            | 54 ms                                             | **exactly 1×201 + 19×409** (lock scope proven)                    |
+| 3   | 2000 sequential `recordTick` on one session       | —                                                | —                                                | —                                                 | 19,231 ticks/s, 104 ms wall; outbox lag 2002 (relay drains async) |
+| 5   | concurrent `GET /stations` step-load              | 10 VU: 8 ms / 50 VU: 53 ms / 100 VU: 60 ms (p50) | 10 VU: 9 ms / 50 VU: 93 ms / 100 VU: 97 ms (p95) | 10 VU: 9 ms / 50 VU: 94 ms / 100 VU: 100 ms (p99) | 0 errors at all levels                                            |
 
 ## Still pending (full profile)
 

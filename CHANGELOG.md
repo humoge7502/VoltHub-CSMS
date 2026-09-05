@@ -2,6 +2,22 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
+## [1.4.0] — 2026-09-05
+
+### Added
+
+- **httpOnly refresh cookie + logout (SEC-012, closes the tracked P2)**: login/register/
+  refresh set `vh_rt` as an **httpOnly, SameSite=Lax cookie scoped to `/api/v1/auth`**
+  (`Secure` in production); `POST /auth/logout` revokes the refresh **family** server-side
+  and clears the cookie (audited as `LOGOUT`). The JSON body field remains for non-browser
+  clients. CORS upgraded to explicit-origin allow-list + `credentials: true`. Web logout now
+  calls the API (best-effort) before dropping the local token. Regression-gated by
+  `TEST-SEC-COOKIE-1..4` (13 security tests total, all green).
+- **Flagship cross-link**: README footer now points to [Q-Trust](https://github.com/humoge7502/q-trust)
+  — the two projects share one receipts-first discipline.
+- Benchmarks re-run post-SEC-012 (same hardware): race invariant intact (exactly 1×201 +
+  19×409), auth-path overhead unchanged. Raw: `bench/results-local.json`; tables in `docs/perf.md`.
+
 ## [1.3.1] — 2026-09-05
 
 ### Added

@@ -43,8 +43,11 @@ Object.assign(spec.paths, {
   '/metrics': { get: P('Prometheus text: req rate, p95 ring, outbox depth, pool, OCPP, sessions', { security: [] }) },
   '/docs': { get: P('This OpenAPI document', { security: [] }) },
   '/auth/register': { post: P('Driver register (welcome ₹500 credit)', { security: [] }) },
-  '/auth/login': { post: P('Login → 15-min JWT + rotating refresh', { security: [] }) },
-  '/auth/refresh': { post: P('Rotate refresh token (family revocation on reuse)') },
+  '/auth/login': {
+    post: P('Login → 15-min JWT + rotating refresh (httpOnly cookie `vh_rt` + body field)', { security: [] }),
+  },
+  '/auth/refresh': { post: P('Rotate refresh (httpOnly cookie or body; family revocation on reuse)') },
+  '/auth/logout': { post: P('Revoke the refresh family + clear the cookie (cookie or body)') },
   '/me': { get: P('Profile + wallet') },
   '/me/wallet/topup': { post: P('Prepaid top-up (append-only ledger)') },
   '/me/vehicles': { get: P('My EVs'), post: P('Register EV (battery 5..250 kWh)') },

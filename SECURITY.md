@@ -12,6 +12,13 @@
   policy at both the API and Next layers (`server.js:securityHeaders`, `apps/web/next.config.js`).
 - JWT: 15-min access + rotating SHA-256 refresh with **family revocation on reuse**
   (`apps/api/src/middleware/auth.js:consumeRefresh`). Reusing a revoked token burns its family.
+- Refresh cookie (SEC-012, formerly tracked as P2): the 30-day refresh token rides an
+  **httpOnly, SameSite=Lax cookie scoped to `/api/v1/auth`** (`Secure` in production) — XSS
+  cannot read it and it never rides non-auth requests. `POST /auth/logout` revokes the whole
+  family server-side and clears the cookie; the JSON body field remains for non-browser
+  clients (CLI/tests). Regression-gated by `TEST-SEC-COOKIE-1..4` in `apps/api/test/security.js`.
+  The browser still holds only the 15-min access token in `localStorage` — the blast radius of
+  an XSS token theft is one access-token window, not a 30-day refresh session.
 - Boot discipline: production (`NODE_ENV=production`) refuses
   to start with a missing/default `JWT_SECRET` or `INTERNAL_TOKEN` (fail-fast, `auth.js:secret`,
   `routes.js:internalOk`). Demo compose (ORACLE_HOST set, NODE_ENV unset) boots with a loud
@@ -28,10 +35,10 @@
   Proxy awareness (BUG-023): `req.ip` trusts proxy headers only when `TRUST_PROXY` is set
   (opt-in, `1` = one hop or a value like `loopback` for same-host Caddy) — without it the
   per-IP login throttle would see one IP behind the documented Caddy deploy profile.
-- Audit: `LOGIN_SUCCESS`/`LOGIN_FAIL`/`REGISTER`/`TOPUP`/`REFRESH_REUSE` are audit-logged
+- Audit: `LOGIN_SUCCESS`/`LOGIN_FAIL`/`REGISTER`/`LOGOUT`/`TOPUP`/`REFRESH_REUSE` are audit-logged
   (autonomous-txn in prod via `AUDIT_PKG`).
 - Transport/storage: TLS via Caddy in deploy; no card data ever (wallet ledger only);
-  `localStorage` holds the short-lived access token (httpOnly refresh cookie tracked as P2).
+  `localStorage` holds only the 15-min access token; the refresh token is an httpOnly cookie (SEC-012).
 
 ## Grants (Oracle)
 

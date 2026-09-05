@@ -137,7 +137,7 @@
     "/auth/login": {
       "post": {
         "security": [],
-        "summary": "Login → 15-min JWT + rotating refresh",
+        "summary": "Login → 15-min JWT + rotating refresh (httpOnly cookie `vh_rt` + body field)",
         "responses": {
           "200": {
             "description": "ok"
@@ -150,7 +150,20 @@
     },
     "/auth/refresh": {
       "post": {
-        "summary": "Rotate refresh token (family revocation on reuse)",
+        "summary": "Rotate refresh (httpOnly cookie or body; family revocation on reuse)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "summary": "Revoke the refresh family + clear the cookie (cookie or body)",
         "responses": {
           "200": {
             "description": "ok"

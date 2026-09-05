@@ -46,7 +46,10 @@ app.disable('x-powered-by');
 // login outage. Trusting the proxy is OPT-IN (TRUST_PROXY=1 trusts one hop, or pass
 // a value like `loopback` for Caddy on the same host); default stays untrusted.
 if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY === '1' ? 1 : process.env.TRUST_PROXY);
-app.use(cors({ origin: (process.env.WEB_ORIGIN || 'http://localhost:3000').split(',') }));
+// SEC-012: credentials enabled so the console can adopt the httpOnly refresh
+// cookie (origin is an explicit allow-list, never '*'); SameSite=Lax covers CSRF
+// for the cookie-scoped auth paths.
+app.use(cors({ origin: (process.env.WEB_ORIGIN || 'http://localhost:3000').split(','), credentials: true }));
 app.use(securityHeaders);
 app.use(express.json({ limit: '256kb' }));
 app.use((req, res, next) => {
