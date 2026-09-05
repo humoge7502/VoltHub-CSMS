@@ -51,6 +51,10 @@ setInterval(() => {
 
 function throttle(req, res, next) {
   if (process.env.RATE_LIMIT_OFF === '1') return next();
+  // /internal/* is the worker channel: token-gated (SEC-007 constant-time compare) and
+  // polled every 2s (outbox + station-map + expire ≈ 90 req/min) — the public per-IP
+  // throttle must not apply, or the relay starves on 429s.
+  if (req.path.startsWith('/internal')) return next();
   // SEC-006: tier only from signature-verified claims. Unverified/forged tokens get ANON tier.
   // Order note: throttle runs before authRequired, so we verify (not decode) here read-only.
   let role = 'ANON';

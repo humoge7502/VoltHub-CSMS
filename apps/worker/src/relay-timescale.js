@@ -111,7 +111,7 @@ async function syncStationMap(apiBase, internalToken, fetchImpl) {
     await client.query('BEGIN');
     const n = await insertBatch(
       client,
-      'station_map (connector_ref, station_id, station_name, standard_code, max_power_kw)',
+      'station_map',
       ['connector_ref', 'station_id', 'station_name', 'standard_code', 'max_power_kw'],
       rows.map((x) => [
         String(x.connector_ref),
@@ -148,14 +148,14 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
     await client.query('BEGIN');
     const nt = await insertBatch(
       client,
-      'meter_tick (ts, session_id, seq_no, connector_ref, meter_kwh, power_kw, voltage_v, current_a, dedupe_key)',
+      'meter_tick',
       ['ts', 'session_id', 'seq_no', 'connector_ref', 'meter_kwh', 'power_kw', 'voltage_v', 'current_a', 'dedupe_key'],
       ticks.map((t) => t.slice(0, 9)),
       'ON CONFLICT DO NOTHING'
     );
     const ns = await insertBatch(
       client,
-      'connector_state_event (ts, connector_ref, from_state, to_state, cause, session_id)',
+      'connector_state_event',
       ['ts', 'connector_ref', 'from_state', 'to_state', 'cause', 'session_id'],
       states.map((s) => s.slice(0, 6)),
       'ON CONFLICT DO NOTHING'
