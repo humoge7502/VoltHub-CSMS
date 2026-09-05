@@ -1,0 +1,26 @@
+labels: [q-a]
+title: '[q&a] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask anything about the build. The likeliest questions already have
+        receipts: *why two databases* → README, *why this trade-off* →
+        [`docs/adr/`](../blob/main/docs/adr), *what actually ran* →
+        `docs/verification.md`, *what the numbers are* → `docs/perf.md`.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: One clear question beats five vague ones.
+      placeholder: e.g. why is the outbox ack stored in Oracle instead of Timescale?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What you already read
+      description: Which doc/ADR/section you checked first — helps improve those docs for the next reader.
+      placeholder: e.g. ADR-0003 and ARCHITECTURE.md — still unclear why acks are not idempotent-delivery-only
+    validations:
+      required: true

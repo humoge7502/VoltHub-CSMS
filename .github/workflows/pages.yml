@@ -1,0 +1,46 @@
+name: pages
+# Deploys docs/ (the one-page visual tour) to GitHub Pages via Actions —
+# the modern artifact path, no gh-pages branch, full run logs in the Actions tab.
+#
+# One-time enablement (repo Settings → Pages → Build and deployment):
+#   Source: "GitHub Actions"   — that is the whole setup.
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v5
+      - name: Site budget check (kept honest — docs/ must stay lean)
+        run: |
+          du -sh docs/ || true
+          # social preview + screenshots are the heavyweights; the site itself
+          # (index.html) must stay a single self-contained page.
+          [ "$(du -sk docs/index.html | cut -f1)" -lt 512 ] || {
+            echo 'docs/index.html grew past 512 KB — split it before shipping'; exit 1; }
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

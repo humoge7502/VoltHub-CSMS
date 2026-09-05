@@ -2,7 +2,25 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
-## [Unreleased]
+## [1.3.0] — 2026-09-06
+
+### Added
+
+- **Coverage receipts**: `npm run coverage` (c8, V8 instrumentation, `--all`
+  over `apps/*/src` + `packages/*/src`) and a 6th CI job publishing line
+  coverage to Codecov. Informational by policy (`codecov.yml`) — the badge is
+  a receipt, not a target; DB-backed suites stay in `db-tests` on purpose.
+  Local: `npm install` then `npm run coverage` (text + lcov + json-summary).
+- **Pages via Actions**: `pages.yml` deploys `docs/` as a Pages artifact
+  (Settings → Pages → Source: GitHub Actions), with a lean-site budget check.
+- **Community kit**: full `CONTRIBUTING.md` (project map, two dev profiles,
+  the 10-rung testing ladder, ground rules, ADR-first changes, release path);
+  `greetings.yml` first-contact replies routed to the docs that matter;
+  Discussions templates for `ideas` (trade-off required) and `q&a`
+  (what-you-already-read required).
+- **Visual identity refresh** (electric indigo): README header banner,
+  re-rendered `architecture-hero.png` (now shows the 6-job CI pipeline) and
+  `social-preview.png` — all real renders, no third-party banner services.
 
 ### Changed
 
@@ -10,7 +28,9 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   after a fully-green db-tests run against real Oracle 23ai — the exact gate the
   hardening report set (no blind driver bumps without DB-backed CI).
 - `ci.yml` push trigger scoped to `main` so `v*` tag pushes don't re-run the
-  whole 5-job matrix (the tag-driven `release.yml` already re-verifies).
+  whole 6-job matrix (the tag-driven `release.yml` already re-verifies).
+- README: image-first header, Codecov badge, stats row and CI row updated to
+  6 jobs; Quickstart gains the coverage rung.
 
 ## [1.2.0] — 2026-09-05
 
@@ -60,7 +80,7 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 - BUG-021: a reconnecting charge point's stale socket deregistered its live
   successor and marked the charger OFFLINE — the gateway close handler now only
   clears the registration it owns. Regression suite `apps/api/test/gateway-close.js`
-  was validated to catch the bug (unguarded handler → red).
+  was validated to catch the bug (unguarded handler → red, re-applied → green).
 - BUG-022: worker/relay HTTP calls were unbounded — a hung API could freeze the
   telemetry pipeline. Every call now carries `AbortSignal.timeout(5s)`.
 - No graceful shutdown anywhere: the API now drains on SIGTERM/SIGINT (stop
@@ -82,7 +102,7 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 - (Superseded in HARDEN-2026-09 below: actions are now at v7 with a Node 20/22
   matrix — see the Security/Changed sections above.)
 
-### Fixed (migrations were never run end-to-end — “CI partly theater” closed)
+### Fixed (migrations were never run end-to-end — "CI partly theater" closed)
 
 - `db/oracle`: V001 now owns the `cp_id`/`connector_no` FK pair so V002/V003
   compile on a fresh DB (V005's guarded ALTERs no-op for fresh runs, still

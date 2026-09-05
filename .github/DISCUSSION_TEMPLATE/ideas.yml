@@ -1,0 +1,47 @@
+labels: [ideas]
+title: '[idea] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas welcome — the stronger ones name the trade-off they accept.
+        If your idea touches the money path, reservations, or the OCPP surface,
+        skim [`docs/adr/`](../blob/main/docs/adr) first: a rejected alternative
+        may already explain why the current shape exists.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation of the current design does this idea address?
+      placeholder: e.g. the single-writer relay is a throughput ceiling once meter ticks exceed N/s…
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The change, one paragraph. Include the trade-off you would accept.
+      placeholder: 'e.g. fan-out relays per hypertable — trade-off accepted: ack ordering becomes per-partition'
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Oracle / money path (PL/SQL, schema, invariants)
+        - TimescaleDB / telemetry (hypertables, caggs, relay)
+        - OCPP gateway / simulator
+        - REST API / OpenAPI
+        - Web console
+        - CI / tooling / docs
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: Sketched against the honest limits in README (nothing here claims prod readiness)
+        - label: Would need an ADR if accepted (schema / protocol / store-port change)

@@ -1,0 +1,56 @@
+name: greetings
+# First-contact automation: a first-time contributor's issue or PR gets an
+# on-brand reply that routes them to the right docs instead of a generic "thanks".
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: greetings-${{ github.event_name }}-${{ github.event.issue.number || github.event.number }}
+  cancel-in-progress: false
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const isPR = context.eventName === 'pull_request_target';
+            const item = isPR ? context.payload.pull_request : context.payload.issue;
+            const firstTime = ['FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE'].includes(item.author_association);
+            if (!firstTime) return;
+
+            const body = isPR
+              ? [
+                  'First PR here — thank you. :tada:',
+                  '',
+                  'The review bar is short and enforced by CI, so you can self-check before a human looks:',
+                  '- Conventional commit title (`feat:`, `fix:`, `docs:`, `test:`, `ci:`)',
+                  '- `npx eslint . --max-warnings 0` and `npx prettier --check .` green',
+                  '- New behaviour covered by a suite under `apps/*/test/` (races get extra credit)',
+                  '- SQL changes: bind variables only, and an invariant row in `test/sql/` if it guards money',
+                  '',
+                  'Context for *why* the repo is shaped the way it is: [`docs/adr/`](../tree/main/docs/adr) — every decision names its rejected alternative.',
+                ].join('\n')
+              : [
+                  'Thanks for opening the first issue — this repo treats reports as evidence, so the template questions matter.',
+                  '',
+                  'Fast-track hints:',
+                  '- Engine profile (`local` vs `STORE=oracle` vs compose) has caught two real bugs already — state it explicitly.',
+                  '- `file:line` or command output beats prose.',
+                  '- Security topics go to [`SECURITY.md`](../blob/main/SECURITY.md), never a public issue.',
+                ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: item.number,
+              body,
+            });

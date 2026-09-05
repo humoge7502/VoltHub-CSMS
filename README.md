@@ -1,11 +1,14 @@
-# VoltHub CSMS
+<div align="center">
+  <img src="docs/readme-header.png" alt="VoltHub CSMS — two engines, one transaction boundary: Oracle 23ai money path, TimescaleDB telemetry, OCPP 1.6J gateway, race-tested in CI" width="100%">
+</div>
 
 **Two-engine EV charging management: Oracle for ACID billing/reservations, TimescaleDB for telemetry — driven by an OCPP 1.6J gateway + simulator fleet, race-tested in CI on both database engines, with a typography-led Next.js operations console.**
 
 <div align="center">
 
 [![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg)](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml)
-[![release](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/release.yml/badge.svg)](https://github.com/humoge7502/VoltHub-CSMS/releases)
+[![release](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/release.yml/badge.svg)](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/release.yml)
+[![codecov](https://codecov.io/gh/humoge7502/VoltHub-CSMS/graph/badge.svg)](https://codecov.io/gh/humoge7502/VoltHub-CSMS)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/humoge7502/VoltHub-CSMS/badge)](https://scorecard.dev/viewer.html?url=github.com/humoge7502/VoltHub-CSMS)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/humoge7502/VoltHub-CSMS)
 ![node](https://img.shields.io/badge/node-20%20%7C%2022-339933?logo=nodedotjs&logoColor=white)
@@ -24,7 +27,7 @@
 > | 🔧 **Engineer**            | [Quickstart](#quickstart) → [`ARCHITECTURE.md`](ARCHITECTURE.md) → [ADR index](docs/adr/) → run the [race suite](apps/api/test/race.js) yourself                                                              |
 > | 🔍 **Reviewer / sceptic**  | [ADRs](docs/adr/) (trade-offs named) → [`docs/verification.md`](docs/verification.md) (every claim has a receipt) → [`docs/perf.md`](docs/perf.md) (numbers, methodology) → [`SECURITY.md`](SECURITY.md)      |
 
-|              **48**              |              **2**               |             **7**              |         **7**          |         **5**         |             **0**             |
+|              **48**              |              **2**               |             **7**              |         **7**          |         **6**         |             **0**             |
 | :------------------------------: | :------------------------------: | :----------------------------: | :--------------------: | :-------------------: | :---------------------------: |
 | REST routes, OpenAPI drift-gated | DB engines behind one store port | PL/SQL packages own the writes | ADRs, trade-offs named | CI jobs on every push | known CVEs, `npm audit` gated |
 
@@ -63,6 +66,7 @@
 | **Next.js 16 + React 19**                             | App Router with real client components; CSP set at the Next layer. Trade-off: server/client boundary discipline is on the team                                                                                           |
 | **Node 22 LTS**                                       | CI runs a 20/22 matrix so `engines >=20` stays honest; images ship 22                                                                                                                                                    |
 | **eslint 10 flat config + prettier + npm audit gate** | the lint gate is deliberately stricter than the pre-flat era (it immediately caught two latent issues); `npm audit` fails CI on either lockfile                                                                          |
+| **c8 coverage → Codecov** (informational)             | the coverage badge is a receipt, not a target — unit-tier suites instrumented with V8 coverage on every push; DB-backed suites stay in `db-tests` on purpose                                                             |
 | **Compose + Caddy, one VM**                           | honest deploy target (ADR-0001); graceful SIGTERM drains matched to compose stop-grace periods. Trade-off: no K8s story by design                                                                                        |
 
 ## Why two databases (4 lines)
@@ -101,16 +105,16 @@ Mermaid renders natively on GitHub. Full 1-page version + ADR table: [`ARCHITECT
 
 ## What's actually here
 
-| Layer            | Evidence                                                                                                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Oracle OLTP**  | 25-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V006`                         |
-| **Concurrency**  | `SELECT … FOR UPDATE` / `SKIP LOCKED` bulk expiry, error bands `-2050x…-209xx` mapped to HTTP once (`src/errors.js`), race suites in CI on both engines — `apps/api/test/race.js`           |
-| **OCPP 1.6J**    | WebSocket gateway with HTTP Basic auth on upgrade (Security Profile 1), per-CP credentials, 10 msg/s limit, 7 core messages + monotonic tick sequencing — `apps/api/src/ocpp/gateway.js`    |
-| **DA3 pipeline** | Outbox → 2s relay → hypertables → caggs; crash-after-COPY replays safely — `apps/worker/`, `db/timescale/`                                                                                  |
-| **API**          | 48 spec'd REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                        |
-| **Web**          | 17 routes, "Grid Current" design system (Space Grotesk / IBM Plex Mono tabular numerals), zero chart dependencies, unified PageState + toasts + URL-as-state — `apps/web/`                  |
-| **CI**           | 5 jobs: lint (Node 20/22 matrix) · security (npm audit gate, both lockfiles) · quality · db-tests (Oracle + Timescale service containers) · e2e (full compose) — `.github/workflows/ci.yml` |
-| **Releases**     | tag-driven GitHub Releases with notes extracted from a Keep-a-Changelog `CHANGELOG.md`; conventional commits throughout — `.github/workflows/release.yml`                                   |
+| Layer            | Evidence                                                                                                                                                                                                              |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Oracle OLTP**  | 25-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V006`                                                   |
+| **Concurrency**  | `SELECT … FOR UPDATE` / `SKIP LOCKED` bulk expiry, error bands `-2050x…-209xx` mapped to HTTP once (`src/errors.js`), race suites in CI on both engines — `apps/api/test/race.js`                                     |
+| **OCPP 1.6J**    | WebSocket gateway with HTTP Basic auth on upgrade (Security Profile 1), per-CP credentials, 10 msg/s limit, 7 core messages + monotonic tick sequencing — `apps/api/src/ocpp/gateway.js`                              |
+| **DA3 pipeline** | Outbox → 2s relay → hypertables → caggs; crash-after-COPY replays safely — `apps/worker/`, `db/timescale/`                                                                                                            |
+| **API**          | 48 spec'd REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                                                  |
+| **Web**          | 17 routes, "Grid Current" design system (Space Grotesk / IBM Plex Mono tabular numerals), zero chart dependencies, unified PageState + toasts + URL-as-state — `apps/web/`                                            |
+| **CI**           | 6 jobs: lint (Node 20/22 matrix) · security (npm audit gate, both lockfiles) · quality · coverage (c8 → Codecov) · db-tests (Oracle + Timescale service containers) · e2e (full compose) — `.github/workflows/ci.yml` |
+| **Releases**     | tag-driven GitHub Releases with notes extracted from a Keep-a-Changelog `CHANGELOG.md`; conventional commits throughout — `.github/workflows/release.yml`                                                             |
 
 ## Honest limits
 
@@ -130,8 +134,9 @@ cd apps/web && npm install && npm run dev
 # 2) full stack (Oracle 23ai + TimescaleDB containers)
 docker compose -f infra/docker-compose.yml up --build
 
-# 3) races + tests
+# 3) races + tests + coverage
 npm run test -w apps/api && npm run test:race -w apps/api
+npm run coverage                       # c8 line coverage over the unit-tier suites
 node apps/simulator/src/index.js --scenario race   # expect exactly one 201 + one 409
 ```
 
@@ -139,8 +144,8 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@
 
 ## Status & releases
 
-- Current release: **[v1.2.0](https://github.com/humoge7502/VoltHub-CSMS/releases)** — tagged releases carry notes extracted from [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog / SemVer).
-- Engineering history is fully auditable: 29+ commits of conventional-commit breadcrumbs (`fix(oracle): …`, `ci(e2e): …`) — including the failures and their fixes.
+- Current release: **[v1.3.0](https://github.com/humoge7502/VoltHub-CSMS/releases)** — tagged releases carry notes extracted from [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog / SemVer).
+- Engineering history is fully auditable: conventional-commit breadcrumbs (`fix(oracle): …`, `ci(e2e): …`) — including the failures and their fixes.
 - Roadmap notes (OCPP 2.0.1 migration path, scale exits): [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`docs/masterplan/18-da-plans-and-roadmap.md`](docs/masterplan/18-da-plans-and-roadmap.md).
 
 ## Docs map
@@ -152,6 +157,7 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@
 | Architecture (1 page + diagram)   | `ARCHITECTURE.md`                                                                                                                                                                                      |
 | Decision records                  | `docs/adr/0001` modular monolith · `0002` TimescaleDB (4.90/5) · `0003` outbox pipeline · `0004` plain-JS divergence · `0005` store adapter · `0006` connector FK-native · `0007` OCPP remote commands |
 | Security posture                  | `SECURITY.md`                                                                                                                                                                                          |
+| Contributing (the full bar)       | `CONTRIBUTING.md` — testing ladder, ground rules, ADR-first changes                                                                                                                                    |
 | Performance methodology           | `docs/perf.md`                                                                                                                                                                                         |
 | Demo beats                        | `docs/demo-script.md`                                                                                                                                                                                  |
 | ER / architecture / race diagrams | `diagrams/*.mmd` (Mermaid)                                                                                                                                                                             |

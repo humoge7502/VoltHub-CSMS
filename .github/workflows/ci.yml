@@ -60,6 +60,28 @@ jobs:
         working-directory: apps/web
       - run: npm run build
         working-directory: apps/web
+  # Line coverage over the unit-tier suites (local store), published to Codecov.
+  # Complements quality: the same suites, instrumented — the badge is a receipt,
+  # not a target. DB-backed suites stay in db-tests on purpose: service-container
+  # runs measure the engines, not the coverage percentage.
+  coverage:
+    needs: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22, cache: npm }
+      - run: npm install --no-audit --no-fund
+      - name: Unit-tier suites under c8 (V8 coverage, --all)
+        env: { ORACLE_HOST: '' }
+        run: npm run coverage
+      - name: Upload to Codecov (tokenless for public repos)
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage/lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
   db-tests:
     runs-on: ubuntu-latest
     services:
