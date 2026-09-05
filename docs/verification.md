@@ -44,6 +44,13 @@ charge point over WS with Basic auth, drives both REST legs:
   `CALL refresh_continuous_aggregate` on `tick_1m`, `tick_1h`, `state_1m` and
   reads the enriched views with `ON_ERROR_STOP=1` on every push. Green since
   2026-09-05.
+- Enrichment data (masterplan §26.5, previously unimplemented): the worker now
+  syncs Oracle-owned `station_map` into Timescale every loop from the API's
+  `GET /internal/station-map`; compose e2e asserts live population (16 rows from
+  the seeded stack, 2026-09-05). This also surfaced that the API image never
+  shipped `apps/worker` (relay dead in compose) and that `insertBatch` doubled
+  its column list (invalid SQL) — both fixed and unit-locked in
+  `apps/worker/test/relay.test.js`.
 
 ## P2V-02 — `MODE() WITHIN GROUP` in `state_1m` (CLOSED 2026-09-05)
 
