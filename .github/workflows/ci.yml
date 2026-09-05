@@ -106,7 +106,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # DBs first (bare containers, like db-tests), then the canonical migrate.sh
+      # provisioning path (DEPLOY.md §3). The former timescale initdb mount hid the
+      # image's 000/001 setup scripts and ran queries.sql on every boot (exit 3).
+      - run: docker compose -f infra/docker-compose.yml up -d oracle timescale || { docker compose -f infra/docker-compose.yml logs --no-color || true; exit 1; }
+      - name: Wait for Oracle + Timescale healthy
+        run: |
+          for i in $(seq 1 60); do
+            ok=1
+            for c in volthub-oracle volthub-timescale; do
+              st=$(docker inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null || echo none)
+              [ "$st" = healthy ] || ok=0
+            done
+            [ "$ok" = 1 ] && break
+            echo "wait db $i"; sleep 5
+          done
+          docker inspect -f '{{.Name}} {{.State.Health.Status}}' volthub-oracle volthub-timescale
+      - name: Migrate + seed (canonical path, shared with db-tests)
+        env: { SEED_DB: '1' }
+        run: bash scripts/migrate.sh
       - run: docker compose -f infra/docker-compose.yml up -d --build || { echo '--- compose up failed; dumping container logs ---'; docker compose -f infra/docker-compose.yml logs --no-color || true; exit 1; }
-      - run: sleep 45 && curl -sf http://localhost:4000/api/v1/health/deep | grep -q '"status":"ok"' && curl -sf http://localhost:4000/api/v1/docs | grep -q openapi && curl -sf http://localhost:4000/api/v1/metrics | grep -q volthub_requests_total
+      - name: Wait for API then assert health/docs/metrics
+        run: |
+          for i in $(seq 1 36); do
+            if curl -sf http://localhost:4000/api/v1/health/deep | grep -q '"status":"ok"' && curl -sf http://localhost:4000/api/v1/docs | grep -q openapi && curl -sf http://localhost:4000/api/v1/metrics | grep -q volthub_requests_total; then
+              echo 'stack healthy'; exit 0
+            fi
+            echo "wait api $i"; sleep 5
+          done
+          echo 'API never became healthy'; exit 1
       - run: npm run test:e2e
       - run: docker compose -f infra/docker-compose.yml down

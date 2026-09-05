@@ -10,7 +10,9 @@ services:
     ports: ['1521:1521']
     volumes:
       - oracle-data:/opt/oracle/oradata
-      - ../db/oracle:/docker-entrypoint-initdb.d:ro
+    # Schema + seed are applied by scripts/migrate.sh (DEPLOY.md §3) — single
+    # provisioning path, shared with CI. An initdb mount here would hide gvenzl's
+    # own hooks and drift from the canonical migrations.
     healthcheck:
       test:
         ['CMD-SHELL', "echo 'select 1 from dual;' | sqlplus -S volthub/volthub_dev_pwd@localhost/freepdb1 || exit 1"]
@@ -29,7 +31,9 @@ services:
     ports: ['5432:5432']
     volumes:
       - ts-data:/var/lib/postgresql/data
-      - ../db/timescale:/docker-entrypoint-initdb.d:ro
+    # Schema (T001/T002 caggs) applied via scripts/migrate.sh (DEPLOY.md §3). A
+    # whole-dir initdb mount also ran queries.sql ($1 params) at every boot and
+    # hid the image's own 000/001 setup scripts, killing first boot.
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U volthub']
       interval: 5s
