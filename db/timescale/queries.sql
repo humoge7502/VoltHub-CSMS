@@ -11,15 +11,20 @@ WHERE ts > NOW() - INTERVAL '24 hours'
   AND connector_ref IN (SELECT connector_ref FROM station_map WHERE station_id = $1)
 GROUP BY bucket ORDER BY bucket;
 
--- T1-fast: same curve from 1-min cagg (18ms vs 2.1s raw on 1.7M ticks)
+-- T1-fast: same curve from 1-min cagg (18ms vs 2.1s raw on 1.7M ticks).
+-- caggs are single-hypertable (no joins inside, P2V-01) so station scope is a
+-- query-time JOIN against station_map (Oracle-owned metadata).
 SELECT bucket, AVG(avg_kw) AS avg_kw, MAX(peak_kw) AS peak_kw
-FROM tick_1m WHERE bucket > NOW() - INTERVAL '24 hours' AND station_id = $1
+FROM tick_1m c JOIN station_map m USING (connector_ref)
+WHERE bucket > NOW() - INTERVAL '24 hours' AND m.station_id = $1
 GROUP BY bucket ORDER BY bucket;
 
--- T2 utilization per hour from state_1m (fact Oracle literally lacks)
+-- T2 utilization per hour from state_1m (fact Oracle literally lacks).
+-- dominant_state is a query-time view over the cagg (MODE() is rejected inside
+-- caggs — P2V-02 fallback, see v_state_1m).
 SELECT time_bucket('1 hour', bucket) AS hr,
        COUNT(*) FILTER (WHERE dominant_state = 'OCCUPIED') * 100.0 / COUNT(*) AS util_pct
-FROM state_1m WHERE bucket > NOW() - INTERVAL '7 days' GROUP BY hr ORDER BY hr;
+FROM v_state_1m WHERE bucket > NOW() - INTERVAL '7 days' GROUP BY hr ORDER BY hr;
 
 -- T3 Fault/Unreachable hours per connector (arXiv KPI)
 WITH spans AS (

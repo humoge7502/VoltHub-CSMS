@@ -89,8 +89,11 @@ jobs:
         run: |
           PGPASSWORD=volthub_dev_pwd psql -h localhost -U volthub -d volthub -v ON_ERROR_STOP=1 \
             -c "CALL refresh_continuous_aggregate('tick_1m', NULL, NULL);" \
+            -c "CALL refresh_continuous_aggregate('tick_1h', NULL, NULL);" \
             -c "CALL refresh_continuous_aggregate('state_1m', NULL, NULL);" \
-            -c "SELECT count(*) AS tick_1m_rows FROM tick_1m;"
+            -c "SELECT count(*) AS tick_1m_rows FROM tick_1m;" \
+            -c "SELECT count(*) AS enriched_rows FROM v_tick_1m_enriched;" \
+            -c "SELECT count(*) AS state_rows FROM v_state_1m;"
   e2e:
     needs: db-tests
     runs-on: ubuntu-latest

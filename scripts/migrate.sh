@@ -45,13 +45,20 @@ if [ "$ORACLE_OK" = "1" ] && [ -f "$ROOT/db/oracle/seed/seed.sql" ] && [ "${SEED
   run_oracle_file "$ROOT/db/oracle/seed/seed.sql" || ORACLE_OK=0
 fi
 echo "== Timescale ${TS_HOST:-localhost}:${TS_PORT:-5432}/${TS_DB:-volthub} =="
+TS_OK=1
 if command -v psql >/dev/null 2>&1; then
   for f in "$ROOT"/db/timescale/T00*.sql; do
     echo "-- apply $f"
-    PGPASSWORD="${TS_PASSWORD:-volthub_dev_pwd}" psql -h "${TS_HOST:-localhost}" -U "${TS_USER:-volthub}" -d "${TS_DB:-volthub}" -f "$f"
+    PGPASSWORD="${TS_PASSWORD:-volthub_dev_pwd}" psql -h "${TS_HOST:-localhost}" -U "${TS_USER:-volthub}" -d "${TS_DB:-volthub}" -v ON_ERROR_STOP=1 -f "$f" || TS_OK=0
   done
 else
   echo "(psql not installed — Timescale SQL is canonical in db/timescale/; telemetry falls back to local rollup.)"
+fi
+# Fail loudly when psql was available but a Timescale migration errored —
+# CI must never pass on half-applied caggs (mirrors the Oracle guard above).
+if command -v psql >/dev/null 2>&1 && [ "$TS_OK" != "1" ]; then
+  echo "MIGRATE-FAIL: Timescale migrations did not apply (see errors above)." >&2
+  exit 1
 fi
 # Fail loudly when an Oracle client was available but migrations did not apply —
 # CI must never pass on an unmigrated database (round-1 "CI is partly theater" fix).

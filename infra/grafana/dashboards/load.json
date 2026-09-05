@@ -7,7 +7,7 @@
       "datasource": "TimescaleDB",
       "targets": [
         {
-          "rawSql": "SELECT bucket AS time, AVG(avg_kw) AS \"avg kW\", MAX(peak_kw) AS \"peak kW\" FROM tick_1m WHERE bucket > NOW() - INTERVAL '24 hours' AND station_id = $station GROUP BY bucket ORDER BY bucket",
+          "rawSql": "SELECT bucket AS time, AVG(avg_kw) AS \"avg kW\", MAX(peak_kw) AS \"peak kW\" FROM tick_1m c JOIN station_map m USING (connector_ref) WHERE bucket > NOW() - INTERVAL '24 hours' AND m.station_id = $station GROUP BY bucket ORDER BY bucket",
           "format": "time_series"
         }
       ]
