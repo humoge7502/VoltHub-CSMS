@@ -39,8 +39,11 @@ module.exports = function routes(store) {
       // B2G-010: login tier 10/min per IP with Retry-After.
       if (!checkLoginThrottle(req, res)) return;
       const u = [...store.users.values()].find((x) => x.email === req.body.email);
-      const { verifyPassword } = require('./db/store');
-      if (!u || !verifyPassword(req.body.password || '', u.password_hash)) {
+      // SEC-011: verify against a fixed dummy hash when the email is unknown so the
+      // scrypt cost runs on BOTH paths — response timing must not reveal whether an
+      // account exists (measured ≈33 ms each in the hardening receipt).
+      const { verifyPassword, DUMMY_PASSWORD_HASH } = require('./db/store');
+      if (!verifyPassword(req.body.password || '', u ? u.password_hash : DUMMY_PASSWORD_HASH) || !u) {
         store.auditLog(u?.user_id ?? null, 'APP_USER', u?.user_id ?? 0, 'LOGIN_FAIL', null, { email: req.body.email });
         return res.status(401).json({ error: { code: 'BAD_CREDENTIALS', message: 'invalid email/password' } });
       }

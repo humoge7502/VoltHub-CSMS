@@ -752,4 +752,9 @@ function createStore() {
   return s;
 }
 
-module.exports = { createStore, hashPassword, verifyPassword, ORA };
+// SEC-011: fixed dummy hash so unknown-email logins burn the same scrypt cost as
+// real ones (defeats user enumeration by response timing). The salt is fixed, so
+// the cost is identical to a real verify; this value never authenticates anyone.
+const DUMMY_PASSWORD_HASH = hashPassword('sec-011-timing-pad-v1:not-a-real-user');
+
+module.exports = { createStore, hashPassword, verifyPassword, DUMMY_PASSWORD_HASH, ORA };

@@ -5,6 +5,11 @@
 - Passwords: scrypt (N=16384, r=8, p=1) locally with timing-safe compare (`apps/api/src/db/store.js`).
   Argon2id (19 MiB, 2, 1) is the documented production target — **not yet implemented**; the
   `password_hash` column already stores PHC-shaped strings so the migration is a hasher swap.
+- Login timing (SEC-011): unknown emails are verified against a fixed dummy scrypt hash, so
+  response time does not reveal whether an account exists (≈33 ms both paths, measured in the
+  hardening receipt; regression-gated in `apps/api/test/security.js`).
+- Header hygiene (SEC-010): no `X-Powered-By` framework fingerprint; CSP/HSTS frame-ancestors
+  policy at both the API and Next layers (`server.js:securityHeaders`, `apps/web/next.config.js`).
 - JWT: 15-min access + rotating SHA-256 refresh with **family revocation on reuse**
   (`apps/api/src/middleware/auth.js:consumeRefresh`). Reusing a revoked token burns its family.
 - Boot discipline: production (`NODE_ENV=production`) refuses
@@ -20,6 +25,9 @@
 - Internal worker endpoints: `crypto.timingSafeEqual` compare on `x-internal` (no string `!==`).
 - Throttle: tier from **signature-verified** JWT claims only; buckets keyed by verified `sub`
   else IP; idle buckets evicted (no unbounded growth). Per-process state (single-VM scope).
+  Proxy awareness (BUG-023): `req.ip` trusts proxy headers only when `TRUST_PROXY` is set
+  (opt-in, `1` = one hop or a value like `loopback` for same-host Caddy) — without it the
+  per-IP login throttle would see one IP behind the documented Caddy deploy profile.
 - Audit: `LOGIN_SUCCESS`/`LOGIN_FAIL`/`REGISTER`/`TOPUP`/`REFRESH_REUSE` are audit-logged
   (autonomous-txn in prod via `AUDIT_PKG`).
 - Transport/storage: TLS via Caddy in deploy; no card data ever (wallet ledger only);

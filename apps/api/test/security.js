@@ -208,6 +208,48 @@ async function main() {
     assert.equal(own.status, 201);
   });
 
+  await t('SEC-010: responses carry no x-powered-by framework fingerprint', async () => {
+    const r = await fetch(B + '/stations', { headers: H });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('x-powered-by'), null, 'x-powered-by must not be set');
+    // seeded demo creds on a JSON body endpoint, not just the open route
+    const r2 = await fetch(B + '/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'demo@volthub.in', password: 'wrong-pw' }),
+    });
+    assert.equal(r2.headers.get('x-powered-by'), null);
+  });
+
+  await t('SEC-011: unknown-email login burns scrypt — timing parity, both 401', async () => {
+    const attempt = async (body) => {
+      const t0 = Date.now();
+      const r = await api('/auth/login', { method: 'POST', body: JSON.stringify(body) });
+      return { ms: Date.now() - t0, status: r.status, code: r.j?.error?.code };
+    };
+    // Known email + wrong password vs unknown email: run 3 pairs, compare medians.
+    const known = [],
+      unknown = [];
+    for (let i = 0; i < 3; i++) {
+      known.push((await attempt({ email, password: 'wrong-password' })).ms);
+      unknown.push((await attempt({ email: `nobody-${i}-${Date.now()}@example.in`, password: 'wrong-password' })).ms);
+    }
+    const med = (a) => a.slice().sort((x, y) => x - y)[1];
+    const a = await attempt({ email, password: 'wrong-password' });
+    const b = await attempt({ email: `nobody-final@example.in`, password: 'wrong-password' });
+    assert.equal(a.status, 401);
+    assert.equal(b.status, 401);
+    assert.equal(a.code, 'BAD_CREDENTIALS');
+    assert.equal(b.code, 'BAD_CREDENTIALS', 'unknown email must read as bad credentials, not user-missing');
+    // The unknown path must actually run the scrypt pad (not return instantly).
+    assert.ok(med(unknown) >= 15, `unknown-email path too fast (${med(unknown)}ms) — pad not running`);
+    // And it must sit inside the same band as a real (wrong-password) verify.
+    assert.ok(
+      Math.abs(med(known) - med(unknown)) < 120,
+      `timing gap too wide: known=${med(known)}ms unknown=${med(unknown)}ms`
+    );
+  });
+
   console.log(`\nSecurity tests: ${pass} passed`);
   server.close();
   process.exit(0);

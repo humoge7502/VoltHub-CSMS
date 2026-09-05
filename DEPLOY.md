@@ -29,6 +29,15 @@ app.volthub.example {
 }
 ```
 
+Caddy terminates TLS on the same host, so the API must trust its proxy headers for
+`req.ip`-based throttling to see real clients (BUG-023: without this, every request
+looks like Caddy's IP and the per-IP login throttle becomes a platform-wide outage):
+
+Set `TRUST_PROXY` on the `api` service (`infra/docker-compose.yml` environment) and
+restart before exposing the stack behind Caddy. `TRUST_PROXY` is opt-in and off by
+default: `1` trusts one hop; a value like `loopback` (Caddy on the same host) is
+passed straight to Express `trust proxy`.
+
 ```bash
 docker compose -f infra/docker-compose.yml up -d --build
 curl -sf https://api.volthub.example/api/v1/health/deep
