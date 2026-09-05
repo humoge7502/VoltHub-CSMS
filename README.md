@@ -2,7 +2,11 @@
 
 **Two-engine EV charging management: Oracle for ACID billing/reservations, TimescaleDB for telemetry — driven by an OCPP 1.6J gateway + simulator fleet, race-tested in CI on both database engines, with a typography-led Next.js operations console.**
 
-![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg) ![node](https://img.shields.io/badge/node-20-339933) ![license](https://img.shields.io/badge/license-MIT-blue) `oracle-23ai` `timescaledb` `modular-monolith` `ocpp-1.6j` `nextjs`
+![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg) ![node](https://img.shields.io/badge/node-22-339933) ![license](https://img.shields.io/badge/license-MIT-blue) `oracle-23ai` `timescaledb` `modular-monolith` `ocpp-1.6j` `nextjs`
+
+<p align="center">
+  <img src="docs/architecture-hero.png" alt="VoltHub CSMS architecture — Oracle money path + TimescaleDB telemetry joined by an outbox relay" width="100%">
+</p>
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="Operations dashboard" width="46%">
@@ -21,6 +25,19 @@
 </p>
 
 > **30-second demo:** two terminals reserve the same connector → one `201 BOOKED`, one `409 OVERLAP` → plug-in → live kWh/kW/cost → itemized invoice → wallet pay. (Record the terminal race with `scripts/demo.sh`.)
+
+## Stack, and why (trade-offs, not fashion)
+
+| Choice                                                | Why (and the trade-off accepted)                                                                                                                                                                                         |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Oracle 23ai** for the money path                    | row-lock semantics + PL/SQL packages own the writes (guard trigger blocks direct `connector.status` UPDATEs). Trade-off: a real Oracle dependency — CI runs it as a service container every push                         |
+| **TimescaleDB** for telemetry                         | 90 %+ of rows are immutable time-ordered ticks — hypertables/caggs/compression are the right shape. Trade-off: caggs can only query one hypertable, so enrichment is query-time views + a relay-maintained `station_map` |
+| **outbox + relay** between them                       | same-transaction outbox on Oracle + ack-after-COMMIT relay gives effectively-once without a broker. Trade-off: single-writer worker, not a fan-out bus                                                                   |
+| **Express 5 + pino 10**                               | boring, dependency-light API core; request-ID error envelopes; drift-gated OpenAPI. Trade-off: hand-rolled middlewares instead of a framework galaxy                                                                     |
+| **Next.js 16 + React 19**                             | App Router with real client components; CSP set at the Next layer. Trade-off: server/client boundary discipline is on the team                                                                                           |
+| **Node 22 LTS**                                       | CI runs a 20/22 matrix so `engines >=20` stays honest; images ship 22                                                                                                                                                    |
+| **eslint 10 flat config + prettier + npm audit gate** | the lint gate is deliberately stricter than the pre-flat era (it immediately caught two latent issues); `npm audit` fails CI on either lockfile                                                                          |
+| **Compose + Caddy, one VM**                           | honest deploy target (ADR-0001); graceful SIGTERM drains matched to compose stop-grace periods. Trade-off: no K8s story by design                                                                                        |
 
 ## Why two databases (4 lines)
 
@@ -58,15 +75,15 @@ Mermaid renders natively on GitHub. Full 1-page version + ADR table: [`ARCHITECT
 
 ## What's actually here
 
-| Layer            | Evidence                                                                                                                                                                                 |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Oracle OLTP**  | 25-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V005`                      |
-| **Concurrency**  | `SELECT … FOR UPDATE` / `SKIP LOCKED` bulk expiry, error bands `-2050x…-209xx` mapped to HTTP once (`src/errors.js`), race suites in CI on both engines — `apps/api/test/race.js`        |
-| **OCPP 1.6J**    | WebSocket gateway with HTTP Basic auth on upgrade (Security Profile 1), per-CP credentials, 10 msg/s limit, 7 core messages + monotonic tick sequencing — `apps/api/src/ocpp/gateway.js` |
-| **DA3 pipeline** | Outbox → 2s relay → hypertables → caggs; crash-after-COPY replays safely — `apps/worker/`, `db/timescale/`                                                                               |
-| **API**          | ~40 REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                           |
-| **Web**          | 17 routes, "Grid Current" design system (Space Grotesk / IBM Plex Mono tabular numerals), zero chart dependencies, unified PageState + toasts + URL-as-state — `apps/web/`               |
-| **CI**           | 3 jobs: quality · db-tests (Oracle + Timescale service containers) · e2e (full compose) — `.github/workflows/ci.yml`                                                                     |
+| Layer            | Evidence                                                                                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Oracle OLTP**  | 25-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V005`                         |
+| **Concurrency**  | `SELECT … FOR UPDATE` / `SKIP LOCKED` bulk expiry, error bands `-2050x…-209xx` mapped to HTTP once (`src/errors.js`), race suites in CI on both engines — `apps/api/test/race.js`           |
+| **OCPP 1.6J**    | WebSocket gateway with HTTP Basic auth on upgrade (Security Profile 1), per-CP credentials, 10 msg/s limit, 7 core messages + monotonic tick sequencing — `apps/api/src/ocpp/gateway.js`    |
+| **DA3 pipeline** | Outbox → 2s relay → hypertables → caggs; crash-after-COPY replays safely — `apps/worker/`, `db/timescale/`                                                                                  |
+| **API**          | ~40 REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                              |
+| **Web**          | 17 routes, "Grid Current" design system (Space Grotesk / IBM Plex Mono tabular numerals), zero chart dependencies, unified PageState + toasts + URL-as-state — `apps/web/`                  |
+| **CI**           | 5 jobs: lint (Node 20/22 matrix) · security (npm audit gate, both lockfiles) · quality · db-tests (Oracle + Timescale service containers) · e2e (full compose) — `.github/workflows/ci.yml` |
 
 ## Honest limits
 
@@ -104,6 +121,7 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@
 | Performance methodology           | `docs/perf.md`                                                                                                                                                                                         |
 | Demo beats                        | `docs/demo-script.md`                                                                                                                                                                                  |
 | ER / architecture / race diagrams | `diagrams/*.mmd` (Mermaid)                                                                                                                                                                             |
+| Verification receipts             | `docs/verification.md` (every claim names what actually ran)                                                                                                                                           |
 
 ## License
 

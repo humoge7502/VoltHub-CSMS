@@ -140,3 +140,34 @@ containerd content ingest. No local Oracle/Timescale runtime is possible on this
 box without deleting other tenants' data — out of scope. Coverage stands: CI
 `db-tests` applies migrations + invariants to fresh service containers on every
 push; exact close commands remain in P2V-01..03 above.
+
+## HARDEN-2026-09 — platform hardening series (EXECUTED locally; db-tests/e2e in CI)
+
+All local items EXECUTED in this repo against the post-upgrade stack:
+
+- **Audit (both lockfiles):** `npm audit` → **0 findings** root workspace AND
+  `apps/web` (dev included). CI `security` job gates on this every push.
+- **API suites on express 5.2.1 + pino 10.3.1:** api 16 · relay 4 · sim 2 ·
+  security 9 (incl. new SEC-010 header + SEC-011 timing cases) · xlayer 4 ·
+  ocpp-remote 2 · gateway-close 2 · race 2 — all passed.
+- **OpenAPI drift gate under Express 5:** `app.router` fallback re-verified —
+  spec=48, routes~52, no missing paths (the pre-fix `app._router` access would
+  have silently reported no routes).
+- **eslint 10 flat config:** 0 problems, `--max-warnings 0`. The stricter gate
+  caught two latent issues on adoption (unused catch binding in `oracle.js`;
+  never-read assignment in `gateway.js`) — both fixed.
+- **`next build` (16.3.4/React 19):** 17 routes compile; `/stations/[id]` +
+  `/session/[id]` migrated to `useParams()`.
+- **Browser-executed (Playwright, `next start` prod):** /login renders → operator
+  login stores `vh_token` → client nav to /discover → `/stations/1` renders
+  "VIT Chennai Gate" with connector tiles (useParams route live) → /telemetry
+  renders. Zero page errors across all four pages.
+- **SEC-011 timing parity (measured):** known-email wrong-password vs
+  unknown-email over 3 sample pairs — medians **42 ms vs 42 ms, gap 0 ms**.
+- **BUG-021 regression validation:** `gateway-close.js` fails (CP flips OFFLINE)
+  against the unguarded handler, passes with the guard — the suite is validated
+  to catch its own bug.
+- **Graceful drain probe:** SIGTERM to the running API → `"drained — bye"` within
+  1.5 s; worker stops between 2 s cycles (loop contract reviewed in code).
+- **Not run here (by design):** Oracle/Timescale db-tests + compose e2e execute on
+  push in CI (db-tests → e2e chain); stated plainly rather than simulated.

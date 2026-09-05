@@ -4,6 +4,46 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+### Security (HARDEN-2026-09)
+
+- **Zero known CVEs across both lockfiles**: express 4.19 → 5.2.1 (DoS CVE
+  chain GHSA-4mjr-xmp4-gh2g closed), Next 14.2.5 → 16.3.4 + React 19 (framework
+  CVE cluster + postcss chain closed). `npm audit` is now a CI gate on both
+  lockfiles (`security` job, 5-job pipeline).
+- SEC-011: login no longer leaks account existence by timing — unknown emails
+  are verified against a fixed dummy scrypt hash (measured ≈42 ms both paths,
+  gap 0 ms across 3 sample pairs). Regression-gated in `apps/api/test/security.js`.
+- SEC-010: `x-powered-by` framework fingerprint removed; proxy trust is now
+  opt-in via `TRUST_PROXY` (BUG-023) so the documented Caddy deploy profile
+  cannot collapse the per-IP login throttle into a platform-wide outage.
+
+### Changed
+
+- **Platform toolchain**: eslint 8 `.eslintrc` → eslint 10 flat config
+  (`eslint.config.js`; stricter gate immediately caught an unused catch binding
+  and a never-read assignment); pino 9 → 10.3.1; Node 22 LTS images with a
+  Node 20/22 CI matrix keeping `engines >=20` honest; checkout/setup-node v7;
+  concurrency `cancel-in-progress`.
+- **Web**: Next 16 + React 19 — dynamic-route pages migrated from sync `params`
+  props to `useParams()` (the `/stations/:id` + `/session/:id` routes were
+  verified in a real browser, zero page errors).
+- `scripts/check-openapi.js` uses the `app.router` getter (Express 5 removed
+  `app._router`) — the OpenAPI drift gate would otherwise have silently zeroed.
+  Re-verified: spec=48 routes~52, no missing paths.
+
+### Fixed
+
+- BUG-021: a reconnecting charge point's stale socket deregistered its live
+  successor and marked the charger OFFLINE — the gateway close handler now only
+  clears the registration it owns. Regression suite `apps/api/test/gateway-close.js`
+  was validated to catch the bug (unguarded handler → red).
+- BUG-022: worker/relay HTTP calls were unbounded — a hung API could freeze the
+  telemetry pipeline. Every call now carries `AbortSignal.timeout(5s)`.
+- No graceful shutdown anywhere: the API now drains on SIGTERM/SIGINT (stop
+  accepting, close OCPP sockets, 10 s failsafe) and the worker stops between 2 s
+  cycles; compose services gained `stop_grace_period` above the failsafes and
+  `restart: unless-stopped`.
+
 ### Added
 
 - Worker now syncs Timescale `station_map` from `GET /internal/station-map` on
@@ -15,8 +55,8 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 - The API Dockerfile never copied `apps/worker` (compose runs the worker from the
   same image), so the worker silently exited in the compose stack — B2G-001's
   relay was never live in e2e. The image now ships `apps/worker`.
-- CI actions bumped to `checkout`/`setup-node` v5 (drops Node 20 deprecation
-  warnings on the runner).
+- (Superseded in HARDEN-2026-09 below: actions are now at v7 with a Node 20/22
+  matrix — see the Security/Changed sections above.)
 
 ### Fixed (migrations were never run end-to-end — “CI partly theater” closed)
 
