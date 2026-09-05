@@ -34,6 +34,11 @@ built against that surface, so the surface _is_ the port.
   is explicitly out of scope (single-VM compose topology, ADR-0001).
 - `resolveBandPrice` stays sync from the cached bands (tariff versions refresh the cache
   on write); half-open `[start, end)` matches `TARIFF_PKG` post-V005.
+- B3G-004: durable idempotency replay is read-then-insert. On two concurrent same-key
+  requests _on different instances_, both could miss the SELECT and both execute;
+  correctness then rests on the reservation overlap constraint (second attempt → 409
+  `OVERLAP`) and the `key_value` PK (second INSERT fails, Map path continues). Under the
+  documented single-instance deployment this window is unreachable. No code needed.
 
 ## Consequences
 

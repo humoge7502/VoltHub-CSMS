@@ -423,6 +423,31 @@ module.exports = function routes(store) {
       }
     })
   );
+  // B3G-001: operator RemoteStart — same plumbing as RemoteStop, allow-list gated.
+  // Body: { cpId, connectorNo, idTag }. Fires RemoteStartTransaction to the CP.
+  r.post(
+    '/sessions/remote-start',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const cpId = Number(req.body.cpId);
+      const connectorNo = Number(req.body.connectorNo);
+      const idTag = String(req.body.idTag || '');
+      const cp = store.cps.get(cpId);
+      if (!cp) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'charge point' } });
+      const m = /^TAG-(\d+)$/.exec(idTag);
+      if (!m || !store.users.has(Number(m[1])))
+        return res.status(422).json({ error: { code: 'INVALID_IDTAG', message: 'allow-list only' } });
+      try {
+        const { startTransaction } = require('./ocpp/gateway');
+        const registry = global.__ocppRegistry;
+        const out = await startTransaction(registry, cp.ocpp_identity, idTag, connectorNo, req.log || console);
+        res.status(202).json({ accepted: true, ...out });
+      } catch (e) {
+        res.status(e.status || 409).json({ error: { code: e.code || 'CP_OFFLINE', message: e.message } });
+      }
+    })
+  );
   r.get(
     '/sessions',
     authRequired,

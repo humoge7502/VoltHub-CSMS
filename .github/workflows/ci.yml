@@ -23,6 +23,7 @@ jobs:
       - run: npm run test:race -w apps/api
       - run: node apps/api/test/security.js
       - run: node apps/api/test/xlayer.js
+      - run: node apps/api/test/ocpp-remote.js
       - run: node test/sql/run-invariants.js
       - run: node scripts/check-openapi.js
       - run: npm run test -w apps/simulator
@@ -77,7 +78,7 @@ jobs:
       - name: Race suite (local mutex semantics)
         run: npm run test:race -w apps/api
       - name: Security + cross-layer suites
-        run: node apps/api/test/security.js && node apps/api/test/xlayer.js
+        run: node apps/api/test/security.js && node apps/api/test/xlayer.js && node apps/api/test/ocpp-remote.js
       - name: DB-backed suites (STORE=oracle — adapter write-through)
         run: STORE=oracle npm run test -w apps/api && STORE=oracle npm run test:race -w apps/api
       - name: Invariants gate (real runner — 0 rows or red)

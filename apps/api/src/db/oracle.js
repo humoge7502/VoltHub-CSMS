@@ -166,13 +166,17 @@ async function hydrate(local, pool) {
     // B2G-005: hydrate the transactional world (reservations → sessions → invoices → ledger).
     // Best-effort per table; empty DB => keep seeds. seq counters reseeded from MAX(id).
     await q(
-      `SELECT reservation_id, connector_ref, user_id, vehicle_id, start_at, end_at, status,
+      `SELECT reservation_id, connector_ref, cp_id, connector_no, user_id, vehicle_id, start_at, end_at, status,
          TO_CHAR(created_at,'YYYY-MM-DD"T"HH24:MI:SS') c FROM reservation`,
       'reservations',
       (r) => {
+        const cpId = r.CP_ID != null ? Number(r.CP_ID) : Number(String(r.CONNECTOR_REF).split(':')[0]);
+        const connNo = r.CONNECTOR_NO != null ? Number(r.CONNECTOR_NO) : Number(String(r.CONNECTOR_REF).split(':')[1]);
         local.reservations.set(Number(r.RESERVATION_ID), {
           reservation_id: Number(r.RESERVATION_ID),
           connector_ref: r.CONNECTOR_REF,
+          cp_id: cpId,
+          connector_no: connNo,
           user_id: Number(r.USER_ID),
           vehicle_id: r.VEHICLE_ID ? Number(r.VEHICLE_ID) : null,
           start_at: new Date(r.START_AT).toISOString(),
@@ -184,17 +188,21 @@ async function hydrate(local, pool) {
       }
     );
     await q(
-      `SELECT session_id, user_id, vehicle_id, reservation_id, connector_ref, tariff_plan_id, id_tag,
+      `SELECT session_id, user_id, vehicle_id, reservation_id, connector_ref, cp_id, connector_no, tariff_plan_id, id_tag,
       state, billing_state, started_at, ended_at, start_meter_kwh, end_meter_kwh, energy_kwh, stop_reason FROM charging_session`,
       'sessions',
       (r) => {
         const id = Number(r.SESSION_ID);
+        const cpId = r.CP_ID != null ? Number(r.CP_ID) : Number(String(r.CONNECTOR_REF).split(':')[0]);
+        const connNo = r.CONNECTOR_NO != null ? Number(r.CONNECTOR_NO) : Number(String(r.CONNECTOR_REF).split(':')[1]);
         local.sessions.set(id, {
           session_id: id,
           user_id: Number(r.USER_ID),
           vehicle_id: r.VEHICLE_ID ? Number(r.VEHICLE_ID) : null,
           reservation_id: r.RESERVATION_ID ? Number(r.RESERVATION_ID) : null,
           connector_ref: r.CONNECTOR_REF,
+          cp_id: cpId,
+          connector_no: connNo,
           tariff_plan_id: Number(r.TARIFF_PLAN_ID),
           id_tag: r.ID_TAG,
           state: r.STATE,
@@ -448,6 +456,8 @@ function wrapWithOracle(local, pool) {
         return {
           reservation_id: out,
           connector_ref: `${cpId}:${connNo}`,
+          cp_id: Number(cpId),
+          connector_no: Number(connNo),
           user_id: uid,
           vehicle_id: vehicleId || null,
           start_at: new Date(startAt).toISOString(),

@@ -63,8 +63,10 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     IF v_overlap > 0 THEN
       RAISE_APPLICATION_ERROR(-20503, 'OVERLAP: connector ' || v_ref || ' already booked in window');
     END IF;
-    INSERT INTO reservation (connector_ref, user_id, vehicle_id, start_at, end_at, status)
-    VALUES (v_ref, p_user, p_vehicle, p_start, p_end, 'BOOKED')
+    -- V006 (ADR-0006): FK pair written natively; the FK constraint (V005) validates
+    -- the row at INSERT time instead of a trigger deriving it afterwards.
+    INSERT INTO reservation (connector_ref, cp_id, connector_no, user_id, vehicle_id, start_at, end_at, status)
+    VALUES (v_ref, p_cp, p_conn, p_user, p_vehicle, p_start, p_end, 'BOOKED')
     RETURNING reservation_id INTO p_res_id;
     UPDATE connector SET status = 'RESERVED', last_state_change_at = SYSTIMESTAMP
      WHERE cp_id = p_cp AND connector_no = p_conn;
@@ -185,9 +187,10 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
         RAISE_APPLICATION_ERROR(-20505, 'RESERVATION_MISMATCH: reservation does not belong to caller/connector or not BOOKED');
       END IF;
     END IF;
-    INSERT INTO charging_session (user_id, vehicle_id, reservation_id, connector_ref,
+    -- V006 (ADR-0006): FK pair written natively alongside the display handle.
+    INSERT INTO charging_session (user_id, vehicle_id, reservation_id, connector_ref, cp_id, connector_no,
       tariff_plan_id, id_tag, state, billing_state, started_at, start_meter_kwh)
-    VALUES (p_user, p_vehicle, p_res, v_ref, p_plan, p_idtag, 'PREPARING', 'UNBILLED', SYSTIMESTAMP, 0)
+    VALUES (p_user, p_vehicle, p_res, v_ref, p_cp, p_conn, p_plan, p_idtag, 'PREPARING', 'UNBILLED', SYSTIMESTAMP, 0)
     RETURNING session_id INTO p_sid;
     IF p_res IS NOT NULL THEN
       UPDATE reservation SET status = 'CONVERTED' WHERE reservation_id = p_res;

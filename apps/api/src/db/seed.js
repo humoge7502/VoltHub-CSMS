@@ -280,6 +280,7 @@ function seedStore(s, profile = 'demo') {
   for (let i = 0; i < count; i++) {
     const d = drivers[Math.floor(R() * drivers.length)];
     const key = connKeys[Math.floor(R() * connKeys.length)];
+    const [seedCp, seedNo] = key.split(':').map(Number);
     const start = new Date(Date.now() - Math.floor(R() * 30) * 86400000 - Math.floor(R() * 86400) * 1000);
     const durMin = Math.min(30 + R() * 60, 240);
     const end = new Date(start.getTime() + durMin * 60000);
@@ -292,6 +293,8 @@ function seedStore(s, profile = 'demo') {
       vehicle_id: [...s.vehicles.values()].find((v) => v.user_id === d.user_id)?.vehicle_id || null,
       reservation_id: null,
       connector_ref: key,
+      cp_id: seedCp,
+      connector_no: seedNo,
       tariff_plan_id: planId,
       id_tag: `TAG-${d.user_id}`,
       state: 'COMPLETED',
@@ -401,9 +404,12 @@ function seedStore(s, profile = 'demo') {
   }
   // one no-show reservation (EXPIRED story)
   const rid = ++s.seq.res;
+  const [nsCp, nsNo] = connKeys[0].split(':').map(Number);
   s.reservations.set(rid, {
     reservation_id: rid,
     connector_ref: connKeys[0],
+    cp_id: nsCp,
+    connector_no: nsNo,
     user_id: drivers[1].user_id,
     vehicle_id: null,
     start_at: new Date(Date.now() - 3 * 3600000).toISOString(),

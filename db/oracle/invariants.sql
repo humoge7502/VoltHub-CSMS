@@ -24,9 +24,21 @@ SELECT i.invoice_id FROM invoice i WHERE i.status='PAID'
  AND NOT EXISTS (SELECT 1 FROM payment p WHERE p.invoice_id=i.invoice_id AND p.status='SUCCESS');
 -- 8. D-07(b): balance_after chain continuity per user (expect 0 rows):
 SELECT l1.user_id, l1.seq_no FROM wallet_ledger l1
- JOIN wallet_ledger l2 ON l2.user_id=l1.user_id AND l2.seq_no=l1.seq_no-1
+  LEFT JOIN wallet_ledger l2 ON l2.user_id=l1.user_id AND l2.seq_no=l1.seq_no-1
  WHERE l1.seq_no > 1 AND l2.seq_no IS NULL;
 -- 9. D-07(c)/B2G-004: no invoice FAILED (failed PAYMENTS are the record; invoices stay DUE) (expect 0 rows):
 SELECT invoice_id FROM invoice WHERE status='FAILED';
 -- 10. D-07 extra: no BILLED session without COMPLETED state mirrored (expect 0 rows):
 SELECT session_id FROM charging_session WHERE billing_state='BILLED' AND state NOT IN ('COMPLETED','CANCELLED');
+-- 11. V006/ADR-0006: FK-native pair integrity — no NULL pair, no dangling pair (expect 0 rows):
+SELECT reservation_id AS id, 'reservation' AS src FROM reservation WHERE cp_id IS NULL OR connector_no IS NULL
+ UNION ALL
+SELECT session_id AS id, 'session' AS src FROM charging_session WHERE cp_id IS NULL OR connector_no IS NULL
+ UNION ALL
+SELECT r.reservation_id AS id, 'reservation-dangling' AS src FROM reservation r
+  LEFT JOIN connector c ON c.cp_id=r.cp_id AND c.connector_no=r.connector_no
+ WHERE r.cp_id IS NOT NULL AND c.cp_id IS NULL
+ UNION ALL
+SELECT s.session_id AS id, 'session-dangling' AS src FROM charging_session s
+  LEFT JOIN connector c ON c.cp_id=s.cp_id AND c.connector_no=s.connector_no
+ WHERE s.cp_id IS NOT NULL AND c.cp_id IS NULL;

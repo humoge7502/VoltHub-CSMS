@@ -264,6 +264,9 @@ function createStore() {
       const r = {
         reservation_id,
         connector_ref: key,
+        // V006/ADR-0006: FK pair written natively alongside the display handle (mirrors packages).
+        cp_id: Number(cpId),
+        connector_no: Number(connNo),
         user_id: uid,
         vehicle_id: vehicleId || null,
         start_at: start.toISOString(),
@@ -365,6 +368,9 @@ function createStore() {
         vehicle_id: vehicleId || null,
         reservation_id: reservationId || null,
         connector_ref: key,
+        // V006/ADR-0006: FK pair written natively alongside the display handle.
+        cp_id: Number(cpId),
+        connector_no: Number(connNo),
         tariff_plan_id: planId,
         id_tag: idTag || null,
         state: 'PREPARING',

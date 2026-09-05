@@ -30,7 +30,8 @@ function stopTransaction(registry, identity, sessionId, log) {
   } catch (e) {
     return Promise.reject(e);
   }
-  (log?.info || (() => {}))({ identity, sessionId }, 'ocpp RemoteStopTransaction sent');
+  // B3G-001: method-call form preserves pino `this` (detached log.info throws msgPrefix TypeError).
+  if (log && typeof log.info === 'function') log.info({ identity, sessionId }, 'ocpp RemoteStopTransaction sent');
   return Promise.resolve({ uid, identity, transactionId: Number(sessionId) });
 }
 function startTransaction(registry, identity, idTag, connectorId, log) {
@@ -47,7 +48,7 @@ function startTransaction(registry, identity, idTag, connectorId, log) {
   } catch (e) {
     return Promise.reject(e);
   }
-  (log?.info || (() => {}))({ identity, idTag }, 'ocpp RemoteStartTransaction sent');
+  if (log && typeof log.info === 'function') log.info({ identity, idTag }, 'ocpp RemoteStartTransaction sent');
   return Promise.resolve({ uid, identity });
 }
 

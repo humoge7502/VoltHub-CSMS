@@ -14,7 +14,7 @@
     "dev:api": "npm run dev -w apps/api",
     "seed": "node scripts/seed/generate.js",
     "migrate": "bash scripts/migrate.sh",
-    "test": "npm run test -w apps/api && npm run test -w apps/simulator && node apps/api/test/security.js && node apps/api/test/xlayer.js && node test/sql/run-invariants.js && node scripts/check-openapi.js",
+    "test": "npm run test -w apps/api && npm run test -w apps/simulator && node apps/api/test/security.js && node apps/api/test/xlayer.js && node apps/api/test/ocpp-remote.js && node test/sql/run-invariants.js && node scripts/check-openapi.js",
     "test:race": "npm run test:race -w apps/api",
     "test:e2e": "node test/e2e/run.js",
     "test:load": "command -v k6 >/dev/null && k6 run test/load/k6-smoke.js || echo 'k6 not installed — skipping load (install k6 to run NFR-03/04 gates)'",

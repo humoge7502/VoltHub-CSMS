@@ -2,7 +2,8 @@
 -- VoltHub CSMS — V004 triggers + grants (Oracle 23ai)
 -- ============================================================================
 
--- Only 2 triggers (masterplan §15.5): session audit + connector guard.
+-- Only 2 triggers in this migration (masterplan §15.5): session audit + connector guard.
+-- (Repo-wide total is 4 after V005 adds two sync triggers; see V005__audit_hardening.sql.)
 CREATE OR REPLACE TRIGGER trg_session_audit
 AFTER UPDATE ON charging_session FOR EACH ROW
 BEGIN

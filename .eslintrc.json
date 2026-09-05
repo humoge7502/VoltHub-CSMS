@@ -24,7 +24,7 @@
       "rules": { "no-console": "off" }
     },
     {
-      "files": ["test/load/**/*.js"],
+      "files": ["test/load/**/*.js", "bench/k6-*.js"],
       "parserOptions": { "ecmaVersion": 2022, "sourceType": "module" },
       "rules": { "no-console": "off", "no-undef": "off", "no-unused-vars": "off", "prefer-const": "off" }
     }

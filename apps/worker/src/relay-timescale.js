@@ -72,7 +72,8 @@ function toRows(events) {
   return { ticks, states };
 }
 
-async function copyBatch(client, table, cols, rows, conflict) {
+// B3G-003: historically named copyBatch; performs chunked multi-row INSERT.
+async function insertBatch(client, table, cols, rows, conflict) {
   if (!rows.length) return 0;
   // Dependency-light path: multi-row INSERT ... ON CONFLICT DO NOTHING in 500-row chunks.
   let n = 0;
@@ -98,14 +99,14 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
   const client = await p.connect();
   try {
     await client.query('BEGIN');
-    const nt = await copyBatch(
+    const nt = await insertBatch(
       client,
       'meter_tick (ts, session_id, seq_no, connector_ref, meter_kwh, power_kw, voltage_v, current_a, dedupe_key)',
       ['ts', 'session_id', 'seq_no', 'connector_ref', 'meter_kwh', 'power_kw', 'voltage_v', 'current_a', 'dedupe_key'],
       ticks.map((t) => t.slice(0, 9)),
       'ON CONFLICT DO NOTHING'
     );
-    const ns = await copyBatch(
+    const ns = await insertBatch(
       client,
       'connector_state_event (ts, connector_ref, from_state, to_state, cause, session_id)',
       ['ts', 'connector_ref', 'from_state', 'to_state', 'cause', 'session_id'],
@@ -131,4 +132,4 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
   }
 }
 
-module.exports = { relayToTimescale, toRows };
+module.exports = { relayToTimescale, toRows, insertBatch, copyBatch: insertBatch };

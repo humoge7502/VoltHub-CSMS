@@ -140,10 +140,12 @@ function requireOwned(store, kind) {
       const inv = store.invoices.get(id);
       if (!inv) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'invoice' } });
       const sess = store.sessions.get(inv.session_id);
-      if (req.user.role === 'DRIVER' && (!sess || sess.user_id !== req.user.id))
+      // B3G-005: total guard — orphaned invoices (no session) deny non-admins outright.
+      if (!sess) return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your invoice' } });
+      if (req.user.role === 'DRIVER' && sess.user_id !== req.user.id)
         return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your invoice' } });
       if (req.user.role === 'OPERATOR') {
-        const stationId = sess && store.cps.get(Number(String(sess.connector_ref).split(':')[0]))?.station_id;
+        const stationId = store.cps.get(Number(String(sess.connector_ref).split(':')[0]))?.station_id;
         if (stationId && !(req.user.stationScope || []).includes(stationId))
           return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
       }

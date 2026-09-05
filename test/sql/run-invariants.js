@@ -1,6 +1,6 @@
 // SQL invariant runner (BUG-009 fix): executes checks, not a health-probe print.
 // Modes:
-//  - local (default): boots an ephemeral API and evaluates the 9 invariants in
+//  - local (default): boots an ephemeral API and evaluates the 11 invariants in
 //    db/oracle/invariants.sql against the live local store (same predicates in JS).
 //  - oracle (ORACLE_HOST set + oracledb installed): runs invariants.sql statements
 //    against Oracle; any returned row => FAIL (exit 1 with offending rows).
@@ -82,6 +82,27 @@ function localChecks(store) {
     if (s.billing_state === 'BILLED' && !['COMPLETED', 'CANCELLED'].includes(s.state))
       fails.push(`INV-9 BILLED without COMPLETED session=${s.session_id} state=${s.state}`);
   }
+  // 10. D-07(b): ledger seq chain contiguous per user (1..n, no gaps).
+  for (const uid of new Set(store.ledgers.map((l) => l.user_id))) {
+    const seqs = store.ledgers
+      .filter((l) => l.user_id === uid)
+      .map((l) => l.seq_no)
+      .sort((a, b) => a - b);
+    seqs.forEach((seq, i) => {
+      if (seq !== i + 1) fails.push(`INV-10 ledger gap user=${uid} expected=${i + 1} got=${seq}`);
+    });
+  }
+  // 11. V006/ADR-0006: FK-native pair present and dangling-free.
+  for (const r of store.reservations.values()) {
+    if (r.cp_id == null || r.connector_no == null) fails.push(`INV-11 reservation ${r.reservation_id} missing FK pair`);
+    else if (!store.connectors.get(`${r.cp_id}:${r.connector_no}`))
+      fails.push(`INV-11 reservation ${r.reservation_id} dangling pair ${r.cp_id}:${r.connector_no}`);
+  }
+  for (const s of store.sessions.values()) {
+    if (s.cp_id == null || s.connector_no == null) fails.push(`INV-11 session ${s.session_id} missing FK pair`);
+    else if (!store.connectors.get(`${s.cp_id}:${s.connector_no}`))
+      fails.push(`INV-11 session ${s.session_id} dangling pair ${s.cp_id}:${s.connector_no}`);
+  }
   return fails;
 }
 
@@ -149,17 +170,17 @@ async function main() {
   await new Promise((r) => server.listen(Number(process.env.PORT), r));
   try {
     const fails = localChecks(store);
-    // Also assert the SQL file defines the same 9 checks (drift guard).
+    // Also assert the SQL file defines the same 11 checks (drift guard).
     const sql = fs.readFileSync(path.join(__dirname, '..', '..', 'db', 'oracle', 'invariants.sql'), 'utf8');
     const count = (sql.match(/\bSELECT\b/gi) || []).length;
-    // File uses SELECT per check (some wrapped); require >= 9 SELECTs.
-    if (count < 9) fails.push(`INV-META: invariants.sql defines ${count} SELECTs, expected >= 9`);
+    // File uses SELECT per check (some wrapped); require >= 11 SELECTs.
+    if (count < 11) fails.push(`INV-META: invariants.sql defines ${count} SELECTs, expected >= 11`);
     if (fails.length) {
       console.error('INVARIANTS FAIL (local):\n' + fails.join('\n'));
       process.exitCode = 1;
     } else
       console.log(
-        `invariants: local 9 checks × ${store.sessions.size} sessions / ${store.reservations.size} reservations — 0 rows — OK`
+        `invariants: local 11 checks × ${store.sessions.size} sessions / ${store.reservations.size} reservations — 0 rows — OK`
       );
   } finally {
     server.close();
