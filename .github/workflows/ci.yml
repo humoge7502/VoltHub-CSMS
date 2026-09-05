@@ -5,7 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
       - run: npx eslint . --max-warnings 0
@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
       - run: node --check apps/api/src/server.js && node --check apps/api/src/routes.js && node --check apps/api/src/extended.js && node --check apps/api/src/errors.js && node --check apps/api/src/db/oracle.js && node --check apps/api/src/db/index.js && node --check apps/api/src/observability.js && node --check apps/worker/src/index.js && node --check apps/worker/src/relay-timescale.js && node --check apps/api/src/ocpp/gateway.js
@@ -63,7 +63,7 @@ jobs:
       TS_PASSWORD: volthub_dev_pwd
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
       - run: npm install --no-audit --no-fund oracledb pg
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with: { node-version: 20, cache: npm }
       - run: npm install --no-audit --no-fund
       # DBs first (bare containers, like db-tests), then the canonical migrate.sh
