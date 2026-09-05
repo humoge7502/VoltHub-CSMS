@@ -24,6 +24,9 @@ SELECT add_continuous_aggregate_policy('tick_1m',
   schedule_interval => INTERVAL '1 minute', if_not_exists => TRUE);
 
 -- 1-hour rollup over 1-minute cagg (hierarchical: cagg over cagg), per connector.
+-- NB: GROUP BY must name the time_bucket EXPRESSION — plain `bucket` would resolve
+-- to tick_1m's minute-level bucket column (output-alias collision) and Timescale
+-- rejects the cagg ("must include a valid time bucket function").
 CREATE MATERIALIZED VIEW IF NOT EXISTS tick_1h
 WITH (timescaledb.continuous) AS
 SELECT time_bucket('1 hour', bucket) AS bucket,
@@ -33,7 +36,7 @@ SELECT time_bucket('1 hour', bucket) AS bucket,
        MAX(peak_kw) AS peak_kw,
        SUM(ticks) AS ticks
 FROM tick_1m
-GROUP BY bucket, connector_ref
+GROUP BY time_bucket('1 hour', bucket), connector_ref
 WITH NO DATA;
 SELECT add_continuous_aggregate_policy('tick_1h',
   start_offset => INTERVAL '1 day', end_offset => INTERVAL '1 hour',
