@@ -4,6 +4,8 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-05
+
 ### Added & fixed (Audit Round 3 — B3G register + verification kit)
 
 - ADR-0006 implemented via `V006__fk_native.sql`: connector linkage is now

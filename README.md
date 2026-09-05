@@ -29,6 +29,33 @@
 - Same event, two resolutions: every OCPP `MeterValues` writes `METER_READING` (billing record, Oracle) **and** `meter_tick` (analytics record, Timescale) via an **outbox + relay** (at-least-once delivery, idempotent replay = effectively-once).
 - Race safety is proven, not claimed: CI fires parallel double-reserves and double-pays and asserts exactly one winner — against the in-process store **and** against real Oracle row locks.
 
+## System at a glance
+
+```mermaid
+flowchart TB
+  W["Next.js web console (Grid Current)"] --> REST
+  SIM["OCPP 1.6J simulator fleet<br/>normal · race · fault · no-show · burst"] --> GW
+  SIM --> REST
+  subgraph API["apps/api — one port :4000"]
+    REST["REST /api/v1 — ~40 routes, OpenAPI drift-gated"]
+    GW["OCPP 1.6J gateway<br/>(WS · Basic auth · 10 msg/s)"]
+  end
+  REST --> ST
+  GW --> ST
+  subgraph ENG["the two engines (store port, ADR-0005)"]
+    ORA[("Oracle 23ai<br/>25 relations · 7 PL/SQL packages<br/>money path — reservations · billing · ledger")]
+    TS[("TimescaleDB<br/>hypertables · caggs · compression<br/>telemetry path — meter ticks")]
+  end
+  ST -- "write-through pkg calls" --> ORA
+  ORA -- "hydrate on boot" --> ST
+  ST --> OB["outbox (in-transaction)"]
+  OB --> REL["apps/worker · 2 s · batch · ack-after-COMMIT<br/>idempotent replay ⇒ effectively-once"]
+  REL --> TS
+  REST --> MX["/metrics · /health/deep"] --> GF["Grafana"]
+```
+
+Mermaid renders natively on GitHub. Full 1-page version + ADR table: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 ## What's actually here
 
 | Layer            | Evidence                                                                                                                                                                                 |
@@ -68,15 +95,15 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@
 
 ## Docs map
 
-| What                              | Where                                                                                                                                       |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Masterplan (DA1→DA2→DA3)          | `docs/masterplan/` + polished PDF `docs/VoltHub-CSMS-Engineering-Masterplan.pdf`                                                            |
-| Architecture (1 page + diagram)   | `ARCHITECTURE.md`                                                                                                                           |
-| Decision records                  | `docs/adr/0001` modular monolith · `0002` TimescaleDB (4.90/5) · `0003` outbox pipeline · `0004` plain-JS divergence · `0005` store adapter |
-| Security posture                  | `SECURITY.md`                                                                                                                               |
-| Performance methodology           | `docs/perf.md`                                                                                                                              |
-| Demo beats                        | `docs/demo-script.md`                                                                                                                       |
-| ER / architecture / race diagrams | `diagrams/*.mmd` (Mermaid)                                                                                                                  |
+| What                              | Where                                                                                                                                                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Masterplan (DA1→DA2→DA3)          | `docs/masterplan/` + polished PDF `docs/VoltHub-CSMS-Engineering-Masterplan.pdf`                                                                                                                       |
+| Architecture (1 page + diagram)   | `ARCHITECTURE.md`                                                                                                                                                                                      |
+| Decision records                  | `docs/adr/0001` modular monolith · `0002` TimescaleDB (4.90/5) · `0003` outbox pipeline · `0004` plain-JS divergence · `0005` store adapter · `0006` connector FK-native · `0007` OCPP remote commands |
+| Security posture                  | `SECURITY.md`                                                                                                                                                                                          |
+| Performance methodology           | `docs/perf.md`                                                                                                                                                                                         |
+| Demo beats                        | `docs/demo-script.md`                                                                                                                                                                                  |
+| ER / architecture / race diagrams | `diagrams/*.mmd` (Mermaid)                                                                                                                                                                             |
 
 ## License
 

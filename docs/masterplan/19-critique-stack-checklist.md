@@ -84,65 +84,65 @@ The order encodes the philosophy: **database first, protocol second, UI third, p
 
 **Academic compliance (DA1)**
 
-- [ ] ER/EER with cardinality + participation annotated
-- [ ] weak entities justified
+- [x] ER/EER with cardinality + participation annotated (`diagrams/er-model.mmd`)
+- [x] weak entities justified (`docs/masterplan/04`, `05`)
 - [ ] specializations labeled
-- [ ] relational conversion complete (25 relations)
-- [ ] FDs + candidate keys derived
-- [ ] 2NF/3NF/BCNF worked examples
-- [ ] lossless/dependency-preservation discussed
+- [x] relational conversion complete (25 relations)
+- [x] FDs + candidate keys derived (`docs/masterplan/04`)
+- [x] 2NF/3NF/BCNF worked examples (`docs/masterplan/06-normalization-bcnf.md`)
+- [x] lossless/dependency-preservation discussed (`docs/masterplan/06-normalization-bcnf.md`)
 - [ ] handwritten report per outline
 - [ ] presentation rehearsed.
 
 **Academic compliance (DA2)**
 
-- [ ] DDL with constraints + indexes
-- [ ] views + MV + scheduler
-- [ ] packages with cursors/functions/exceptions
-- [ ] triggers justified
-- [ ] sample data coherent + sized
-- [ ] live demo checklist passes
+- [x] DDL with constraints + indexes (`db/oracle/V001..V006`)
+- [x] views + MV + scheduler (`db/oracle/V002`)
+- [x] packages with cursors/functions/exceptions (`db/oracle/V003`)
+- [x] triggers justified (`V004`/`V005` + docs/masterplan/07-08)
+- [x] sample data coherent + sized (`db/oracle/seed/seed.sql` + demo seed)
+- [ ] live demo checklist passes (needs Docker runtime — CI `e2e` job)
 - [ ] handwritten report per outline.
 
 **Academic compliance (DA3)**
 
-- [ ] decision matrix + rejections
-- [ ] hypertable DDL + policies
-- [ ] dataset imported/generated
-- [ ] core ops demonstrated
-- [ ] technology-specific queries with Oracle equivalents
-- [ ] comparative analysis with measurements
-- [ ] justification one-paragraph ready
+- [x] decision matrix + rejections (`docs/masterplan/13-da3-database-decision.md`)
+- [x] hypertable DDL + policies (`db/timescale/T001`, `T002` — caggs/compression/retention)
+- [x] dataset imported/generated (simulator burst + `scripts/seed/` + `bench/` generator)
+- [ ] core ops demonstrated (runtime — CI `db-tests` applies DDL; refresh verifications P2V-01..03)
+- [x] technology-specific queries with Oracle equivalents (`db/timescale/queries.sql` + `db/oracle/queries.sql`, masterplan §14)
+- [ ] comparative analysis with measurements (perf exp. 4 cagg-vs-raw needs Timescale runtime)
+- [x] justification one-paragraph ready (`docs/masterplan/13`)
 - [ ] handwritten report per outline.
 
 **Engineering quality**
 
-- [ ] CI green on main
-- [ ] migrations versioned
-- [ ] race tests in suite
-- [ ] invariant queries in suite
-- [ ] `/health` shows both engines
-- [ ] structured logs with request IDs
-- [ ] OpenAPI current
-- [ ] seeds deterministic
-- [ ] backup restore tested
-- [ ] perf numbers reproducible.
+- [x] CI green on main (3-job ladder — quality / db-tests / e2e)
+- [x] migrations versioned (`db/oracle/V00*`, `db/timescale/T0*`)
+- [x] race tests in suite (R1 double-reserve, R4 double-pay — both engines in CI)
+- [x] invariant queries in suite (11 checks, 0 rows — local + Oracle runner)
+- [x] `/health` shows both engines (oracle/timescale state when wired; `/health/deep` probes)
+- [x] structured logs with request IDs (pino + `x-request-id` echo)
+- [x] OpenAPI current (drift gate, zero notes)
+- [x] seeds deterministic (demo seed + `db/oracle/seed/seed.sql`)
+- [ ] backup restore tested (host-runtime item — `expdp`/pg_dump story in DEPLOY.md)
+- [x] perf numbers reproducible (`bench/` scripts + `docs/perf.md` methodology + `results-local.json`).
 
 **Portfolio**
 
-- [ ] README hero + GIF
-- [ ] architecture diagram
-- [ ] honest-limits section
-- [ ] screenshots (4)
-- [ ] demo video
-- [ ] DA-tagged releases
-- [ ] resume bullets drafted
+- [x] README hero + GIF (`docs/screenshots/` strip + `demo-live.gif`)
+- [x] architecture diagram (README mermaid + `ARCHITECTURE.md`)
+- [x] honest-limits section
+- [x] screenshots (4) (dashboard · live session · telemetry · invoice @2x)
+- [ ] demo video (GIF captured; full-length video is a recording task)
+- [x] DA-tagged releases (`git tag v1.1.0` + GitHub Release from CHANGELOG)
+- [x] resume bullets drafted (`docs/resume-bullets.md`)
 - [ ] 30-second pitch rehearsed
 - [ ] eight wow-moments each have a "show me" path.
 
 **Honesty**
 
-- [ ] no unmeasured scale claims
-- [ ] simulated components labeled
-- [ ] payment scope stated
-- [ ] "what I'd build next" written.
+- [x] no unmeasured scale claims (perf.md is methodology + measured tables only)
+- [x] simulated components labeled (README honest limits + everywhere)
+- [x] payment scope stated (prepaid wallet, no card data)
+- [x] "what I'd build next" written (masterplan §02 stretch list + §18 roadmap + ADRs).
