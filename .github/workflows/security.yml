@@ -1,0 +1,104 @@
+# VoltHub-CSMS — dedicated security workflow
+#
+# Why this file exists: ci.yml already gates `npm audit` on both lockfiles, but
+# `npm audit` only sees the dependency tree. This workflow adds the three layers
+# audit cannot see:
+#   1. CodeQL  — static analysis of first-party JS/TS (injection, XSS, prototype pollution)
+#   2. gitleaks — secrets that should never have been committed (both apps, all history on PRs)
+#   3. Trivy   — container/IaC misconfigurations and OS-level CVEs in the compose stack
+#
+# Results land in Security > Code scanning alerts so every finding has a URL
+# a reviewer can be sent to — receipts, same as everything else in this repo.
+#
+# NOTE ON PINNING: actions are pinned to major tags for readability. For full
+# OpenSSF Scorecard credit (pinned-dependencies check), resolve each major tag
+# to a full commit SHA once and pin to that — e.g.
+#   actions/checkout@v4 -> actions/checkout@<40-char-sha>
+
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Monday 03:00 UTC — catch newly published CVEs against old code
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (javascript-typescript)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # Both JS apps ship to production; one query suite, security-extended
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
+
+  secrets:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history on PRs so newly-added leaks are caught even when the
+          # offending commit is several commits back (gitleaks does its own diffing)
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  supply-chain:
+    name: Trivy (vuln + misconfig)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scanners: vuln,misconfig
+          # Report-only gate first run: HIGH/CRITICAL findings land in code
+          # scanning alerts. Flip exit-code to 1 after triaging the initial
+          # backlog and this becomes a hard gate like npm audit.
+          severity: HIGH,CRITICAL
+          exit-code: 0
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
