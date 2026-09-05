@@ -264,4 +264,20 @@ BEGIN
 END;
 /
 COMMENT ON COLUMN tariff_band.start_minute IS 'D-02: minute-of-day 0-1439 derived from start_time; half-open [start,end) billing';
+
+-- ---- 6. audit_log payload CHECKs: audit_pkg.log writes plain text / NULL ----
+-- Legacy V001 added `old_value/new_value CLOB CHECK (... IS JSON)` which rejects the
+-- package audit payloads (plan names, 'DUE'/'PAID', fault codes) and NULL diffs, so
+-- tariff/seed writes failed (ORA-02290) and Oracle ended up with plans:0. Fresh DBs
+-- no longer create them (V001 updated) — drop them on any already-migrated DB.
+BEGIN
+  FOR c IN (SELECT constraint_name FROM user_constraints
+             WHERE table_name = 'AUDIT_LOG' AND constraint_type = 'C'
+               AND search_condition LIKE '%IS JSON%') LOOP
+    BEGIN
+      EXECUTE IMMEDIATE 'ALTER TABLE audit_log DROP CONSTRAINT ' || c.constraint_name;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+  END LOOP;
+END;
+/
 COMMIT;

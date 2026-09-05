@@ -317,8 +317,11 @@ CREATE TABLE audit_log (
   entity_name VARCHAR2(64) NOT NULL,
   entity_id VARCHAR2(72) NOT NULL,
   action VARCHAR2(24) NOT NULL,
-  old_value CLOB CHECK (old_value IS JSON),
-  new_value CLOB CHECK (new_value IS JSON),
+  -- old/new payloads are free-form CLOB (short text OR JSON) — audit_pkg.log and the
+  -- API both write plain values ('DUE'/'PAID', plan names, fault codes) as well as JSON
+  -- snapshots, so no IS JSON constraint (it rejected legitimate package writes).
+  old_value CLOB,
+  new_value CLOB,
   created_at TIMESTAMP(6) DEFAULT SYSTIMESTAMP NOT NULL
 );
 

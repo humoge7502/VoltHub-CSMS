@@ -75,11 +75,18 @@ jobs:
         env:
           SEED_DB: '1'
         run: bash scripts/migrate.sh
+      # These suites boot the API against the in-memory store by design. The job-level
+      # ORACLE_HOST env would make db/index.js attach the Oracle write-through adapter
+      # mid-run (async hydration) — a nondeterministic race that flaked these steps with
+      # 500s. Blank it so they run local-only; the DB-backed step below is the Oracle gate.
       - name: Contract tests (local store, fast)
+        env: { ORACLE_HOST: '' }
         run: npm run test -w apps/api
       - name: Race suite (local mutex semantics)
+        env: { ORACLE_HOST: '' }
         run: npm run test:race -w apps/api
       - name: Security + cross-layer suites
+        env: { ORACLE_HOST: '' }
         run: node apps/api/test/security.js && node apps/api/test/xlayer.js && node apps/api/test/ocpp-remote.js
       - name: DB-backed suites (STORE=oracle — adapter write-through)
         run: STORE=oracle npm run test -w apps/api && STORE=oracle npm run test:race -w apps/api

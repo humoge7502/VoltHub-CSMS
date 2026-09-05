@@ -139,6 +139,8 @@ FROM   meter_tick t LEFT JOIN station_map m USING (connector_ref);
 
 **Design notes worth a slide:** (1) the idempotency key `(session_id, ts)` is the dedupe contract with the relay; (2) `compress_segmentby = connector_ref` aligns compression with our dominant query (per-connector traces); (3) caggs are hierarchical (1m → 1h) — Timescale's incremental story at two granularities [19]; (4) TimescaleDB stores _no billing data_ — invoices stay Oracle-only, which is the whole architectural point.
 
+> **As-built (P2V-01/02, closed on a real Timescale service):** the DDL above is the ideal design — `station_id_of()` (a join) and `MODE() WITHIN GROUP` are both rejected inside continuous aggregates, which may only query one hypertable. The executable migration `db/timescale/T002__caggs.sql` therefore ships connector-scoped caggs plus query-time enrichment (`v_tick_1m_enriched`, `v_tick_1h_enriched`) and per-state `FILTER` counts with `dominant_state` derived in `v_state_1m`. Semantics are unchanged for every consumer (queries in §27 join `station_map` at read time).
+
 ---
 
 ## 27. DA3 Queries (technology-specific) with Oracle equivalents
@@ -146,18 +148,20 @@ FROM   meter_tick t LEFT JOIN station_map m USING (connector_ref);
 **Q-T1 — Live network load curve (5-min buckets, gap-filled).**
 
 ```sql
+-- station scope joins station_map at read time (cagg holds connector only)
 SELECT time_bucket('5 minutes', bucket) AS t,
-       station_id,
-       SUM(avg_kw) AS network_kw
-FROM   tick_1m
+       m.station_id,
+       SUM(c.avg_kw) AS network_kw
+FROM   tick_1m c JOIN station_map m USING (connector_ref)
 WHERE  bucket >= now() - INTERVAL '6 hours'
 GROUP  BY 1, 2
 ORDER  BY 1;
 -- gap-fill for dead periods (Timescale toolkit):
 SELECT time_bucket_gapfill('5 minutes', bucket,
        start => now() - INTERVAL '6 hours', finish => now()) AS t,
-       station_id, SUM(avg_kw) AS network_kw
-FROM   tick_1m WHERE bucket >= now() - INTERVAL '6 hours'
+       m.station_id, SUM(c.avg_kw) AS network_kw
+FROM   tick_1m c JOIN station_map m USING (connector_ref)
+WHERE  bucket >= now() - INTERVAL '6 hours'
 GROUP  BY 1, 2;
 ```
 
@@ -166,10 +170,11 @@ _Oracle equivalent:_ `mv_station_daily`-style MV with TRUNC(ts,'MI') buckets and
 **Q-T2 — Utilization per connector per hour.**
 
 ```sql
+-- dominant_state lives in v_state_1m (derived from the cagg's per-state counts)
 SELECT time_bucket('1 hour', bucket) AS h, connector_ref,
        ROUND(100.0 * COUNT(*) FILTER (WHERE dominant_state IN ('OCCUPIED','RESERVED'))
              / NULLIF(COUNT(*),0), 1) AS occupied_pct
-FROM   state_1m
+FROM   v_state_1m
 WHERE  bucket >= now() - INTERVAL '7 days'
 GROUP  BY 1, 2 ORDER BY h, connector_ref;
 ```
@@ -179,11 +184,12 @@ _Oracle:_ CASE + GROUP BY over the raw FAULT/state history we do not keep at tic
 **Q-T3 — Fault Time / Unreachable Time per station (arXiv KPIs [9]).**
 
 ```sql
+-- events carry connector_ref only; station attribution joins station_map
 WITH spans AS (
-  SELECT connector_ref, station_id,
-         to_state, ts,
-         LEAD(ts) OVER (PARTITION BY connector_ref ORDER BY ts) AS next_ts
-  FROM   connector_state_event)
+  SELECT c.connector_ref, m.station_id,
+         c.to_state, c.ts,
+         LEAD(c.ts) OVER (PARTITION BY c.connector_ref ORDER BY c.ts) AS next_ts
+  FROM   connector_state_event c JOIN station_map m USING (connector_ref))
 SELECT station_id,
        ROUND(EXTRACT(EPOCH FROM SUM(next_ts - ts)
              FILTER (WHERE to_state = 'FAULTED')) / 3600.0, 2) AS fault_hours,

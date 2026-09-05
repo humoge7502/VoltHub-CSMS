@@ -60,8 +60,11 @@ END;
 /
 
 -- fault story: one CCS2 highway connector faulted (last ECR DC point)
-DECLARE v_fault NUMBER; BEGIN
-  maintenance_pkg.report_fault(p_ref => (SELECT MAX(cp_id) || ':2' FROM charge_point),
+-- NB: PL/SQL cannot use a scalar subquery inside a procedure argument — select first.
+DECLARE v_fault NUMBER; v_last_cp NUMBER;
+BEGIN
+  SELECT MAX(cp_id) INTO v_last_cp FROM charge_point;
+  maintenance_pkg.report_fault(p_ref => v_last_cp || ':2',
     p_code => 'GroundFailure', p_sev => 'CRITICAL', p_src => 'OCPP',
     p_desc => 'Ground fault detected mid-session (seed story)', p_fault => v_fault);
 END;
