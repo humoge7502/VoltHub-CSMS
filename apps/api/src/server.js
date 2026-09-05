@@ -39,6 +39,13 @@ if (process.env.ORACLE_HOST) {
 }
 
 const app = express();
+// SEC-010: no framework fingerprint on responses (Express sets X-Powered-By by default).
+app.disable('x-powered-by');
+// BUG-023: behind the documented Caddy deploy profile every request arrived with the
+// proxy's IP, so the per-IP login throttle (10/min) collapsed into a platform-wide
+// login outage. Trusting the proxy is OPT-IN (TRUST_PROXY=1 trusts one hop, or pass
+// a value like `loopback` for Caddy on the same host); default stays untrusted.
+if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY === '1' ? 1 : process.env.TRUST_PROXY);
 app.use(cors({ origin: (process.env.WEB_ORIGIN || 'http://localhost:3000').split(',') }));
 app.use(securityHeaders);
 app.use(express.json({ limit: '256kb' }));
@@ -111,5 +118,30 @@ if (require.main === module) {
   server.listen(PORT, () =>
     log.info(`volthub api on :${PORT} (mode: ${store._mode}, sessions: ${store.sessions.size})`)
   );
+  // Graceful shutdown (BUG-022 companion): SIGTERM/SIGINT stop accepting new
+  // connections, close OCPP charge-point sockets, drain in-flight requests, then
+  // exit — compose's stop_grace_period (15 s) sits above the 10 s failsafe so a
+  // hung request cannot turn `docker compose stop` into a mid-ack kill.
+  const drain = (sig) => {
+    log.info({ sig }, 'shutting down — draining in-flight requests');
+    const failsafe = setTimeout(() => {
+      log.warn('drain timeout — forcing exit');
+      process.exit(0);
+    }, 10000);
+    failsafe.unref?.();
+    try {
+      for (const ws of global.__ocppRegistry?.values?.() || []) {
+        try {
+          ws.close(4401, 'server shutdown');
+        } catch {}
+      }
+    } catch {}
+    server.close(() => {
+      log.info('drained — bye');
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', () => drain('SIGTERM'));
+  process.on('SIGINT', () => drain('SIGINT'));
 }
 module.exports = { app, server, store };

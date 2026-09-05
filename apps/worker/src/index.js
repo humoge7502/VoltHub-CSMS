@@ -30,6 +30,13 @@ function loadSeen() {
   return seenCache;
 }
 
+// BUG-022: every worker HTTP call is bounded — a hung API must not freeze the
+// relay forever. AbortSignal.timeout aborts after 5 s and the loop backs off.
+const HTTP_TIMEOUT_MS = 5000;
+function apiFetch(url, opts = {}) {
+  return fetch(url, { ...opts, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+}
+
 async function relayOnce() {
   // Prod path (TS_HOST set): batched COPY into hypertables; ack only after COMMIT.
   if (process.env.TS_HOST) {
@@ -42,7 +49,7 @@ async function relayOnce() {
     });
     return relayToTimescale(API, TOKEN);
   }
-  const r = await fetch(`${API}/internal/outbox`, { headers: { 'x-internal': TOKEN } });
+  const r = await apiFetch(`${API}/internal/outbox`, { headers: { 'x-internal': TOKEN } });
   if (!r.ok) throw new Error(`outbox poll ${r.status}`);
   const { events } = await r.json();
   if (!events.length) return { relayed: 0 };
@@ -67,7 +74,7 @@ async function relayOnce() {
     );
     fresh.forEach((e) => seen.add(e.dedupe_key));
   }
-  const ack = await fetch(`${API}/internal/outbox/ack`, {
+  const ack = await apiFetch(`${API}/internal/outbox/ack`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-internal': TOKEN },
     body: JSON.stringify({ ids: events.map((e) => e.event_id) }),
@@ -77,14 +84,31 @@ async function relayOnce() {
 }
 
 async function sweepOnce() {
-  const r = await fetch(`${API}/internal/expire`, { method: 'POST', headers: { 'x-internal': TOKEN } });
+  const r = await apiFetch(`${API}/internal/expire`, { method: 'POST', headers: { 'x-internal': TOKEN } });
   return r.json();
 }
 
 if (require.main === module) {
   (async () => {
     console.log(`[worker] relay -> ${API} (2s loop)`);
-    for (;;) {
+    // Graceful shutdown (BUG-022 companion): SIGTERM ends the loop after the
+    // current cycle — replay is idempotent (ack-after-COMMIT + dedupe), so stopping
+    // mid-batch loses nothing. A 10 s failsafe keeps the drain inside compose's
+    // stop_grace_period even if a poll hangs (HTTP is bounded at 5 s anyway).
+    let stop = false;
+    const failsafe = setTimeout(() => {
+      console.error('[worker] drain timeout — forcing exit');
+      process.exit(0);
+    }, 10000);
+    failsafe.unref?.();
+    process.on('SIGTERM', () => {
+      console.log('[worker] SIGTERM — draining');
+      stop = true;
+    });
+    process.on('SIGINT', () => {
+      stop = true;
+    });
+    while (!stop) {
       try {
         const a = await relayOnce();
         const b = await sweepOnce().catch(() => ({ expired: 0 }));
@@ -92,8 +116,10 @@ if (require.main === module) {
       } catch (e) {
         console.error('[worker]', e.message, '— backing off (sink-down: accumulate, stay honest)');
       }
+      if (stop) break;
       await new Promise((r) => setTimeout(r, 2000));
     }
+    console.log('[worker] stopped cleanly');
   })();
 }
 module.exports = {

@@ -99,8 +99,14 @@ async function insertBatch(client, table, cols, rows, conflict) {
 // may not join inside their definitions (P2V-01), so the relay keeps a denormalized
 // copy in Timescale for query-time enrichment (v_tick_*_enriched, Grafana). The API
 // serves the authoritative rows at GET /internal/station-map from its hydrated store.
+// BUG-022: HTTP is bounded (5 s) so a hung API cannot freeze the relay pipeline.
+const HTTP_TIMEOUT_MS = 5000;
+function bounded(fetchFn) {
+  return (url, opts = {}) => fetchFn(url, { ...opts, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+}
+
 async function syncStationMap(apiBase, internalToken, fetchImpl) {
-  const fetchFn = fetchImpl || fetch;
+  const fetchFn = bounded(fetchImpl || fetch);
   const r = await fetchFn(`${apiBase}/internal/station-map`, { headers: { 'x-internal': internalToken } });
   if (!r.ok) throw new Error(`station-map poll ${r.status}`);
   const { rows } = await r.json();
@@ -136,7 +142,7 @@ async function syncStationMap(apiBase, internalToken, fetchImpl) {
 }
 
 async function relayToTimescale(apiBase, internalToken, fetchImpl) {
-  const fetchFn = fetchImpl || fetch;
+  const fetchFn = bounded(fetchImpl || fetch);
   const r = await fetchFn(`${apiBase}/internal/outbox`, { headers: { 'x-internal': internalToken } });
   if (!r.ok) throw new Error(`outbox poll ${r.status}`);
   const { events } = await r.json();

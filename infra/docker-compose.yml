@@ -20,6 +20,7 @@ services:
       timeout: 5s
       retries: 30
       start_period: 60s
+    restart: unless-stopped
 
   timescale:
     image: timescale/timescaledb:2.17.2-pg16
@@ -39,6 +40,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
 
   api:
     build: { context: .., dockerfile: apps/api/Dockerfile }
@@ -57,6 +59,9 @@ services:
     depends_on:
       oracle: { condition: service_healthy }
       timescale: { condition: service_healthy }
+    # API drains in-flight requests on SIGTERM (10 s failsafe) — grace must sit above it.
+    stop_grace_period: 15s
+    restart: unless-stopped
 
   worker:
     build: { context: .., dockerfile: apps/api/Dockerfile }
@@ -72,6 +77,9 @@ services:
     depends_on:
       api: { condition: service_started }
       timescale: { condition: service_healthy }
+    # Worker stops between 2 s cycles; a drained stop is cleaner than SIGKILL mid-ack.
+    stop_grace_period: 12s
+    restart: unless-stopped
 
   web:
     build: { context: .., dockerfile: apps/web/Dockerfile }
@@ -80,6 +88,7 @@ services:
       NEXT_PUBLIC_API_BASE: http://localhost:4000/api/v1
     ports: ['3000:3000']
     depends_on: [api]
+    restart: unless-stopped
 
   # Optional: --profile observability (1 hr setup, big demo payoff, §34 SHOULD)
   grafana:
