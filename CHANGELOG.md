@@ -4,7 +4,13 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
-Nothing pending — see [1.2.0] below.
+### Changed
+
+- **oracledb 6.10.0 → 7.0.1** (the last deliberately-deferred upgrade): merged
+  after a fully-green db-tests run against real Oracle 23ai — the exact gate the
+  hardening report set (no blind driver bumps without DB-backed CI).
+- `ci.yml` push trigger scoped to `main` so `v*` tag pushes don't re-run the
+  whole 5-job matrix (the tag-driven `release.yml` already re-verifies).
 
 ## [1.2.0] — 2026-09-05
 

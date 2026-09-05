@@ -171,3 +171,14 @@ All local items EXECUTED in this repo against the post-upgrade stack:
   1.5 s; worker stops between 2 s cycles (loop contract reviewed in code).
 - **Not run here (by design):** Oracle/Timescale db-tests + compose e2e execute on
   push in CI (db-tests → e2e chain); stated plainly rather than simulated.
+
+## HARDEN-2026-09B — GitHub pack + roadmap closure (2026-09-05)
+
+- **Presentation & automation pack applied**: README v2, GitHub Pages one-pager
+  (`docs/index.html`, deployed from `main`/`/docs`), 1280×640 social preview,
+  YAML issue forms, tag-driven `release.yml`, OpenSSF `scorecard.yml` (first run
+  green on push). Release **v1.2.0** published with notes extracted from
+  `CHANGELOG.md`.
+- **oracledb 6.10.0 → 7.0.1 merged** — the last deferred dependency, after PR #5
+  CI passed every gate including `db-tests` against real Oracle 23ai.
+- `ci.yml` push trigger scoped to `main` (tag pushes no longer duplicate CI).
