@@ -6,7 +6,50 @@
 // password=charge_point.auth_secret). Enforced when the CP has a secret or OCPP_AUTH=require.
 'use strict';
 const crypto = require('crypto');
-const { parse, result, callError } = require('@volthub/ocpp-messages');
+const { parse, result, call, callError } = require('@volthub/ocpp-messages');
+
+let __callUid = 0;
+function nextCallId() {
+  return `csms-${Date.now().toString(36)}-${++__callUid}`;
+}
+
+// B2G-009: CSMS→CP remote commands (half-duplex fix). Fire-and-forget CALL over the
+// stored socket; the CP answers with CALLRESULT (handled in the RESULT branch below).
+// Currently used by POST /sessions/:id/remote-stop; RemoteStart shares the plumbing.
+function stopTransaction(registry, identity, sessionId, log) {
+  const ws = registry?.get?.(identity);
+  if (!ws || ws.readyState !== 1) {
+    const e = new Error(`CP_OFFLINE: ${identity} not connected`);
+    e.code = 'CP_OFFLINE';
+    e.status = 409;
+    return Promise.reject(e);
+  }
+  const uid = nextCallId();
+  try {
+    ws.send(call(uid, 'RemoteStopTransaction', { transactionId: Number(sessionId) }));
+  } catch (e) {
+    return Promise.reject(e);
+  }
+  (log?.info || (() => {}))({ identity, sessionId }, 'ocpp RemoteStopTransaction sent');
+  return Promise.resolve({ uid, identity, transactionId: Number(sessionId) });
+}
+function startTransaction(registry, identity, idTag, connectorId, log) {
+  const ws = registry?.get?.(identity);
+  if (!ws || ws.readyState !== 1) {
+    const e = new Error(`CP_OFFLINE: ${identity} not connected`);
+    e.code = 'CP_OFFLINE';
+    e.status = 409;
+    return Promise.reject(e);
+  }
+  const uid = nextCallId();
+  try {
+    ws.send(call(uid, 'RemoteStartTransaction', { idTag, connectorId: Number(connectorId) }));
+  } catch (e) {
+    return Promise.reject(e);
+  }
+  (log?.info || (() => {}))({ identity, idTag }, 'ocpp RemoteStartTransaction sent');
+  return Promise.resolve({ uid, identity });
+}
 
 function checkBasic(req, identity, cp) {
   const secret = cp?.auth_secret;
@@ -17,14 +60,24 @@ function checkBasic(req, identity, cp) {
   const m = /^Basic (.+)$/.exec(h);
   if (!m) return false;
   let decoded = '';
-  try { decoded = Buffer.from(m[1], 'base64').toString('utf8'); } catch { return false; }
+  try {
+    decoded = Buffer.from(m[1], 'base64').toString('utf8');
+  } catch {
+    return false;
+  }
   const idx = decoded.indexOf(':');
   if (idx < 0) return false;
-  const user = decoded.slice(0, idx), pass = decoded.slice(idx + 1);
+  const user = decoded.slice(0, idx),
+    pass = decoded.slice(idx + 1);
   if (user !== identity) return false;
-  const a = Buffer.from(pass), b = Buffer.from(String(secret || ''));
+  const a = Buffer.from(pass),
+    b = Buffer.from(String(secret || ''));
   if (a.length !== b.length) return false;
-  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+  try {
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
 }
 
 function mountOcpp(wss, store, log) {
@@ -36,29 +89,48 @@ function mountOcpp(wss, store, log) {
     const m = String(req.url || '').match(/\/ocpp\/([^/?]+)/);
     const identity = m ? decodeURIComponent(m[1]) : null;
     if (!identity || !store.cpsByOcpp.has(identity)) {
-      ws.close(4404, 'unknown charge point identity'); return;
+      ws.close(4404, 'unknown charge point identity');
+      return;
     }
     const cpId = store.cpsByOcpp.get(identity);
     const cp = store.cps.get(cpId);
     if (!checkBasic(req, identity, cp)) {
-      try { ws.close(4401, 'ocpp basic auth required (Security Profile 1)'); } catch {}
+      try {
+        ws.close(4401, 'ocpp basic auth required (Security Profile 1)');
+      } catch {}
       (log.warn || log.info)({ identity }, 'ocpp rejected: bad basic auth');
       return;
     }
-    cp.status = 'ONLINE'; cp.last_seen_at = new Date().toISOString();
+    cp.status = 'ONLINE';
+    cp.last_seen_at = new Date().toISOString();
     // Duplicate connection: close the stale socket so one identity == one socket (OCPP 1.6J §4).
     const prev = registry.get(identity);
-    if (prev && prev !== ws) { try { prev.close(4400, 'duplicate charge point identity'); } catch {} }
+    if (prev && prev !== ws) {
+      try {
+        prev.close(4400, 'duplicate charge point identity');
+      } catch {}
+    }
     registry.set(identity, ws);
     log.info({ identity }, 'ocpp connected');
 
     ws.on('message', async (raw) => {
       // rate limit 10/s per CP
       const now = Date.now();
-      const arr = (lastMsg.get(identity) || []).filter(t => now - t < 1000);
-      arr.push(now); lastMsg.set(identity, arr);
-      if (arr.length > 10) { ws.send(callError('0', 'FormationViolation', 'rate limit 10 msg/s per charge point')); return; }
-      let msg; try { msg = parse(raw); } catch { ws.send(callError('0', 'FormationViolation')); return; }
+      const arr = (lastMsg.get(identity) || []).filter((t) => now - t < 1000);
+      arr.push(now);
+      lastMsg.set(identity, arr);
+      if (arr.length > 10) {
+        ws.send(callError('0', 'FormationViolation', 'rate limit 10 msg/s per charge point'));
+        return;
+      }
+      let msg;
+      try {
+        msg = parse(raw);
+      } catch {
+        ws.send(callError('0', 'FormationViolation'));
+        return;
+      }
+      // B2G-009: CSMS-initiated CALLs get CALLRESULT/CALLERROR answers — log and drop.
       if (msg.kind !== 'CALL') return;
       const p = msg.payload || {};
       try {
@@ -74,15 +146,46 @@ function mountOcpp(wss, store, log) {
           case 'StatusNotification': {
             const c = store.connectors.get(`${cpId}:${p.connectorId}`);
             if (c) {
-              const map = { Available: 'AVAILABLE', Occupied: 'OCCUPIED', Reserved: 'RESERVED', Faulted: 'FAULTED', Unavailable: 'UNAVAILABLE' };
+              const map = {
+                Available: 'AVAILABLE',
+                Occupied: 'OCCUPIED',
+                Reserved: 'RESERVED',
+                Faulted: 'FAULTED',
+                Unavailable: 'UNAVAILABLE',
+              };
               const to = map[p.status] || 'UNAVAILABLE';
-              const from = c.status; c.status = to; c.last_state_change_at = new Date().toISOString();
+              const from = c.status;
+              c.status = to;
+              c.last_state_change_at = new Date().toISOString();
               if (p.errorCode && p.errorCode !== 'NoError') {
                 const fid = ++store.seq.fault;
-                store.faults.set(fid, { fault_id: fid, connector_ref: `${cpId}:${p.connectorId}`, cp_id: cpId, error_code: p.errorCode, severity: 'WARN', source: 'OCPP', description: p.info || null, reported_by: null, reported_at: new Date().toISOString(), cleared_at: null });
+                store.faults.set(fid, {
+                  fault_id: fid,
+                  connector_ref: `${cpId}:${p.connectorId}`,
+                  cp_id: cpId,
+                  error_code: p.errorCode,
+                  severity: 'WARN',
+                  source: 'OCPP',
+                  description: p.info || null,
+                  reported_by: null,
+                  reported_at: new Date().toISOString(),
+                  cleared_at: null,
+                });
               }
-              store.emitOutbox('CONNECTOR_STATE', `ocpp:${cpId}:${p.connectorId}:${Date.now()}`, { connector_ref: `${cpId}:${p.connectorId}`, from, to, cause: 'OCPP' });
-              store.stateEvents.push({ ts: new Date().toISOString(), connector_ref: `${cpId}:${p.connectorId}`, from_state: from, to_state: to, cause: 'OCPP', session_id: null });
+              store.emitOutbox('CONNECTOR_STATE', `ocpp:${cpId}:${p.connectorId}:${Date.now()}`, {
+                connector_ref: `${cpId}:${p.connectorId}`,
+                from,
+                to,
+                cause: 'OCPP',
+              });
+              store.stateEvents.push({
+                ts: new Date().toISOString(),
+                connector_ref: `${cpId}:${p.connectorId}`,
+                from_state: from,
+                to_state: to,
+                cause: 'OCPP',
+                session_id: null,
+              });
             }
             ws.send(result(msg.uid, {}));
             break;
@@ -102,21 +205,37 @@ function mountOcpp(wss, store, log) {
               break;
             }
             const uid = Number(tagUid[1]);
-            const sess = await store.startSession({ uid, vehicleId: null, cpId, connNo: p.connectorId, planId: store.defaultPlanId ? store.defaultPlanId() : 2, reservationId: null, idTag: p.idTag });
+            const sess = await store.startSession({
+              uid,
+              vehicleId: null,
+              cpId,
+              connNo: p.connectorId,
+              planId: store.defaultPlanId ? store.defaultPlanId() : 2,
+              reservationId: null,
+              idTag: p.idTag,
+            });
             seqByTx.set(sess.session_id, 0);
             ws.send(result(msg.uid, { transactionId: sess.session_id, idTagInfo: { status: 'Accepted' } }));
             break;
           }
           case 'MeterValues': {
             const tx = p.transactionId;
-            const vals = [...(p.meterValue || [])].flatMap(mv => mv.sampledValue || []);
-            const e = vals.find(v => v.measurand === 'Energy.Active.Import.Register');
-            const pr = vals.find(v => v.measurand === 'Power.Active.Import');
+            const vals = [...(p.meterValue || [])].flatMap((mv) => mv.sampledValue || []);
+            const e = vals.find((v) => v.measurand === 'Energy.Active.Import.Register');
+            const pr = vals.find((v) => v.measurand === 'Power.Active.Import');
             // BUG-006 fix: monotonic per-session counter, never Date.now() (collides + breaks (session_id,seq_no) PK).
             if (tx && e) {
               const next = (seqByTx.get(Number(tx)) || 0) + 1;
               seqByTx.set(Number(tx), next);
-              await store.recordTick(tx, next, new Date().toISOString(), Number(e.value) / 1000, pr ? Number(pr.value) / 1000 : null, null, null);
+              await store.recordTick(
+                tx,
+                next,
+                new Date().toISOString(),
+                Number(e.value) / 1000,
+                pr ? Number(pr.value) / 1000 : null,
+                null,
+                null
+              );
             }
             ws.send(result(msg.uid, {}));
             break;
@@ -138,7 +257,9 @@ function mountOcpp(wss, store, log) {
           default:
             ws.send(callError(msg.uid, 'NotSupported', msg.action));
         }
-      } catch (e) { ws.send(callError(msg.uid, 'InternalError', e.message)); }
+      } catch (e) {
+        ws.send(callError(msg.uid, 'InternalError', e.message));
+      }
     });
     ws.on('close', () => {
       registry.delete(identity);
@@ -149,4 +270,4 @@ function mountOcpp(wss, store, log) {
   return registry;
 }
 
-module.exports = { mountOcpp, checkBasic };
+module.exports = { mountOcpp, checkBasic, stopTransaction, startTransaction };

@@ -165,11 +165,25 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
     p_plan IN NUMBER, p_res IN NUMBER DEFAULT NULL, p_idtag IN VARCHAR2 DEFAULT NULL, p_sid OUT NUMBER) IS
     v_ref VARCHAR2(72) := p_cp || ':' || p_conn;
     v_cstat VARCHAR2(16);
+    v_ruser NUMBER; v_rref VARCHAR2(72); v_rstat VARCHAR2(16);
   BEGIN
     BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:charge_session_pkg.start_session'); EXCEPTION WHEN OTHERS THEN NULL; END;
     SELECT status INTO v_cstat FROM connector WHERE cp_id = p_cp AND connector_no = p_conn FOR UPDATE;
     IF v_cstat NOT IN ('AVAILABLE','RESERVED') THEN
       RAISE_APPLICATION_ERROR(-20502, 'NOT_BOOKABLE: connector ' || v_ref || ' is ' || v_cstat);
+    END IF;
+    -- B2G-013: reservation ownership (mirrors JS store.startSession): reservation must
+    -- belong to caller, target this connector, and be BOOKED. Else -20505 -> 409.
+    IF p_res IS NOT NULL THEN
+      BEGIN
+        SELECT user_id, connector_ref, status INTO v_ruser, v_rref, v_rstat FROM reservation
+         WHERE reservation_id = p_res FOR UPDATE;
+      EXCEPTION WHEN NO_DATA_FOUND THEN
+        RAISE_APPLICATION_ERROR(-20505, 'RESERVATION_MISMATCH: reservation not found');
+      END;
+      IF v_ruser != p_user OR v_rref != v_ref OR v_rstat != 'BOOKED' THEN
+        RAISE_APPLICATION_ERROR(-20505, 'RESERVATION_MISMATCH: reservation does not belong to caller/connector or not BOOKED');
+      END IF;
     END IF;
     INSERT INTO charging_session (user_id, vehicle_id, reservation_id, connector_ref,
       tariff_plan_id, id_tag, state, billing_state, started_at, start_meter_kwh)
@@ -241,12 +255,14 @@ CREATE OR REPLACE PACKAGE BODY tariff_pkg AS
     -- BUG-008: half-open [start, end) to match the JS resolver (mins >= start AND mins < end).
     -- Midnight-closing bands are stored as 23:59:59 (see V005); BETWEEN (closed) mis-prices edge ticks.
     v_frac := CAST(p_at AS DATE) - TRUNC(CAST(p_at AS DATE));
+    -- B2G-011/D-03: deterministic on overlap — specific WEEKDAY/WEEKEND beats ALL.
     SELECT price_per_kwh INTO v_price FROM tariff_band
      WHERE plan_id = p_plan
        AND (day_scope = 'ALL' OR (day_scope='WEEKDAY' AND v_dow NOT IN ('SAT','SUN'))
             OR (day_scope='WEEKEND' AND v_dow IN ('SAT','SUN')))
        AND v_frac >= (CAST(start_time AS DATE) - TRUNC(CAST(start_time AS DATE)))
        AND v_frac <  (CAST(end_time AS DATE) - TRUNC(CAST(end_time AS DATE)))
+     ORDER BY CASE day_scope WHEN 'ALL' THEN 0 ELSE 1 END
      FETCH FIRST 1 ROW ONLY;
     RETURN v_price;
   EXCEPTION WHEN NO_DATA_FOUND THEN
@@ -320,10 +336,11 @@ CREATE OR REPLACE PACKAGE BODY billing_pkg AS
       RAISE_APPLICATION_ERROR(-20704, 'PAY_CONFLICT: invoice ' || v_status);
     END IF;
     SELECT balance INTO v_bal FROM wallet_account WHERE user_id = p_user FOR UPDATE;
+    -- B2G-004: invoice stays DUE on insufficient funds (the PAYMENT failed, not the invoice).
+    -- The raise rolls back the FAILED-status write; both engines now converge: FAILED payment, DUE invoice.
     IF v_bal < v_total THEN
       INSERT INTO payment (invoice_id, amount, method, status) VALUES (p_invoice, v_total, 'WALLET', 'FAILED')
       RETURNING payment_id INTO p_payment;
-      UPDATE invoice SET status = 'FAILED' WHERE invoice_id = p_invoice;
       RAISE_APPLICATION_ERROR(-20705, 'INSUFFICIENT_FUNDS');
     END IF;
     SELECT NVL(MAX(seq_no),0)+1 INTO v_seq FROM wallet_ledger WHERE user_id = p_user;

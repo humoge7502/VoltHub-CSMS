@@ -7,30 +7,31 @@ services:
       ORACLE_PASSWORD: volthub_dev_pwd
       APP_USER: volthub
       APP_USER_PASSWORD: volthub_dev_pwd
-    ports: ["1521:1521"]
+    ports: ['1521:1521']
     volumes:
       - oracle-data:/opt/oracle/oradata
       - ../db/oracle:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "echo 'select 1 from dual;' | sqlplus -S volthub/volthub_dev_pwd@localhost/freepdb1 || exit 1"]
+      test:
+        ['CMD-SHELL', "echo 'select 1 from dual;' | sqlplus -S volthub/volthub_dev_pwd@localhost/freepdb1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 60s
 
   timescale:
-    image: timescale/timescaledb:latest-pg16
+    image: timescale/timescaledb:2.17.2-pg16
     container_name: volthub-timescale
     environment:
       POSTGRES_DB: volthub
       POSTGRES_USER: volthub
       POSTGRES_PASSWORD: volthub_dev_pwd
-    ports: ["5432:5432"]
+    ports: ['5432:5432']
     volumes:
       - ts-data:/var/lib/postgresql/data
       - ../db/timescale:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U volthub"]
+      test: ['CMD-SHELL', 'pg_isready -U volthub']
       interval: 5s
       timeout: 3s
       retries: 20
@@ -48,7 +49,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-only-32-byte-secret-0123456789}
       WEB_ORIGIN: http://localhost:3000
       SEED_PROFILE: demo
-    ports: ["4000:4000"]
+    ports: ['4000:4000']
     depends_on:
       oracle: { condition: service_healthy }
       timescale: { condition: service_healthy }
@@ -56,25 +57,31 @@ services:
   worker:
     build: { context: .., dockerfile: apps/api/Dockerfile }
     container_name: volthub-worker
-    command: ["node", "apps/worker/src/index.js"]
+    command: ['node', 'apps/worker/src/index.js']
     environment:
       API_BASE: http://api:4000/api/v1
+      TS_HOST: timescale
+      TS_PORT: '5432'
+      TS_DB: volthub
+      TS_USER: volthub
+      TS_PASSWORD: volthub_dev_pwd
     depends_on:
       api: { condition: service_started }
+      timescale: { condition: service_healthy }
 
   web:
     build: { context: .., dockerfile: apps/web/Dockerfile }
     container_name: volthub-web
     environment:
       NEXT_PUBLIC_API_BASE: http://localhost:4000/api/v1
-    ports: ["3000:3000"]
+    ports: ['3000:3000']
     depends_on: [api]
 
   # Optional: --profile observability (1 hr setup, big demo payoff, §34 SHOULD)
   grafana:
     image: grafana/grafana:11.2.0
     container_name: volthub-grafana
-    ports: ["3001:3000"]
+    ports: ['3001:3000']
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

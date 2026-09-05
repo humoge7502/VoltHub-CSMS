@@ -4,18 +4,24 @@
 function oraStatus(e) {
   if (!e) return 500;
   if (e.num === -20501) return 422;
-  if ([-20502, -20503, -20504, -20601, -20602, -20603, -20702, -20703, -20704].includes(e.num)) return 409;
+  // B2G-013: -20505 RESERVATION_MISMATCH -> 409 (ownership/connector mismatch at session start).
+  if ([-20502, -20503, -20504, -20505, -20601, -20602, -20603, -20702, -20703, -20704].includes(e.num)) return 409;
   if (e.num === -20705) return 402;
   return e.status || 500;
 }
 function oraError(num, code, message) {
   const e = new Error(message || code);
-  e.num = num; e.code = code; e.status = oraStatus({ num });
+  e.num = num;
+  e.code = code;
+  e.status = oraStatus({ num });
   return e;
 }
 // Normalize node-oracledb driver errors (ORA-20503 in message) to {num, code, status}.
 function fromDriver(e) {
-  if (e && typeof e.num === 'number') { e.status = e.status || oraStatus(e); return e; }
+  if (e && typeof e.num === 'number') {
+    e.status = e.status || oraStatus(e);
+    return e;
+  }
   const m = /ORA-(\d{5})/.exec(String((e && e.message) || e || ''));
   if (m) {
     const num = -Number(m[1]);

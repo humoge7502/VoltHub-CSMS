@@ -12,7 +12,7 @@
 
 **Alternatives:** (a) microservices; (b) serverless functions; (c) layered monolith without modules; (d) modular monolith with worker.
 
-**Evaluation:** Microservices would split the reservation/billing flow across processes, forcing distributed transactions (sagas, outboxes at the service level) that *obscure* exactly the database-level correctness this course grades; industry guidance is explicit that at low station counts a monolithic CSMS with a relational database is the right call, with microservices earned later by scale [6]. Serverless complicates WebSocket (OCPP needs a persistent socket) and local reproducibility. A feature-less layered monolith permits module boundaries to rot. The modular monolith with a separate worker gives clear boundaries, honest local development, and one process that can hold OCPP sockets while the API stays stateless.
+**Evaluation:** Microservices would split the reservation/billing flow across processes, forcing distributed transactions (sagas, outboxes at the service level) that _obscure_ exactly the database-level correctness this course grades; industry guidance is explicit that at low station counts a monolithic CSMS with a relational database is the right call, with microservices earned later by scale [6]. Serverless complicates WebSocket (OCPP needs a persistent socket) and local reproducibility. A feature-less layered monolith permits module boundaries to rot. The modular monolith with a separate worker gives clear boundaries, honest local development, and one process that can hold OCPP sockets while the API stays stateless.
 
 **Recommendation:** (d) — modular monolith + worker.
 
@@ -60,25 +60,25 @@
                                                   db/ migrations (versioned SQL)
 ```
 
-Reading the diagram: all *transactional* truth lives in Oracle. The OCPP gateway and simulator make the database behave like a real charging network. The worker moves telemetry events (outbox pattern, Section 29) from Oracle into TimescaleDB, where analytics live. The optional Redis box is explicitly a stretch item, not a default.
+Reading the diagram: all _transactional_ truth lives in Oracle. The OCPP gateway and simulator make the database behave like a real charging network. The worker moves telemetry events (outbox pattern, Section 29) from Oracle into TimescaleDB, where analytics live. The optional Redis box is explicitly a stretch item, not a default.
 
 ### 8.3 Component inventory
 
-| Component | Tech | Responsibility |
-|---|---|---|
-| Web app | Next.js 15, TypeScript, Tailwind v4 | Driver/Operator/Admin UI; RSC for reads, client islands for live data |
-| API | NestJS 11, node-oracledb, Zod, OpenAPI | REST endpoints, RBAC guards, validation, transaction scripts calling PL/SQL |
-| OCPP gateway | NestJS module + `ws` | OCPP 1.6J JSON-over-WebSocket server; per-charger sessions; event emission |
-| Simulator | Node CLI | Fleet of virtual chargers running scripted scenarios (normal, race, fault, no-show) |
-| Worker | Node CLI | Outbox relay to TimescaleDB, reservation expiry sweeper, notification dispatch |
-| Oracle | gvenzl/oracle-free (23ai) container | OLTP system of record + PL/SQL packages |
-| TimescaleDB | timescale/timescaledb container | Hypertables, continuous aggregates, compression, retention (DA3) |
-| Migrations | plain numbered SQL + runner script | Single source of truth for both schemas |
-| CI | GitHub Actions | lint, typecheck, unit tests, DB constraint tests on service containers |
+| Component    | Tech                                   | Responsibility                                                                      |
+| ------------ | -------------------------------------- | ----------------------------------------------------------------------------------- |
+| Web app      | Next.js 15, TypeScript, Tailwind v4    | Driver/Operator/Admin UI; RSC for reads, client islands for live data               |
+| API          | NestJS 11, node-oracledb, Zod, OpenAPI | REST endpoints, RBAC guards, validation, transaction scripts calling PL/SQL         |
+| OCPP gateway | NestJS module + `ws`                   | OCPP 1.6J JSON-over-WebSocket server; per-charger sessions; event emission          |
+| Simulator    | Node CLI                               | Fleet of virtual chargers running scripted scenarios (normal, race, fault, no-show) |
+| Worker       | Node CLI                               | Outbox relay to TimescaleDB, reservation expiry sweeper, notification dispatch      |
+| Oracle       | gvenzl/oracle-free (23ai) container    | OLTP system of record + PL/SQL packages                                             |
+| TimescaleDB  | timescale/timescaledb container        | Hypertables, continuous aggregates, compression, retention (DA3)                    |
+| Migrations   | plain numbered SQL + runner script     | Single source of truth for both schemas                                             |
+| CI           | GitHub Actions                         | lint, typecheck, unit tests, DB constraint tests on service containers              |
 
 ### 8.4 Sub-decisions
 
-**Caching. D/A/E/R/R.** Decision: no cache in MVP; materialized views + keyset pagination first. Alternatives: Redis everywhere; in-process LRU. Evaluation: at 10k-session scale, Oracle answers interactive queries in low tens of milliseconds when indexed; a cache adds invalidation bugs that would *cost* correctness credibility. Recommendation: optional stretch only, for the station-search endpoint, with a measured before/after. Reason: caching must solve a measured problem, and none exists yet (NFR-03 threshold is met without it).
+**Caching. D/A/E/R/R.** Decision: no cache in MVP; materialized views + keyset pagination first. Alternatives: Redis everywhere; in-process LRU. Evaluation: at 10k-session scale, Oracle answers interactive queries in low tens of milliseconds when indexed; a cache adds invalidation bugs that would _cost_ correctness credibility. Recommendation: optional stretch only, for the station-search endpoint, with a measured before/after. Reason: caching must solve a measured problem, and none exists yet (NFR-03 threshold is met without it).
 
 **Background jobs. Decision:** worker process with a job table (reservation expiry, notification dispatch) + outbox relay. Alternatives: cron in API; external scheduler. Evaluation: in-API timers die with the API process and complicate tests; a job table keeps scheduling state in the transactional store where it belongs. Reason: demonstrates queue semantics using pure database features.
 

@@ -23,18 +23,13 @@ if ((process.env.SEED_PROFILE || 'demo') !== 'empty') seedStore(store, process.e
 // Background Oracle upgrade (non-blocking so require('../src/server') stays sync for tests).
 // When ORACLE_HOST is set: hydrate Maps from Oracle, then wrap money-path methods with
 // package calls (row locks enforced in the DB). Health reports the transition.
+// B2G-007: sourced through db/index.js:upgradeStore() — the ADR-0005 seam, single truth.
 if (process.env.ORACLE_HOST) {
   store._mode = 'oracle-connecting';
   (async () => {
     try {
-      const { createPool, ping, hydrate, wrapWithOracle } = require('./db/oracle');
-      const pool = await createPool();
-      await ping(pool);
-      const stats = await hydrate(store, pool);
-      wrapWithOracle(store, pool);
-      store._pool = pool;
-      store._mode = 'oracle';
-      log.info({ stats }, 'oracle adapter online (write-through)');
+      const { upgradeStore } = require('./db/index');
+      await upgradeStore(store, log);
     } catch (e) {
       store._mode = 'local-fallback';
       store._oracleError = e.message;
@@ -57,7 +52,13 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   const json = res.json.bind(res);
   res.json = (b) => {
-    if (b && b.error && !b.error.requestId) { try { b.error.requestId = req.id; } catch { /* frozen */ } }
+    if (b && b.error && !b.error.requestId) {
+      try {
+        b.error.requestId = req.id;
+      } catch {
+        /* frozen */
+      }
+    }
     return json(b);
   };
   next();
@@ -67,7 +68,9 @@ app.use((req, res, next) => {
   const t0 = Date.now();
   res.on('finish', () => {
     req.log.info({ id: req.id, m: req.method, p: req.path, s: res.statusCode, ms: Date.now() - t0 }, 'req');
-    try { require('./observability').observe(res.statusCode, Date.now() - t0); } catch {}
+    try {
+      require('./observability').observe(res.statusCode, Date.now() - t0);
+    } catch {}
   });
   next();
 });
@@ -77,22 +80,36 @@ app.get('/', (req, res) => res.json({ name: 'volthub-csms', health: '/api/v1/hea
 // eslint-disable-next-line no-unused-vars
 app.use((e, req, res, next) => {
   const status = e.status || 500;
-  log.error({ err: e.message, code: e.code }, 'unhandled');
-  res.status(status).json({ error: { code: e.code || 'INTERNAL', message: e.message || 'internal', requestId: req.id } });
+  // §11: log stack for 5xx only (pino).
+  if (status >= 500) log.error({ err: e.message, code: e.code, stack: e.stack }, 'unhandled');
+  else log.error({ err: e.message, code: e.code }, 'unhandled');
+  res
+    .status(status)
+    .json({ error: { code: e.code || 'INTERNAL', message: e.message || 'internal', requestId: req.id } });
 });
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   let path = '';
-  try { path = new URL(req.url, 'http://localhost').pathname; } catch { /* keep */ }
+  try {
+    path = new URL(req.url, 'http://localhost').pathname;
+  } catch {
+    /* keep */
+  }
   if (/^\/ocpp\/.+/.test(path)) wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-  else { socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); }
+  else {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+  }
 });
-mountOcpp(wss, store, log);
+const __ocppRegistry = mountOcpp(wss, store, log);
+global.__ocppRegistry = __ocppRegistry;
 
 const PORT = Number(process.env.PORT || process.env.API_PORT || 4000);
 if (require.main === module) {
-  server.listen(PORT, () => log.info(`volthub api on :${PORT} (mode: ${store._mode}, sessions: ${store.sessions.size})`));
+  server.listen(PORT, () =>
+    log.info(`volthub api on :${PORT} (mode: ${store._mode}, sessions: ${store.sessions.size})`)
+  );
 }
 module.exports = { app, server, store };

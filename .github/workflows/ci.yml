@@ -1,7 +1,17 @@
 name: ci
 on: [push, pull_request]
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm install --no-audit --no-fund
+      - run: npx eslint . --max-warnings 0
+      - run: npx prettier --check .
   quality:
+    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,14 +37,14 @@ jobs:
       oracle:
         image: gvenzl/oracle-free:23-slim
         env: { ORACLE_PASSWORD: volthub_dev_pwd, APP_USER: volthub, APP_USER_PASSWORD: volthub_dev_pwd }
-        ports: ["1521:1521"]
+        ports: ['1521:1521']
         options: >-
           --health-cmd "echo 'select 1 from dual;' | sqlplus -S volthub/volthub_dev_pwd@localhost/freepdb1 || exit 1"
           --health-interval 10s --health-timeout 5s --health-retries 30 --health-start-period 60s
       timescale:
-        image: timescale/timescaledb:latest-pg16
+        image: timescale/timescaledb:2.17.2-pg16
         env: { POSTGRES_DB: volthub, POSTGRES_USER: volthub, POSTGRES_PASSWORD: volthub_dev_pwd }
-        ports: ["5432:5432"]
+        ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U volthub"
           --health-interval 5s --health-timeout 3s --health-retries 20

@@ -349,44 +349,44 @@ OUTBOX_EVENT(
 
 ## 10.3 Mapping decisions (ER pattern → relational pattern)
 
-| ER construct | Mapped to | Why |
-|---|---|---|
-| Strong entity | table + surrogate PK + declared CK | surrogate keys avoid composite-FK cascades in URLs and child tables |
-| Weak entity (CONNECTOR, METER_READING, INVOICE_LINE, WALLET_LEDGER) | composite PK (parent FK + partial key) | preserves identification dependency; surrogate dropped deliberately on these four |
-| 1:1 (INVOICE-SESSION) | FK + UNIQUE | UNIQUE on FK enforces the "one" side |
-| 1:1 partial (WALLET_ACCOUNT-USER) | FK as PK of child | child existence-dependent |
-| M:N with attributes (reservations, sessions) | associative table with own PK | attributes need a home; own PK simplifies child FKs |
-| Multivalued attribute | new relation with composite PK | the 1NF-safe form |
-| Disjoint total specialization (USER) | single table + role CHECK | discriminator is a key, not a fact; avoids 2 joins per auth (Section 9.4) |
-| Partial specialization (PAYMENT) | single table + method CHECK + extension note | no speculative CARD_PAYMENT table |
-| Composite FK for CONNECTOR children | encoded `connector_id` VARCHAR2('cp:no') + FK | Oracle supports composite FKs, but an encoded single-column key keeps child tables (reservation, session, fault, telemetry outbox) uniform; trade-off documented, uniqueness still guaranteed by the parent's composite PK |
-| Derived attributes | computed at read OR frozen at transition by owning package | Section 12.6 |
+| ER construct                                                        | Mapped to                                                  | Why                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Strong entity                                                       | table + surrogate PK + declared CK                         | surrogate keys avoid composite-FK cascades in URLs and child tables                                                                                                                                                        |
+| Weak entity (CONNECTOR, METER_READING, INVOICE_LINE, WALLET_LEDGER) | composite PK (parent FK + partial key)                     | preserves identification dependency; surrogate dropped deliberately on these four                                                                                                                                          |
+| 1:1 (INVOICE-SESSION)                                               | FK + UNIQUE                                                | UNIQUE on FK enforces the "one" side                                                                                                                                                                                       |
+| 1:1 partial (WALLET_ACCOUNT-USER)                                   | FK as PK of child                                          | child existence-dependent                                                                                                                                                                                                  |
+| M:N with attributes (reservations, sessions)                        | associative table with own PK                              | attributes need a home; own PK simplifies child FKs                                                                                                                                                                        |
+| Multivalued attribute                                               | new relation with composite PK                             | the 1NF-safe form                                                                                                                                                                                                          |
+| Disjoint total specialization (USER)                                | single table + role CHECK                                  | discriminator is a key, not a fact; avoids 2 joins per auth (Section 9.4)                                                                                                                                                  |
+| Partial specialization (PAYMENT)                                    | single table + method CHECK + extension note               | no speculative CARD_PAYMENT table                                                                                                                                                                                          |
+| Composite FK for CONNECTOR children                                 | encoded `connector_id` VARCHAR2('cp:no') + FK              | Oracle supports composite FKs, but an encoded single-column key keeps child tables (reservation, session, fault, telemetry outbox) uniform; trade-off documented, uniqueness still guaranteed by the parent's composite PK |
+| Derived attributes                                                  | computed at read OR frozen at transition by owning package | Section 12.6                                                                                                                                                                                                               |
 
 ## 10.4 Candidate keys summary
 
-| Table | Candidate keys | Chosen PK | Note |
-|---|---|---|---|
-| APP_USER | {email}, {user_id} | user_id | email kept UNIQUE |
-| CONNECTOR | {cp_id, connector_no}, {connector_id encoded} | (cp_id, connector_no) | encoded column is the FK handle |
-| TARIFF_PLAN | {group_id, version_no}, {plan_id} | plan_id | version pair UNIQUE |
-| REVIEW | {session_id}, {review_id} | review_id | session_id UNIQUE enforces one-review rule |
-| CHARGING_SESSION | {session_id}, {reservation_id} (partial) | session_id | reservation_id UNIQUE |
-| WALLET_LEDGER | {user_id, seq_no}, {payment_id} (partial) | (user_id, seq_no) | payment_id UNIQUE-nullable |
-| STATION | {user-chosen name+city}? rejected | station_id | names are not reliable identifiers (documented) |
+| Table            | Candidate keys                                | Chosen PK             | Note                                            |
+| ---------------- | --------------------------------------------- | --------------------- | ----------------------------------------------- |
+| APP_USER         | {email}, {user_id}                            | user_id               | email kept UNIQUE                               |
+| CONNECTOR        | {cp_id, connector_no}, {connector_id encoded} | (cp_id, connector_no) | encoded column is the FK handle                 |
+| TARIFF_PLAN      | {group_id, version_no}, {plan_id}             | plan_id               | version pair UNIQUE                             |
+| REVIEW           | {session_id}, {review_id}                     | review_id             | session_id UNIQUE enforces one-review rule      |
+| CHARGING_SESSION | {session_id}, {reservation_id} (partial)      | session_id            | reservation_id UNIQUE                           |
+| WALLET_LEDGER    | {user_id, seq_no}, {payment_id} (partial)     | (user_id, seq_no)     | payment_id UNIQUE-nullable                      |
+| STATION          | {user-chosen name+city}? rejected             | station_id            | names are not reliable identifiers (documented) |
 
 ## 10.5 Index plan (beyond PKs/UNIQUEs)
 
-| Index | Table (columns) | Serves |
-|---|---|---|
-| IX_SESSION_USER_TIME | CHARGING_SESSION(user_id, started_at DESC) | driver history (FR-DRV-03) |
-| IX_SESSION_CONN_STATE | CHARGING_SESSION(connector_id, state) | active-session lookups |
-| IX_SESSION_STARTED | CHARGING_SESSION(started_at) | time-window analytics |
-| IX_RES_CONN_START | RESERVATION(connector_id, start_at) | overlap check query |
-| IX_RES_USER | RESERVATION(user_id, status) | "my bookings" |
-| IX_READING_TAKEN | METER_READING(taken_at) | time-range scans (also DA3 pre-filter) |
-| IX_FAULT_CONN_OPEN | FAULT(connector_id, cleared_at) | open-fault feed |
-| IX_STATION_GEO | STATION(city, status) | search prefilter; true geo via bounding-box predicate on lat/lng |
-| IX_OUTBOX_UNPROCESSED | OUTBOX_EVENT(processed_at, created_at) | relay cursor |
-| IX_INVOICE_STATUS | INVOICE(status, issued_at) | "due invoices" worklist |
+| Index                 | Table (columns)                            | Serves                                                           |
+| --------------------- | ------------------------------------------ | ---------------------------------------------------------------- |
+| IX_SESSION_USER_TIME  | CHARGING_SESSION(user_id, started_at DESC) | driver history (FR-DRV-03)                                       |
+| IX_SESSION_CONN_STATE | CHARGING_SESSION(connector_id, state)      | active-session lookups                                           |
+| IX_SESSION_STARTED    | CHARGING_SESSION(started_at)               | time-window analytics                                            |
+| IX_RES_CONN_START     | RESERVATION(connector_id, start_at)        | overlap check query                                              |
+| IX_RES_USER           | RESERVATION(user_id, status)               | "my bookings"                                                    |
+| IX_READING_TAKEN      | METER_READING(taken_at)                    | time-range scans (also DA3 pre-filter)                           |
+| IX_FAULT_CONN_OPEN    | FAULT(connector_id, cleared_at)            | open-fault feed                                                  |
+| IX_STATION_GEO        | STATION(city, status)                      | search prefilter; true geo via bounding-box predicate on lat/lng |
+| IX_OUTBOX_UNPROCESSED | OUTBOX_EVENT(processed_at, created_at)     | relay cursor                                                     |
+| IX_INVOICE_STATUS     | INVOICE(status, issued_at)                 | "due invoices" worklist                                          |
 
 Rationale: every index maps to a named query in Section 17 — no speculative indexes. Composite orderings follow the equality-then-range rule (e.g., `connector_id` equality before `start_at` range).

@@ -2,7 +2,11 @@
   "name": "@volthub/worker",
   "version": "1.0.0",
   "private": true,
-  "scripts": { "start": "node src/index.js" },
+  "scripts": {
+    "start": "node src/index.js"
+  },
   "dependencies": {},
-  "optionalDependencies": { "pg": "^8.12.0" }
+  "optionalDependencies": {
+    "pg": "^8.12.0"
+  }
 }

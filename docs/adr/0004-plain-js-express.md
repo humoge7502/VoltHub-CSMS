@@ -15,7 +15,7 @@ Keep Express + plain JS. Do not rewrite to NestJS/TS retroactively.
 ## Reasons
 
 - Velocity: the team is fluent; a rewrite buys zero database marks (DA2/DA3 grade SQL/PLSQL
-  + demonstrations, not framework choice).
+  - demonstrations, not framework choice).
 - Zero-build monorepo: `node --check` + contract tests are the entire toolchain; NestJS
   would add compile/di complexity with no academic payoff.
 - Contracts already exist without types: OpenAPI hand-spec + `TEST-SEC`/`TEST-XLAYER`

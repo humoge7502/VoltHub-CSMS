@@ -49,7 +49,7 @@ This section is the evidence base for every later decision. Each finding is mark
 
 **[Fact]** Industry engineering guidance states that at low scale, a monolithic CSMS with a relational database is the appropriate architecture, with microservices reserved for networks scaling to very large station counts [6]. AWS's reference architecture similarly decomposes the domain into command/control of chargers, session processing, and billing rather than into microservices [5].
 
-**[Recommendation]** **Modular monolith**: one NestJS application with strict module boundaries (auth, stations, sessions, billing, telemetry, admin), one Oracle schema, one TimescaleDB store, plus a small worker process for the telemetry pipeline. Microservices would add distributed-transaction complexity that would *weaken* the database story this course grades. Section 8 contains the full decision record.
+**[Recommendation]** **Modular monolith**: one NestJS application with strict module boundaries (auth, stations, sessions, billing, telemetry, admin), one Oracle schema, one TimescaleDB store, plus a small worker process for the telemetry pipeline. Microservices would add distributed-transaction complexity that would _weaken_ the database story this course grades. Section 8 contains the full decision record.
 
 ### 2.3 The data workload evidence — why two engines
 
@@ -85,7 +85,7 @@ This section is the evidence base for every later decision. Each finding is mark
 
 **[Fact]** (Direct observation of `https://www.acmvit.in/` HTML, fetched 2026-09.) The site is built with **Astro** (`.astro` component scripts, scoped `data-astro-cid` styles), styled with **Tailwind CSS** (arbitrary-value utilities such as `text-[8rem]`, `leading-[0.85]`, `tracking-tighter`), self-hosts the **PolySans** family (Bold, Bulky Wide, Slim) as display type with **Inter** 400/700/900 as body type, uses a cream-on-dark palette (headline color `#FFFDD0`), full-screen video background sections, hairline `border-white/10` dividers, and oversized uppercase headings [25].
 
-**[Recommendation]** What we take from ACM VIT is not their code or their look — it is their **design discipline**: (1) typography carries the identity, not decoration; (2) a near-monochrome palette with one warm accent; (3) enormous, tightly-tracked display type used sparingly for scale; (4) hairline borders instead of shadows-and-glass; (5) section-per-view narrative scrolling. What we deliberately do *not* copy: PolySans (paid), the cassette/retro motif, and Astro (wrong tool for a data-dense application). Our frontend uses Next.js and an original identity called **Grid Current**, specified in Section 21. For dark data-dense UIs we additionally apply the elevation-contrast lesson: without distinct surface steps, adjacent panels bleed together [26].
+**[Recommendation]** What we take from ACM VIT is not their code or their look — it is their **design discipline**: (1) typography carries the identity, not decoration; (2) a near-monochrome palette with one warm accent; (3) enormous, tightly-tracked display type used sparingly for scale; (4) hairline borders instead of shadows-and-glass; (5) section-per-view narrative scrolling. What we deliberately do _not_ copy: PolySans (paid), the cassette/retro motif, and Astro (wrong tool for a data-dense application). Our frontend uses Next.js and an original identity called **Grid Current**, specified in Section 21. For dark data-dense UIs we additionally apply the elevation-contrast lesson: without distinct surface steps, adjacent panels bleed together [26].
 
 ### 2.8 KPIs operators actually track
 
@@ -107,7 +107,7 @@ A **Charge Point Operator (CPO)** owns/operates physical charging infrastructure
 
 **[Fact]** Charging infrastructure follows a strict three-level hierarchy. A **station** (location) contains one or more **charge points** (the physical cabinet; OCPP 2.x calls this an EVSE — Electric Vehicle Supply Equipment), each offering one or more **connectors** (the physical socket/cable: Type 2, CCS2, Bharat AC001, CHAdeMO) [1][15][16].
 
-This hierarchy is not negotiable in the data model because OCPP itself identifies devices as `chargePointId / connectorId`, availability is a property of a *connector*, power capability is a property of a *connector's standard*, and a station's "has available chargers" is a *derived* aggregate over its connectors. Getting this hierarchy right is the difference between a toy schema and one that mirrors reality.
+This hierarchy is not negotiable in the data model because OCPP itself identifies devices as `chargePointId / connectorId`, availability is a property of a _connector_, power capability is a property of a _connector's standard_, and a station's "has available chargers" is a _derived_ aggregate over its connectors. Getting this hierarchy right is the difference between a toy schema and one that mirrors reality.
 
 ### 3.3 The charging session lifecycle
 
@@ -122,7 +122,7 @@ RESERVED -> PREPARING -> CHARGING -> SUSPENDED -> CHARGING -> COMPLETED
 COMPLETED -> BILLED -> PAID   (billing pipeline, separate from energy flow)
 ```
 
-Session states live in a lookup table; PL/SQL package procedures are the *only* code path allowed to transition states; a trigger rejects illegal transitions; every transition is audit-logged. This turns "we thought about correctness" into a demoable, testable fact.
+Session states live in a lookup table; PL/SQL package procedures are the _only_ code path allowed to transition states; a trigger rejects illegal transitions; every transition is audit-logged. This turns "we thought about correctness" into a demoable, testable fact.
 
 ### 3.4 Reservations
 
@@ -132,7 +132,7 @@ Drivers reserve a **connector** for a future time window. Real systems constrain
 
 **[Fact]** Chargers report meter values (energy, power, current, voltage) periodically during a session — typically every 15–60 seconds in real deployments [7][8]. A session's bill derives from final meter deltas priced under the tariff plan active during the session, plus session/idle fees [13][14].
 
-**[Recommendation]** Every `MeterValues` message becomes a `METER_READING` row in Oracle (session-scoped, the *billing* record of record: reading at start, at end, and periodic deltas) *and* a telemetry tick streamed to TimescaleDB in DA3 (the *analytics* record: high-frequency power/voltage/current/SOC for load curves). Same physical event, two purposeful representations at different resolutions — the clearest possible demonstration that OLTP and OLAP schemas differ by design, not by accident.
+**[Recommendation]** Every `MeterValues` message becomes a `METER_READING` row in Oracle (session-scoped, the _billing_ record of record: reading at start, at end, and periodic deltas) _and_ a telemetry tick streamed to TimescaleDB in DA3 (the _analytics_ record: high-frequency power/voltage/current/SOC for load curves). Same physical event, two purposeful representations at different resolutions — the clearest possible demonstration that OLTP and OLAP schemas differ by design, not by accident.
 
 ### 3.6 Faults, maintenance, and the operator loop
 
@@ -140,15 +140,15 @@ Connectors fail: hardware faults, cable breaks, payment terminal errors, or the 
 
 ### 3.7 KPI definitions (used across DA2 queries and DA3 analytics)
 
-| KPI | Definition | Where computed |
-|---|---|---|
-| Connector uptime % | 1 - (fault time / sellable time) over a period | DA3 cagg + DA2 MV |
-| Utilization % | occupied session time / sellable connector time | DA3 cagg + DA2 MV |
-| Energy delivered | sum of session kWh | Oracle sessions + DA3 ticks |
-| Revenue | sum of invoice totals | Oracle (system of record) |
-| Charging success rate | completed sessions / started sessions | Oracle |
-| Mean session duration | avg(completed_at - started_at) | Oracle |
-| Fault time | sum of fault-state durations by reason | DA3 state events [9] |
-| Peak load | max avg power (kW) per time bucket | DA3 only |
+| KPI                   | Definition                                      | Where computed              |
+| --------------------- | ----------------------------------------------- | --------------------------- |
+| Connector uptime %    | 1 - (fault time / sellable time) over a period  | DA3 cagg + DA2 MV           |
+| Utilization %         | occupied session time / sellable connector time | DA3 cagg + DA2 MV           |
+| Energy delivered      | sum of session kWh                              | Oracle sessions + DA3 ticks |
+| Revenue               | sum of invoice totals                           | Oracle (system of record)   |
+| Charging success rate | completed sessions / started sessions           | Oracle                      |
+| Mean session duration | avg(completed_at - started_at)                  | Oracle                      |
+| Fault time            | sum of fault-state durations by reason          | DA3 state events [9]        |
+| Peak load             | max avg power (kW) per time bucket              | DA3 only                    |
 
 The split is deliberate: money and session KPIs are Oracle-native (they need transactional truth); telemetry KPIs are TimescaleDB-native (they need time-series aggregation). Neither engine is asked to do the other's job.

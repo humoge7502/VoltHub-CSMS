@@ -24,5 +24,14 @@
       ]
     }
   ],
-  "templating": { "list": [{ "name": "station", "type": "query", "datasource": "TimescaleDB", "query": "SELECT station_id FROM station_map GROUP BY 1" }] }
+  "templating": {
+    "list": [
+      {
+        "name": "station",
+        "type": "query",
+        "datasource": "TimescaleDB",
+        "query": "SELECT station_id FROM station_map GROUP BY 1"
+      }
+    ]
+  }
 }

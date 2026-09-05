@@ -6,7 +6,7 @@ Date: 2026-09-05 · Status: accepted (implements §7.2 wiring plan).
 
 `apps/api/src/db/store.js` mirrors the Oracle packages 1:1 (same method names, same
 `ORA-20xxx` bands, same state machines) but holds data in process Maps. Routes were
-built against that surface, so the surface *is* the port.
+built against that surface, so the surface _is_ the port.
 
 ## Decision
 

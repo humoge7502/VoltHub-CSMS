@@ -9,12 +9,12 @@
 ### 30.1 Authentication
 
 - **Password hashing:** Argon2id (via `argon2` npm), memory 19 MiB, iterations 2, parallelism 1 — OWASP-recommended baseline; hashes stored as the encoded PHC string in `app_user.password_hash` (VARCHAR2(97)). Login re-derives and compares with constant-time verification. Password policy: 12+ chars, checked with a blocklist, never length-capped.
-- **Tokens:** 15-minute access JWT (HS256, `sub`, `role`, `stationScope` claims) + 30-day refresh token, *stored hashed (SHA-256) in a `refresh_token` table with device metadata; rotation on every refresh; reuse of a rotated token revokes the family* (the standard theft-response). Logout revokes server-side.
+- **Tokens:** 15-minute access JWT (HS256, `sub`, `role`, `stationScope` claims) + 30-day refresh token, _stored hashed (SHA-256) in a `refresh_token` table with device metadata; rotation on every refresh; reuse of a rotated token revokes the family_ (the standard theft-response). Logout revokes server-side.
 - **Why not cookie sessions:** stateless API suits the demo and shows token lifecycle mastery; cookies remain a documented alternative for browser-only systems. CSRF risk is nil while we are header-bearer (no cookies); if cookies are ever adopted, SameSite=Strict + CSRF token notes are pre-written in the security doc.
 
 ### 30.2 Authorization (RBAC, twice)
 
-API layer: NestJS guards + a `@Roles()` decorator; operators additionally scoped by `stationScope` claim (they only see their stations). Database layer (Section 13.2): `VOLTHUB_APP_ROLE` lacks DELETE everywhere, lacks UPDATE on ledger/audit/reading tables, and can reach state changes only through packages. Result: even a compromised API process cannot rewrite money history — defense in depth that can be *demonstrated* by attempting the forbidden UPDATE live in SQLcl.
+API layer: NestJS guards + a `@Roles()` decorator; operators additionally scoped by `stationScope` claim (they only see their stations). Database layer (Section 13.2): `VOLTHUB_APP_ROLE` lacks DELETE everywhere, lacks UPDATE on ledger/audit/reading tables, and can reach state changes only through packages. Result: even a compromised API process cannot rewrite money history — defense in depth that can be _demonstrated_ by attempting the forbidden UPDATE live in SQLcl.
 
 ### 30.3 Injection and input safety
 
@@ -36,20 +36,20 @@ Every state-changing mutation writes AUDIT_LOG (triggers + packages; NFR-05) wit
 
 ### 31.1 The race catalog (each row = a named, tested, handled race)
 
-| # | Race | Mechanism that kills it | Test |
-|---|---|---|---|
-| R1 | Two drivers reserve the same connector window | `SELECT ... FOR UPDATE` on the connector row serializes writers; overlap check then fails the loser (15.2) | 2 parallel API calls → 201 + 409, exactly one row |
-| R2 | Reservation window overlapping an *active session* | connector status check inside the same locked read (OCCUPIED is not bookable) | attempt during live simulated session → 409 |
-| R3 | Station goes UNAVAILABLE while reservations exist | expiry/conversion path marks BOOKED rows CANCELLED with notification; blocked new bookings by status check | operator toggle mid-test → reservation cancelled, audit row |
-| R4 | Wallet debited twice for one invoice | `FOR UPDATE` on the invoice row + status flip inside the same transaction (15.4) | 2 parallel pay calls → one SUCCESS, one 409 |
-| R5 | Duplicate API requests (network retry) | Idempotency-Key table replays recorded response (18.6) | same key twice → identical bodies, one ledger row |
-| R6 | Meter ticks out of order (OCPP retry) | per-session monotonic check BR-11 + `(session_id, seq_no)` PK absorbs duplicates | shuffled ticks → PK rejects dupes, package rejects regressions |
-| R7 | Session state flapping (COMPLETED then CHARGING) | transition matrix + `FOR UPDATE` on session row (-20601) | illegal transition attempt → 409, audit row |
-| R8 | Relay crash between sink insert and processed_at mark | at-least-once + sink dedupe key (Section 29) | kill -9 mid-batch → zero dupes in Timescale |
+| #   | Race                                                  | Mechanism that kills it                                                                                    | Test                                                           |
+| --- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| R1  | Two drivers reserve the same connector window         | `SELECT ... FOR UPDATE` on the connector row serializes writers; overlap check then fails the loser (15.2) | 2 parallel API calls → 201 + 409, exactly one row              |
+| R2  | Reservation window overlapping an _active session_    | connector status check inside the same locked read (OCCUPIED is not bookable)                              | attempt during live simulated session → 409                    |
+| R3  | Station goes UNAVAILABLE while reservations exist     | expiry/conversion path marks BOOKED rows CANCELLED with notification; blocked new bookings by status check | operator toggle mid-test → reservation cancelled, audit row    |
+| R4  | Wallet debited twice for one invoice                  | `FOR UPDATE` on the invoice row + status flip inside the same transaction (15.4)                           | 2 parallel pay calls → one SUCCESS, one 409                    |
+| R5  | Duplicate API requests (network retry)                | Idempotency-Key table replays recorded response (18.6)                                                     | same key twice → identical bodies, one ledger row              |
+| R6  | Meter ticks out of order (OCPP retry)                 | per-session monotonic check BR-11 + `(session_id, seq_no)` PK absorbs duplicates                           | shuffled ticks → PK rejects dupes, package rejects regressions |
+| R7  | Session state flapping (COMPLETED then CHARGING)      | transition matrix + `FOR UPDATE` on session row (-20601)                                                   | illegal transition attempt → 409, audit row                    |
+| R8  | Relay crash between sink insert and processed_at mark | at-least-once + sink dedupe key (Section 29)                                                               | kill -9 mid-batch → zero dupes in Timescale                    |
 
 ### 31.2 Isolation choices
 
-Oracle default READ COMMITTED is correct for every flow *because the correctness arguments above use explicit row locks*, not isolation-level heroics. We document why SERIALIZABLE is unnecessary here (its retry-on-write-conflict burden would buy nothing once `FOR UPDATE` exists) — a sentence that usually impresses more than a wrong "we use SERIALIZABLE for safety".
+Oracle default READ COMMITTED is correct for every flow _because the correctness arguments above use explicit row locks_, not isolation-level heroics. We document why SERIALIZABLE is unnecessary here (its retry-on-write-conflict burden would buy nothing once `FOR UPDATE` exists) — a sentence that usually impresses more than a wrong "we use SERIALIZABLE for safety".
 
 ### 31.3 The demo-ready proof
 
@@ -68,19 +68,19 @@ Oracle default READ COMMITTED is correct for every flow *because the correctness
 
 ### 32.2 What we implement vs what we discuss
 
-| Technique | Status | Notes |
-|---|---|---|
-| Composite indexes matched to named queries | **implemented** | every index traces to a query ID (Part V, 10.5) |
-| Keyset pagination | **implemented** | Q15; OFFSET banned from list endpoints |
-| Materialized view + scheduler refresh | **implemented** | mv_station_daily + DBMS_SCHEDULER (14.3) |
-| Connection pooling | **implemented** | node-oracledb pool (18.3) |
-| DBMS_APPLICATION_INFO | **implemented** | module/action per request — `V$SESSION` shows who is running what |
-| Bind-variable caching (cursor cache) | discussed | falls out of binds; explained with `V$SQL` example |
-| Partitioning | discussed | EE-only on Oracle; *realized instead* via Timescale chunks (the DA3 argument) |
-| Compression | **implemented (DA3)** | 7-day policy on meter_tick, measured 10x+ |
-| Retention policies | **implemented (DA3)** | 90d ticks / 180d state events |
-| Redis cache | stretch only | requires a measured miss-rate to justify (6.4) |
-| EXPLAIN PLAN habits | **implemented in CI** | `test:perf` fails if Q10 exceeds budget (500ms) on seeded data |
+| Technique                                  | Status                | Notes                                                                         |
+| ------------------------------------------ | --------------------- | ----------------------------------------------------------------------------- |
+| Composite indexes matched to named queries | **implemented**       | every index traces to a query ID (Part V, 10.5)                               |
+| Keyset pagination                          | **implemented**       | Q15; OFFSET banned from list endpoints                                        |
+| Materialized view + scheduler refresh      | **implemented**       | mv_station_daily + DBMS_SCHEDULER (14.3)                                      |
+| Connection pooling                         | **implemented**       | node-oracledb pool (18.3)                                                     |
+| DBMS_APPLICATION_INFO                      | **implemented**       | module/action per request — `V$SESSION` shows who is running what             |
+| Bind-variable caching (cursor cache)       | discussed             | falls out of binds; explained with `V$SQL` example                            |
+| Partitioning                               | discussed             | EE-only on Oracle; _realized instead_ via Timescale chunks (the DA3 argument) |
+| Compression                                | **implemented (DA3)** | 7-day policy on meter_tick, measured 10x+                                     |
+| Retention policies                         | **implemented (DA3)** | 90d ticks / 180d state events                                                 |
+| Redis cache                                | stretch only          | requires a measured miss-rate to justify (6.4)                                |
+| EXPLAIN PLAN habits                        | **implemented in CI** | `test:perf` fails if Q10 exceeds budget (500ms) on seeded data                |
 
 ### 32.3 What "measured" means here
 

@@ -14,7 +14,9 @@ function secret() {
   const prod = process.env.NODE_ENV === 'production';
   if (!s || s === DEV_SECRET) {
     if (prod) {
-      console.error('[auth] FATAL: JWT_SECRET missing or default with NODE_ENV=production. Set a 32-byte random secret.');
+      console.error(
+        '[auth] FATAL: JWT_SECRET missing or default with NODE_ENV=production. Set a 32-byte random secret.'
+      );
       process.exit(1);
     }
     if (!secret._warned) {
@@ -28,8 +30,12 @@ function secret() {
 
 function stationScopeFor(store, user) {
   try {
-    return [...(store?.stations?.values() || [])].filter(s => s.operator_id === user.user_id).map(s => s.station_id);
-  } catch { return []; }
+    return [...(store?.stations?.values() || [])]
+      .filter((s) => s.operator_id === user.user_id)
+      .map((s) => s.station_id);
+  } catch {
+    return [];
+  }
 }
 
 // TD-07: explicit store injection — global.__store fallback kept only for legacy callers/tests.
@@ -43,14 +49,29 @@ function issueRefresh(store, user, device, familyId) {
   const h = crypto.createHash('sha256').update(raw).digest('hex');
   const fam = familyId || crypto.randomBytes(16).toString('hex');
   const gen = familyId
-    ? Math.max(0, ...[...store.refresh.values()].filter(t => t.family_id === familyId).map(t => t.generation || 0)) + 1
+    ? Math.max(
+        0,
+        ...[...store.refresh.values()].filter((t) => t.family_id === familyId).map((t) => t.generation || 0)
+      ) + 1
     : 0;
-  store.refresh.set(h, { token_hash: h, user_id: user.user_id, device_label: device || null, family_id: fam, generation: gen, created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 30 * 86400000).toISOString(), revoked_at: null });
+  store.refresh.set(h, {
+    token_hash: h,
+    user_id: user.user_id,
+    device_label: device || null,
+    family_id: fam,
+    generation: gen,
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 30 * 86400000).toISOString(),
+    revoked_at: null,
+  });
   return raw;
 }
 // BUG-011: reuse of a revoked token revokes its whole family (theft detection), then 401s.
 function consumeRefresh(store, raw) {
-  const h = crypto.createHash('sha256').update(String(raw || '')).digest('hex');
+  const h = crypto
+    .createHash('sha256')
+    .update(String(raw || ''))
+    .digest('hex');
   const t = store.refresh.get(h);
   if (!t) return { ok: false, reason: 'unknown' };
   if (t.revoked_at) {
@@ -68,14 +89,17 @@ function authRequired(req, res, next) {
   const tok = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!tok) return res.status(401).json({ error: { code: 'NO_TOKEN', message: 'missing bearer token' } });
   try {
-    const p = jwt.verify(tok, secret());
+    const p = jwt.verify(tok, secret(), { algorithms: ['HS256'] });
     req.user = { id: p.sub, role: p.role, stationScope: p.stationScope || [] };
     next();
-  } catch { return res.status(401).json({ error: { code: 'BAD_TOKEN', message: 'invalid/expired token' } }); }
+  } catch {
+    return res.status(401).json({ error: { code: 'BAD_TOKEN', message: 'invalid/expired token' } });
+  }
 }
 function roles(...allowed) {
   return (req, res, next) => {
-    if (!allowed.includes(req.user.role)) return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'role not allowed' } });
+    if (!allowed.includes(req.user.role))
+      return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'role not allowed' } });
     next();
   };
 }
@@ -83,13 +107,60 @@ function roles(...allowed) {
 function scopeCheck(req, res, next) {
   if (req.user.role === 'ADMIN') return next();
   if (req.user.role === 'OPERATOR') {
-    const sid = Number(req.params.id || req.body.stationId || req.query.stationId);
-    if (sid && !(req.user.stationScope || []).includes(sid)) {
+    // B2G-010: reject NaN explicitly — malformed stationId must not skip enforcement.
+    const raw = req.params.id ?? req.body.stationId ?? req.query.stationId;
+    const sid = Number(raw);
+    if (!Number.isNaN(sid) && sid && !(req.user.stationScope || []).includes(sid)) {
       // allow reads of all stations, scope only mutations
-      if (req.method !== 'GET') return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      if (req.method !== 'GET')
+        return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
     }
   }
   next();
 }
 
-module.exports = { signAccess, issueRefresh, consumeRefresh, authRequired, roles, scopeCheck, verifyPassword, secret, stationScopeFor };
+// B2G-002/003: object-level authorization. DRIVER must own the object;
+// OPERATOR must own the station (via stationScope); ADMIN bypasses.
+function requireOwned(store, kind) {
+  return (req, res, next) => {
+    if (req.user.role === 'ADMIN') return next();
+    const id = Number(req.params.id);
+    if (kind === 'session') {
+      const s = store.sessions.get(id);
+      if (!s) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'session' } });
+      if (req.user.role === 'DRIVER' && s.user_id !== req.user.id)
+        return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your session' } });
+      if (req.user.role === 'OPERATOR') {
+        const stationId = store.cps.get(Number(String(s.connector_ref).split(':')[0]))?.station_id;
+        if (stationId && !(req.user.stationScope || []).includes(stationId))
+          return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      }
+    }
+    if (kind === 'invoice') {
+      const inv = store.invoices.get(id);
+      if (!inv) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'invoice' } });
+      const sess = store.sessions.get(inv.session_id);
+      if (req.user.role === 'DRIVER' && (!sess || sess.user_id !== req.user.id))
+        return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your invoice' } });
+      if (req.user.role === 'OPERATOR') {
+        const stationId = sess && store.cps.get(Number(String(sess.connector_ref).split(':')[0]))?.station_id;
+        if (stationId && !(req.user.stationScope || []).includes(stationId))
+          return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      }
+    }
+    next();
+  };
+}
+
+module.exports = {
+  signAccess,
+  issueRefresh,
+  consumeRefresh,
+  authRequired,
+  roles,
+  scopeCheck,
+  requireOwned,
+  verifyPassword,
+  secret,
+  stationScopeFor,
+};

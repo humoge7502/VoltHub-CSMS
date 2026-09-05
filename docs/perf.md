@@ -14,13 +14,13 @@
 
 ## Benchmark suite (post-wiring — §12.5)
 
-| # | Experiment | Command | What to report |
-|---|---|---|---|
-| 1 | Discovery: JS aggregation vs `v_station_summary` | `k6 run bench/k6-discovery.js` (50 VUs) | p50/p95/p99 + error rate, both paths |
-| 2 | Reservation contention: 1 connector vs N | `k6 run bench/k6-reserve-contention.js` | serialized latency on hot connector, linear scaling on N |
-| 3 | Telemetry ingest: 50 chargers × 5 s × 10 min | `node apps/simulator/src/index.js --scenario burst --chargers 50` | relay batches/s, COPY rows/s, outbox-lag p95 |
-| 4 | Cagg analytics: raw scan vs `tick_1m` vs `tick_1h` | `psql -f bench/cagg-compare.sql` | latency + rows scanned at ≥1M ticks |
-| 5 | Read-path step load 10→50→100 VUs | `k6 run test/load/k6-smoke.js` | p50/p95/p99 + pool saturation (`poolMax=8`) |
+| #   | Experiment                                         | Command                                                           | What to report                                           |
+| --- | -------------------------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------- |
+| 1   | Discovery: JS aggregation vs `v_station_summary`   | `k6 run bench/k6-discovery.js` (50 VUs)                           | p50/p95/p99 + error rate, both paths                     |
+| 2   | Reservation contention: 1 connector vs N           | `k6 run bench/k6-reserve-contention.js`                           | serialized latency on hot connector, linear scaling on N |
+| 3   | Telemetry ingest: 50 chargers × 5 s × 10 min       | `node apps/simulator/src/index.js --scenario burst --chargers 50` | relay batches/s, COPY rows/s, outbox-lag p95             |
+| 4   | Cagg analytics: raw scan vs `tick_1m` vs `tick_1h` | `psql -f bench/cagg-compare.sql`                                  | latency + rows scanned at ≥1M ticks                      |
+| 5   | Read-path step load 10→50→100 VUs                  | `k6 run test/load/k6-smoke.js`                                    | p50/p95/p99 + pool saturation (`poolMax=8`)              |
 
 Reporting format: one table per experiment + hardware spec (CPU/RAM/disk, container
 limits) + committed scripts under `bench/`. Ratios (cagg vs raw) preferred over

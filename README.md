@@ -1,40 +1,40 @@
 # VoltHub CSMS
 
-**Two-engine EV charging management: Oracle for ACID billing/reservations, TimescaleDB for telemetry — driven by an OCPP 1.6J simulator, race-proof core, typography-led Next.js dashboard.**
+**Two-engine EV charging management: Oracle for ACID billing/reservations, TimescaleDB for telemetry — driven by an OCPP 1.6J gateway + simulator fleet, race-tested in CI on both database engines, with a typography-led Next.js operations console.**
 
-![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg) `oracle-23ai` `timescaledb` `modular-monolith-express` `ocpp-1.6j` `nextjs`
+![ci](https://github.com/humoge7502/VoltHub-CSMS/actions/workflows/ci.yml/badge.svg) ![node](https://img.shields.io/badge/node-20-339933) ![license](https://img.shields.io/badge/license-MIT-blue) `oracle-23ai` `timescaledb` `modular-monolith` `ocpp-1.6j` `nextjs`
 
-> 30-second GIF: two terminals reserve the same connector → one `201 BOOKED`, one `409 OVERLAP` → plug-in → live kWh/kW/cost → itemized invoice → wallet pay. (Record with `scripts/demo.sh`.)
+<p align="center">
+  <em>Screenshot strip placeholder — replace with docs/screenshots/*.png (dashboard · live session · telemetry load curve · invoice)</em>
+</p>
+
+> **30-second demo:** two terminals reserve the same connector → one `201 BOOKED`, one `409 OVERLAP` → plug-in → live kWh/kW/cost → itemized invoice → wallet pay. (Record with `scripts/demo.sh` — GIF lands here.)
 
 ## Why two databases (4 lines)
 
-- Sessions/billing are ACID-relational (money-path, overlap exclusion, ledger) → **Oracle 23ai**.
-- 90%+ of rows are immutable time-ordered meter ticks read as window aggregates → wrong shape for a row-store → **TimescaleDB** hypertables + continuous aggregates + compression + retention.
-- Same event, two resolutions: every `MeterValues` writes `METER_READING` (billing record, Oracle) + `meter_tick` (analytics record, Timescale) via an **outbox + relay** (at-least-once, idempotent replay = effectively-once).
-- Diagram: `diagrams/system-architecture.mmd`.
+- Sessions/billing are ACID-relational (money path, overlap exclusion, ledger) → **Oracle 23ai**, with the money logic in PL/SQL packages (`RESERVATION_PKG`, `CHARGE_SESSION_PKG`, `BILLING_PKG`) — not in app code.
+- 90%+ of rows are immutable, time-ordered meter ticks read as window aggregates — the wrong shape for a row-store → **TimescaleDB** hypertables + 1m/1h continuous aggregates + 7-day compression + 90-day retention.
+- Same event, two resolutions: every OCPP `MeterValues` writes `METER_READING` (billing record, Oracle) **and** `meter_tick` (analytics record, Timescale) via an **outbox + relay** (at-least-once delivery, idempotent replay = effectively-once).
+- Race safety is proven, not claimed: CI fires parallel double-reserves and double-pays and asserts exactly one winner — against the in-process store **and** against real Oracle row locks.
 
-## Screenshots
+## What's actually here
 
-| Health grid | Live session | Load curve | Invoice |
-|---|---|---|---|
-| `apps/web/src/app/dashboard/page.js` | `apps/web/src/app/session/[id]/page.js` | `apps/web/src/app/telemetry/page.js` | `apps/web/src/app/invoices/page.js` |
+| Layer            | Evidence                                                                                                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Oracle OLTP**  | 25-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V005`                      |
+| **Concurrency**  | `SELECT … FOR UPDATE` / `SKIP LOCKED` bulk expiry, error bands `-2050x…-209xx` mapped to HTTP once (`src/errors.js`), race suites in CI on both engines — `apps/api/test/race.js`        |
+| **OCPP 1.6J**    | WebSocket gateway with HTTP Basic auth on upgrade (Security Profile 1), per-CP credentials, 10 msg/s limit, 7 core messages + monotonic tick sequencing — `apps/api/src/ocpp/gateway.js` |
+| **DA3 pipeline** | Outbox → 2s relay → hypertables → caggs; crash-after-COPY replays safely — `apps/worker/`, `db/timescale/`                                                                               |
+| **API**          | ~40 REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                           |
+| **Web**          | 17 routes, "Grid Current" design system (Space Grotesk / IBM Plex Mono tabular numerals), zero chart dependencies, unified PageState + toasts + URL-as-state — `apps/web/`               |
+| **CI**           | 3 jobs: quality · db-tests (Oracle + Timescale service containers) · e2e (full compose) — `.github/workflows/ci.yml`                                                                     |
 
-Run it and click through — every number below is reproducible on a laptop.
+## Honest limits
 
-## DB highlights (show me)
-
-- **BCNF-honest model + 2 justified denormalizations** → `db/oracle/V001__core_schema.sql`, proofs in `docs/masterplan/06-normalization-bcnf.md`.
-- **Race-proof reservations** (`SELECT … FOR UPDATE` + overlap check, ORA-20503 → 409) → `db/oracle/V003__packages.sql` (`RESERVATION_PKG`), live demo `npm run test:race -w apps/api`.
-- **Money in packages, not app code** (`BILLING_PKG.bill_session/pay_invoice`, `CHARGE_SESSION_PKG` state machine, 2 triggers only) → `db/oracle/V003__packages.sql`, `V004__triggers_grants.sql`.
-- **Outbox → hypertables → 1m/1h caggs** → `db/timescale/T001__hypertables.sql`, `T002__caggs.sql`, relay `apps/worker/src/index.js`.
-- **26-query portfolio + invariants that gate CI (0 rows = pass)** → `db/oracle/queries.sql`, `db/oracle/invariants.sql`, `test/sql/run-invariants.js`, `db/timescale/queries.sql`.
-
-## Honest limits (NFR-11)
-
-- Local profile runs on an in-process store (no DB) for fast iteration; set `ORACLE_HOST`/
-  `TS_HOST` (full compose profile) for the durable two-engine path — see `apps/api/src/db/index.js`.
-- Chargers are **simulated** (SteVe precedent); payments are a **prepaid wallet** (no card data, ever); single-VM Compose, not K8s.
-- No performance numbers are claimed here — see `docs/perf.md` (methodology + reproduce steps; measured tables land after the benchmark suite runs).
+- The **local profile** (no Docker) runs an in-process store mirroring package semantics for fast iteration/tests; `ORACLE_HOST`/`TS_HOST` arms the durable two-engine path (ADR-0005).
+- Chargers are **simulated** (SteVe precedent — real hardware interop is out of scope); payments are a **prepaid wallet** (no card data, ever); single-VM Compose, not K8s (ADR-0001).
+- OCPP scope is the **1.6J core profile** (Boot/Heartbeat/Status/Authorize/Start/Meter/Stop); DataTransfer/diagnostics/firmware management are deliberately out of scope. Migration path to OCPP 2.0.1 (IEC 63584): `TransactionEvent` replaces Start/Meter/Stop — the store surface is protocol-neutral by design.
+- No performance numbers are claimed here — **see `docs/perf.md`** (methodology + 5 reproducible experiments; measured tables land from `bench/` scripts only).
 
 ## Quickstart
 
@@ -44,19 +44,27 @@ npm install
 npm run dev:api &                      # seeded demo data, /api/v1/health
 cd apps/web && npm install && npm run dev
 
-# 2) full stack (Oracle + TimescaleDB containers)
+# 2) full stack (Oracle 23ai + TimescaleDB containers)
 docker compose -f infra/docker-compose.yml up --build
 
 # 3) races + tests
 npm run test -w apps/api && npm run test:race -w apps/api
-node apps/simulator/src/index.js --scenario race   # expect 201+409
+node apps/simulator/src/index.js --scenario race   # expect exactly one 201 + one 409
 ```
 
 Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@123` · any seeded driver / `Driver@123`.
 
 ## Docs map
 
-Masterplan (DA1→DA2→DA3): docs/masterplan/ + polished PDF docs/VoltHub-CSMS-Engineering-Masterplan.pdf · ADRs: `docs/adr/` · perf: `docs/perf.md` · demo beats: `docs/demo-script.md`.
+| What                              | Where                                                                                                                                       |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Masterplan (DA1→DA2→DA3)          | `docs/masterplan/` + polished PDF `docs/VoltHub-CSMS-Engineering-Masterplan.pdf`                                                            |
+| Architecture (1 page + diagram)   | `ARCHITECTURE.md`                                                                                                                           |
+| Decision records                  | `docs/adr/0001` modular monolith · `0002` TimescaleDB (4.90/5) · `0003` outbox pipeline · `0004` plain-JS divergence · `0005` store adapter |
+| Security posture                  | `SECURITY.md`                                                                                                                               |
+| Performance methodology           | `docs/perf.md`                                                                                                                              |
+| Demo beats                        | `docs/demo-script.md`                                                                                                                       |
+| ER / architecture / race diagrams | `diagrams/*.mmd` (Mermaid)                                                                                                                  |
 
 ## License
 

@@ -1,19 +1,36 @@
 import './globals.css';
+import Link from 'next/link';
 
-export const metadata = { title: 'VoltHub CSMS', description: 'Two-engine EV charging management — Oracle OLTP + TimescaleDB telemetry' };
+export const metadata = {
+  title: 'VoltHub CSMS',
+  description: 'Two-engine EV charging management — Oracle OLTP + TimescaleDB telemetry',
+  openGraph: {
+    title: 'VoltHub CSMS',
+    description: 'Oracle money-path + TimescaleDB telemetry + OCPP 1.6J — race-tested in CI',
+    type: 'website',
+  },
+};
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body>
         <header className="topbar">
-          <span className="brand">VOLT<b>HUB</b></span>
+          <span className="brand">
+            VOLT<b>HUB</b>
+          </span>
           <nav className="nav">
-            <a href="/discover">Discover</a><a href="/reservations">Reservations</a>
-            <a href="/history">History</a><a href="/invoices">Wallet</a>
-            <a href="/notifications">Alerts</a>
-            <a href="/dashboard">Operator</a><a href="/telemetry">Telemetry</a><a href="/admin">Admin</a>
+            <Link href="/discover">Discover</Link>
+            <Link href="/reservations">Reservations</Link>
+            <Link href="/history">History</Link>
+            <Link href="/invoices">Wallet</Link>
+            <Link href="/notifications">Alerts</Link>
+            <Link href="/dashboard">Operator</Link>
+            <Link href="/telemetry">Telemetry</Link>
+            <Link href="/admin">Admin</Link>
           </nav>
-          <span style={{ marginLeft: 'auto' }} className="micro"><a href="/login">login</a> · <a href="/profile">profile</a></span>
+          <span style={{ marginLeft: 'auto' }} className="micro">
+            <Link href="/login">login</Link> · <Link href="/profile">profile</Link>
+          </span>
         </header>
         <main>{children}</main>
         <footer style={{ borderTop: '1px solid var(--hair)', marginTop: 48, padding: '20px 24px' }} className="micro">

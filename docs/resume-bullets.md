@@ -12,7 +12,7 @@
 
 ## 2. The 30-second pitch
 
-> "I built a charging-station management system around a database argument: billing and reservations need ACID, meter telemetry needs time-series storage — so it uses Oracle for the money path and TimescaleDB for analytics, connected by an outbox pipeline. Every correctness claim is enforced *in the database* — locking packages, constraints, triggers — and proven by tests that run in CI, including two concurrent bookings racing for the same charger. A simulator speaks real OCPP so the data behaves like a charging network, and the dashboard is a custom design system, not a template."
+> "I built a charging-station management system around a database argument: billing and reservations need ACID, meter telemetry needs time-series storage — so it uses Oracle for the money path and TimescaleDB for analytics, connected by an outbox pipeline. Every correctness claim is enforced _in the database_ — locking packages, constraints, triggers — and proven by tests that run in CI, including two concurrent bookings racing for the same charger. A simulator speaks real OCPP so the data behaves like a charging network, and the dashboard is a custom design system, not a template."
 
 ## 3. Interview soundbites (memorize the shape, not the words)
 

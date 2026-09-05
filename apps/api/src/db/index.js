@@ -2,9 +2,24 @@
 // ORACLE_HOST set => Oracle write-through adapter (db/oracle.js) over a hydrated local
 // read-cache; otherwise the documented local test double (db/store.js).
 // Usage: const { store, mode } = await getStore();  mode: 'oracle' | 'local'
+// B2G-007: server.js sources pool/hydrate/wrap through upgradeStore() here — single truth,
+// no duplicated boot path.
 'use strict';
 const { createStore } = require('./store');
 const { seedStore } = require('./seed');
+
+// B2G-007: shared background-upgrade path used by server.js (no duplicated seam).
+async function upgradeStore(local, log) {
+  const { createPool, ping, hydrate, wrapWithOracle } = require('./oracle');
+  const pool = await createPool();
+  await ping(pool);
+  const stats = await hydrate(local, pool);
+  wrapWithOracle(local, pool);
+  local._pool = pool;
+  local._mode = 'oracle';
+  (log || console).info?.({ stats }, 'oracle adapter online (write-through)');
+  return { pool, stats };
+}
 
 async function getStore(log) {
   const local = createStore();
@@ -32,4 +47,4 @@ async function getStore(log) {
   }
 }
 
-module.exports = { getStore };
+module.exports = { getStore, upgradeStore };

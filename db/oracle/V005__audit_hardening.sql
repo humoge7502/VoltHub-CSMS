@@ -89,3 +89,16 @@ BEGIN
 END;
 /
 COMMIT;
+
+-- ---- B2G-005: refresh_token family columns (theft-detection needs family revocation durable) ----
+BEGIN
+  BEGIN EXECUTE IMMEDIATE 'ALTER TABLE refresh_token ADD (family_id VARCHAR2(64))'; EXCEPTION WHEN OTHERS THEN
+    IF SQLCODE != -01430 THEN RAISE; END IF; END;
+  BEGIN EXECUTE IMMEDIATE 'ALTER TABLE refresh_token ADD (generation NUMBER DEFAULT 0)'; EXCEPTION WHEN OTHERS THEN
+    IF SQLCODE != -01430 THEN RAISE; END IF; END;
+  BEGIN EXECUTE IMMEDIATE 'ALTER TABLE refresh_token ADD (device_label VARCHAR2(120))'; EXCEPTION WHEN OTHERS THEN
+    IF SQLCODE != -01430 THEN RAISE; END IF; END;
+END;
+/
+UPDATE refresh_token SET family_id = token_hash WHERE family_id IS NULL;
+COMMIT;

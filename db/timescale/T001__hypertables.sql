@@ -7,13 +7,21 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE TABLE IF NOT EXISTS meter_tick (
   ts TIMESTAMPTZ NOT NULL,
   session_id INTEGER NOT NULL,
+  seq_no BIGINT NOT NULL DEFAULT 0,
   connector_ref TEXT NOT NULL,
   meter_kwh DOUBLE PRECISION NOT NULL,
   power_kw DOUBLE PRECISION,
   voltage_v DOUBLE PRECISION,
   current_a DOUBLE PRECISION,
-  PRIMARY KEY (session_id, ts)
+  dedupe_key TEXT,
+  PRIMARY KEY (session_id, seq_no, ts)
 );
+-- B2G-006: upgrade path for existing DBs (fresh volumes get the new PK directly).
+-- Same-second ticks (simulator emits every 700ms) previously collided on (session_id, ts).
+DO $$ BEGIN
+  BEGIN ALTER TABLE meter_tick ADD COLUMN IF NOT EXISTS seq_no BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER TABLE meter_tick ADD COLUMN IF NOT EXISTS dedupe_key TEXT; EXCEPTION WHEN OTHERS THEN NULL; END;
+END $$;
 SELECT create_hypertable('meter_tick', 'ts', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS ix_tick_conn_ts ON meter_tick (connector_ref, ts DESC);
 ALTER TABLE meter_tick SET (

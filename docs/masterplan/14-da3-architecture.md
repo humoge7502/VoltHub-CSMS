@@ -137,13 +137,14 @@ SELECT t.*, m.station_id, m.standard_code
 FROM   meter_tick t LEFT JOIN station_map m USING (connector_ref);
 ```
 
-**Design notes worth a slide:** (1) the idempotency key `(session_id, ts)` is the dedupe contract with the relay; (2) `compress_segmentby = connector_ref` aligns compression with our dominant query (per-connector traces); (3) caggs are hierarchical (1m → 1h) — Timescale's incremental story at two granularities [19]; (4) TimescaleDB stores *no billing data* — invoices stay Oracle-only, which is the whole architectural point.
+**Design notes worth a slide:** (1) the idempotency key `(session_id, ts)` is the dedupe contract with the relay; (2) `compress_segmentby = connector_ref` aligns compression with our dominant query (per-connector traces); (3) caggs are hierarchical (1m → 1h) — Timescale's incremental story at two granularities [19]; (4) TimescaleDB stores _no billing data_ — invoices stay Oracle-only, which is the whole architectural point.
 
 ---
 
 ## 27. DA3 Queries (technology-specific) with Oracle equivalents
 
 **Q-T1 — Live network load curve (5-min buckets, gap-filled).**
+
 ```sql
 SELECT time_bucket('5 minutes', bucket) AS t,
        station_id,
@@ -159,9 +160,11 @@ SELECT time_bucket_gapfill('5 minutes', bucket,
 FROM   tick_1m WHERE bucket >= now() - INTERVAL '6 hours'
 GROUP  BY 1, 2;
 ```
-*Oracle equivalent:* `mv_station_daily`-style MV with TRUNC(ts,'MI') buckets and COMPLETE refresh — or a heavy analytic query re-aggregating 600k rows per dashboard hit. **Difference:** incremental cagg maintenance vs full refresh; `time_bucket_gapfill` has no native Oracle analogue (we hand-roll calendar-spine LEFT JOINs — 4x the SQL).
+
+_Oracle equivalent:_ `mv_station_daily`-style MV with TRUNC(ts,'MI') buckets and COMPLETE refresh — or a heavy analytic query re-aggregating 600k rows per dashboard hit. **Difference:** incremental cagg maintenance vs full refresh; `time_bucket_gapfill` has no native Oracle analogue (we hand-roll calendar-spine LEFT JOINs — 4x the SQL).
 
 **Q-T2 — Utilization per connector per hour.**
+
 ```sql
 SELECT time_bucket('1 hour', bucket) AS h, connector_ref,
        ROUND(100.0 * COUNT(*) FILTER (WHERE dominant_state IN ('OCCUPIED','RESERVED'))
@@ -170,9 +173,11 @@ FROM   state_1m
 WHERE  bucket >= now() - INTERVAL '7 days'
 GROUP  BY 1, 2 ORDER BY h, connector_ref;
 ```
-*Oracle:* CASE + GROUP BY over the raw FAULT/state history we do not keep at tick resolution — Oracle only stores *current* status + change timestamps, so true historical utilization requires the DA3 events. This is the cleanest "the TSDB holds facts Oracle literally cannot" exhibit.
+
+_Oracle:_ CASE + GROUP BY over the raw FAULT/state history we do not keep at tick resolution — Oracle only stores _current_ status + change timestamps, so true historical utilization requires the DA3 events. This is the cleanest "the TSDB holds facts Oracle literally cannot" exhibit.
 
 **Q-T3 — Fault Time / Unreachable Time per station (arXiv KPIs [9]).**
+
 ```sql
 WITH spans AS (
   SELECT connector_ref, station_id,
@@ -188,17 +193,21 @@ FROM   spans
 WHERE  ts >= now() - INTERVAL '30 days' AND next_ts IS NOT NULL
 GROUP  BY station_id;
 ```
-*Oracle:* possible on audit rows but unindexed for it; the DA3 store is designed *for* this query (window over transition spans).
+
+_Oracle:_ possible on audit rows but unindexed for it; the DA3 store is designed _for_ this query (window over transition spans).
 
 **Q-T4 — Per-connector power trace downsampled with LTTB (for charts).**
+
 ```sql
 -- using timescaledb_toolkit
 SELECT lttb(ts, power_kw, 200) FROM meter_tick
 WHERE connector_ref = :ref AND ts >= now() - INTERVAL '2 hours';
 ```
-*Oracle:* no LTTB; return every 10th row (ROWNUM % 10) — visibly jagged at zoom. **Difference:** chart-quality downsampling in-database vs app-side hacks.
+
+_Oracle:_ no LTTB; return every 10th row (ROWNUM % 10) — visibly jagged at zoom. **Difference:** chart-quality downsampling in-database vs app-side hacks.
 
 **Q-T5 — Compression & storage introspection (the demo punchline).**
+
 ```sql
 SELECT hypertable_name,
        pg_size_pretty(hypertable_size(:ht))          AS total_size,
@@ -207,9 +216,11 @@ FROM   (SELECT 'meter_tick' AS hypertable_name FROM dual);
 SELECT chunk_name, is_compressed, pg_size_pretty(total_bytes)
 FROM   chunk_info('meter_tick') ORDER BY range_start DESC LIMIT 12;
 ```
-*Oracle:* `user_segments` shows one number; no per-partition compression story at Free tier. **Difference:** data lifecycle made visible.
+
+_Oracle:_ `user_segments` shows one number; no per-partition compression story at Free tier. **Difference:** data lifecycle made visible.
 
 **Q-T6 — Peak concurrency from state events (matches Oracle Q13).**
+
 ```sql
 WITH deltas AS (
   SELECT ts, CASE to_state WHEN 'OCCUPIED' THEN 1 ELSE -1 END AS d
@@ -218,28 +229,29 @@ SELECT time_bucket('5 minutes', ts) AS t,
        SUM(SUM(d)) OVER (ORDER BY time_bucket('5 minutes', ts)) AS concurrent
 FROM   deltas GROUP BY 1 ORDER BY 1;
 ```
-*Both engines can do this; Timescale does it on immutable small events, Oracle would scan session spans — an indexing-shape difference, honestly stated.*
+
+_Both engines can do this; Timescale does it on immutable small events, Oracle would scan session spans — an indexing-shape difference, honestly stated._
 
 ---
 
 ## 28. Oracle vs TimescaleDB — Comparative Analysis
 
-| Dimension | Oracle 23ai Free (OLTP) | TimescaleDB (OLAP slice) |
-|---|---|---|
-| Data model | relational, constraints, PL/SQL | relational + time dimension as first-class (hypertable) |
-| Storage layout | heap tables, single partitioning-free tier | time-chunked child tables, columnar compression on age |
-| Write path | row-level locking, redo log, ACID | append-mostly chunks, PG MVCC, ACID |
-| Partitioning | **not available** on Free/Express (EE option) | automatic (chunking) — the decisive fact |
-| Aggregates | MVs, COMPLETE refresh at Free tier (FAST refresh restricted for our aggregates) | continuous aggregates: incremental, background-refreshed |
-| Time functions | TRUNC/EXTRACT, manual calendar spines | time_bucket, time_bucket_gapfill, LTTB (toolkit) |
-| Analytics at scale | fine at 10k rows; degrades on 10M+ tick aggregates (measured below) | caggs answer in ms regardless of raw volume |
-| Lifecycle management | manual DELETE + segment cleanup | compression + retention policies (declarative) |
-| Transactions/correctness | best-in-class; our money path | adequate; we ask no money of it |
-| Query language | SQL + PL/SQL | PostgreSQL SQL — high overlap, different engine internals |
-| Ops burden | one container | one container; two = +backup story (documented) |
-| Best use here | reservations, billing, wallet, audit | ticks, state events, rollups, dashboards |
+| Dimension                | Oracle 23ai Free (OLTP)                                                         | TimescaleDB (OLAP slice)                                  |
+| ------------------------ | ------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Data model               | relational, constraints, PL/SQL                                                 | relational + time dimension as first-class (hypertable)   |
+| Storage layout           | heap tables, single partitioning-free tier                                      | time-chunked child tables, columnar compression on age    |
+| Write path               | row-level locking, redo log, ACID                                               | append-mostly chunks, PG MVCC, ACID                       |
+| Partitioning             | **not available** on Free/Express (EE option)                                   | automatic (chunking) — the decisive fact                  |
+| Aggregates               | MVs, COMPLETE refresh at Free tier (FAST refresh restricted for our aggregates) | continuous aggregates: incremental, background-refreshed  |
+| Time functions           | TRUNC/EXTRACT, manual calendar spines                                           | time_bucket, time_bucket_gapfill, LTTB (toolkit)          |
+| Analytics at scale       | fine at 10k rows; degrades on 10M+ tick aggregates (measured below)             | caggs answer in ms regardless of raw volume               |
+| Lifecycle management     | manual DELETE + segment cleanup                                                 | compression + retention policies (declarative)            |
+| Transactions/correctness | best-in-class; our money path                                                   | adequate; we ask no money of it                           |
+| Query language           | SQL + PL/SQL                                                                    | PostgreSQL SQL — high overlap, different engine internals |
+| Ops burden               | one container                                                                   | one container; two = +backup story (documented)           |
+| Best use here            | reservations, billing, wallet, audit                                            | ticks, state events, rollups, dashboards                  |
 
-**Micro-benchmarks to run and publish (honesty rule):** seeded 1.7M ticks. (a) 24h load-curve at 5-min: Oracle raw query ~2.1 s vs cagg ~18 ms. (b) ingest: Oracle batch inserts 41k rows/s vs Timescale 96k rows/s (COPY path). (c) storage after policies: 1.9 GB → 210 MB compressed. Numbers from our laptop, clearly labeled as such — we claim *measured-at-student-scale*, never production-scale.
+**Micro-benchmarks to run and publish (honesty rule):** seeded 1.7M ticks. (a) 24h load-curve at 5-min: Oracle raw query ~2.1 s vs cagg ~18 ms. (b) ingest: Oracle batch inserts 41k rows/s vs Timescale 96k rows/s (COPY path). (c) storage after policies: 1.9 GB → 210 MB compressed. Numbers from our laptop, clearly labeled as such — we claim _measured-at-student-scale_, never production-scale.
 
 ---
 
@@ -253,18 +265,20 @@ export async function relayBatch(db: OracleDb, tsdb: TimescaleDb) {
        FROM outbox_event
       WHERE processed_at IS NULL
       ORDER BY event_id
-      FETCH FIRST 500 ROWS ONLY FOR UPDATE SKIP LOCKED`);
+      FETCH FIRST 500 ROWS ONLY FOR UPDATE SKIP LOCKED`
+  );
   if (!batch.rows?.length) return 0;
 
-  const ticks = batch.rows.filter(r => r.KIND === 'METER_TICK');
-  await tsdb.copyInto('meter_tick', mapToTickRows(ticks));          // COPY path
+  const ticks = batch.rows.filter((r) => r.KIND === 'METER_TICK');
+  await tsdb.copyInto('meter_tick', mapToTickRows(ticks)); // COPY path
   await tsdb.copyInto('connector_state_event', mapToStateRows(batch.rows));
 
   await db.executeMany(
     `UPDATE outbox_event SET processed_at = SYSTIMESTAMP
       WHERE event_id IN (SELECT event_id FROM outbox_event
                           WHERE processed_at IS NULL
-                        ORDER BY event_id FETCH FIRST 500 ROWS ONLY)`);
+                        ORDER BY event_id FETCH FIRST 500 ROWS ONLY)`
+  );
   await db.commit();
   return batch.rows.length;
 }

@@ -21,9 +21,15 @@ const BASE = __ENV.API_BASE || 'http://localhost:4000/api/v1';
 let token = null;
 
 export function setup() {
-  const r = http.post(`${BASE}/auth/register`, JSON.stringify({
-    email: `k6.${Date.now()}@example.in`, password: 'Driver@123', full_name: 'K6 Load',
-  }), { headers: { 'Content-Type': 'application/json' } });
+  const r = http.post(
+    `${BASE}/auth/register`,
+    JSON.stringify({
+      email: `k6.${Date.now()}@example.in`,
+      password: 'Driver@123',
+      full_name: 'K6 Load',
+    }),
+    { headers: { 'Content-Type': 'application/json' } }
+  );
   return { token: r.json('accessToken') };
 }
 
@@ -35,11 +41,16 @@ export default function (data) {
   const conn = stations.length && stations[0].connectors.find((c) => c.status === 'AVAILABLE');
   if (conn) {
     const [cp, no] = conn.connector_ref.split(':').map(Number);
-    r = http.post(`${BASE}/reservations`, JSON.stringify({
-      cpId: cp, connectorNo: no,
-      startAt: new Date(Date.now() + 3600000).toISOString(),
-      endAt: new Date(Date.now() + 5400000).toISOString(),
-    }), H);
+    r = http.post(
+      `${BASE}/reservations`,
+      JSON.stringify({
+        cpId: cp,
+        connectorNo: no,
+        startAt: new Date(Date.now() + 3600000).toISOString(),
+        endAt: new Date(Date.now() + 5400000).toISOString(),
+      }),
+      H
+    );
     // under contention exactly one winner: 201 xor 409 are both healthy
     check(r, { 'reserve decided': (x) => x.status === 201 || x.status === 409 });
   }

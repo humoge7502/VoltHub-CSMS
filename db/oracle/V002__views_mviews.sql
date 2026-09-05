@@ -17,16 +17,17 @@ JOIN station s ON s.station_id = cp.station_id
 JOIN connector_standard st ON st.standard_id = c.standard_id;
 
 -- Station rollup (derived on read — NOT stored, per §12.6).
+-- B2G-011: sargable joins on (cp_id) — columns exist since V005 (backfilled + sync triggers).
 CREATE OR REPLACE VIEW v_station_summary AS
 SELECT s.station_id, s.name AS station_name, s.city,
        COUNT(*) AS connector_count,
        SUM(CASE WHEN c.status = 'AVAILABLE' THEN 1 ELSE 0 END) AS available_count,
        (SELECT ROUND(AVG(r.rating),2) FROM review r
          JOIN charging_session cs ON cs.session_id = r.session_id
-         JOIN charge_point cp2 ON cs.connector_ref LIKE cp2.cp_id || ':%'
+         JOIN charge_point cp2 ON cs.cp_id = cp2.cp_id
         WHERE cp2.station_id = s.station_id) AS avg_rating,
        (SELECT COUNT(*) FROM charging_session cs2
-         JOIN charge_point cp3 ON cs2.connector_ref LIKE cp3.cp_id || ':%'
+         JOIN charge_point cp3 ON cs2.cp_id = cp3.cp_id
         WHERE cp3.station_id = s.station_id) AS total_sessions
 FROM station s
 JOIN charge_point cp ON cp.station_id = s.station_id
@@ -46,7 +47,7 @@ SELECT cp.station_id,
        ROUND(NVL(SUM(cs.energy_kwh),0),3) AS energy_kwh,
        ROUND(NVL(SUM(CASE WHEN i.status IN ('PAID','DUE') THEN i.total ELSE 0 END),0),2) AS revenue
 FROM charging_session cs
-JOIN charge_point cp ON cs.connector_ref LIKE cp.cp_id || ':%'
+JOIN charge_point cp ON cs.cp_id = cp.cp_id
 JOIN station s ON s.station_id = cp.station_id
 LEFT JOIN invoice i ON i.session_id = cs.session_id
 WHERE cs.state = 'COMPLETED'

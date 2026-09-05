@@ -1,8 +1,8 @@
 // Worker: outbox relay Oracle->Timescale (2s loop, batch 500, idempotent
 // INSERT ... ON CONFLICT DO NOTHING) + reservation expiry sweeper.
 // Local mode relays in-process store -> local rollup file; prod mode polls
-// /internal/outbox and COPYs into TimescaleDB (see relay-timescale.js).
-// Failure semantics: crash-after-COPY rolls back marks; replay dedupes.
+// /internal/outbox and INSERTs into TimescaleDB (see relay-timescale.js).
+// Failure semantics: crash-after-INSERT rolls back marks; replay dedupes.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -18,7 +18,14 @@ function loadSeen() {
   if (seenCache) return seenCache;
   seenCache = new Set();
   try {
-    fs.readFileSync(OUT, 'utf8').split('\n').filter(Boolean).forEach(l => { try { seenCache.add(JSON.parse(l).dedupe_key); } catch {} });
+    fs.readFileSync(OUT, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .forEach((l) => {
+        try {
+          seenCache.add(JSON.parse(l).dedupe_key);
+        } catch {}
+      });
   } catch {}
   return seenCache;
 }
@@ -33,16 +40,32 @@ async function relayOnce() {
   if (!r.ok) throw new Error(`outbox poll ${r.status}`);
   const { events } = await r.json();
   if (!events.length) return { relayed: 0 };
-  // prod: COPY into meter_tick / connector_state_event with ON CONFLICT DO NOTHING (relay-timescale.js).
+  // prod: INSERT into meter_tick / connector_state_event with ON CONFLICT DO NOTHING (relay-timescale.js).
   // local: append to mirror file (idempotent on dedupe_key).
   const seen = loadSeen();
-  const fresh = events.filter(e => !seen.has(e.dedupe_key));
+  const fresh = events.filter((e) => !seen.has(e.dedupe_key));
   if (fresh.length) {
     fs.mkdirSync(path.dirname(OUT), { recursive: true });
-    fs.appendFileSync(OUT, fresh.map(e => JSON.stringify({ dedupe_key: e.dedupe_key, kind: e.kind, payload: e.payload, relayed_at: new Date().toISOString() })).join('\n') + '\n');
-    fresh.forEach(e => seen.add(e.dedupe_key));
+    fs.appendFileSync(
+      OUT,
+      fresh
+        .map((e) =>
+          JSON.stringify({
+            dedupe_key: e.dedupe_key,
+            kind: e.kind,
+            payload: e.payload,
+            relayed_at: new Date().toISOString(),
+          })
+        )
+        .join('\n') + '\n'
+    );
+    fresh.forEach((e) => seen.add(e.dedupe_key));
   }
-  const ack = await fetch(`${API}/internal/outbox/ack`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-internal': TOKEN }, body: JSON.stringify({ ids: events.map(e => e.event_id) }) });
+  const ack = await fetch(`${API}/internal/outbox/ack`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-internal': TOKEN },
+    body: JSON.stringify({ ids: events.map((e) => e.event_id) }),
+  });
   if (!ack.ok) throw new Error(`ack ${ack.status}`);
   return { relayed: events.length };
 }
@@ -60,9 +83,18 @@ if (require.main === module) {
         const a = await relayOnce();
         const b = await sweepOnce().catch(() => ({ expired: 0 }));
         if (a.relayed || b.expired) console.log(`[worker] relayed=${a.relayed} expired=${b.expired || 0} lag_probe=ok`);
-      } catch (e) { console.error('[worker]', e.message, '— backing off (sink-down: accumulate, stay honest)'); }
-      await new Promise(r => setTimeout(r, 2000));
+      } catch (e) {
+        console.error('[worker]', e.message, '— backing off (sink-down: accumulate, stay honest)');
+      }
+      await new Promise((r) => setTimeout(r, 2000));
     }
   })();
 }
-module.exports = { relayOnce, sweepOnce, _loadSeen: loadSeen, _resetSeen: () => { seenCache = null; } };
+module.exports = {
+  relayOnce,
+  sweepOnce,
+  _loadSeen: loadSeen,
+  _resetSeen: () => {
+    seenCache = null;
+  },
+};

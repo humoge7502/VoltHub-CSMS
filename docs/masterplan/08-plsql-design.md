@@ -6,15 +6,15 @@
 
 ## 15.1 Package inventory
 
-| Package | Responsibility | Viva value |
-|---|---|---|
-| `RESERVATION_PKG` | create/cancel/expire reservations; the double-booking defense | highest |
-| `CHARGE_SESSION_PKG` | session state machine, start/stop, meter tick ingestion | highest |
-| `BILLING_PKG` | tariff resolution, invoice + lines, wallet debit with ledger | highest |
-| `TARIFF_PKG` | plan versioning, band validation, price lookup at time | high |
-| `MAINTENANCE_PKG` | fault triage, maintenance records, connector restore | medium |
-| `AUDIT_PKG` | uniform audit writer used by triggers and packages | medium |
-| `SEED_PKG` | deterministic sample data generation (Section 16) | low (utility) |
+| Package              | Responsibility                                                | Viva value    |
+| -------------------- | ------------------------------------------------------------- | ------------- |
+| `RESERVATION_PKG`    | create/cancel/expire reservations; the double-booking defense | highest       |
+| `CHARGE_SESSION_PKG` | session state machine, start/stop, meter tick ingestion       | highest       |
+| `BILLING_PKG`        | tariff resolution, invoice + lines, wallet debit with ledger  | highest       |
+| `TARIFF_PKG`         | plan versioning, band validation, price lookup at time        | high          |
+| `MAINTENANCE_PKG`    | fault triage, maintenance records, connector restore          | medium        |
+| `AUDIT_PKG`          | uniform audit writer used by triggers and packages            | medium        |
+| `SEED_PKG`           | deterministic sample data generation (Section 16)             | low (utility) |
 
 ## 15.2 RESERVATION_PKG — the race-condition defense
 
@@ -100,7 +100,7 @@ END reservation_pkg;
 /
 ```
 
-**Why SELECT FOR UPDATE and not just the overlap query?** Without the lock, two transactions can both run the overlap check at time T (both read zero rows), both pass, and both insert — the classic TOCTOU race. With `FOR UPDATE` on the connector row, writers serialize per connector; the second transaction's check runs *after* the first commits and correctly sees the conflict. Section 31 proves it with a two-thread test. (Postgres/TimescaleDB would additionally allow a true exclusion constraint — noted in the DA3 comparison as a legitimate engine difference.)
+**Why SELECT FOR UPDATE and not just the overlap query?** Without the lock, two transactions can both run the overlap check at time T (both read zero rows), both pass, and both insert — the classic TOCTOU race. With `FOR UPDATE` on the connector row, writers serialize per connector; the second transaction's check runs _after_ the first commits and correctly sees the conflict. Section 31 proves it with a two-thread test. (Postgres/TimescaleDB would additionally allow a true exclusion constraint — noted in the DA3 comparison as a legitimate engine difference.)
 
 ## 15.3 CHARGE_SESSION_PKG — the state machine authority
 

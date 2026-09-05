@@ -1,6 +1,6 @@
 # Part X — Backend Architecture and API Design
 
-> Masterplan sections 18–19. The backend's job is to be *boring in the right way*: thin over the database, strict about validation, and transparent about errors — so the database remains the star.
+> Masterplan sections 18–19. The backend's job is to be _boring in the right way_: thin over the database, strict about validation, and transparent about errors — so the database remains the star.
 
 ---
 
@@ -59,7 +59,7 @@ export class ReservationsService {
         start_at: dto.startAt,
         end_at: dto.endAt,
         res_id: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
-      },
+      }
     );
   }
 }
@@ -71,15 +71,15 @@ Rules enforced across the codebase: **bind variables everywhere** (no string int
 
 The gateway (`ws` library) keeps one socket per charge point with a heartbeat; inbound OCPP calls map to package calls:
 
-| OCPP message (charger → CSMS) | Handler → database effect |
-|---|---|
-| BootNotification | upsert charge_point status ONLINE, last_boot_at |
-| StatusNotification | connector state update (guarded trigger path) + FAULT creation on error codes + outbox CONNECTOR_STATE event |
-| Authorize | lookup id_tag (user's), respond Accepted/Invalid |
-| StartTransaction | CHARGE_SESSION_PKG opens session (state PREPARING→CHARGING on first meter) |
-| MeterValues | CHARGE_SESSION_PKG.record_meter_tick (billing row + outbox event) |
-| StopTransaction | CHARGE_SESSION_PKG.transition COMPLETED, end meter frozen |
-| Heartbeat | refresh last_seen |
+| OCPP message (charger → CSMS) | Handler → database effect                                                                                    |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| BootNotification              | upsert charge_point status ONLINE, last_boot_at                                                              |
+| StatusNotification            | connector state update (guarded trigger path) + FAULT creation on error codes + outbox CONNECTOR_STATE event |
+| Authorize                     | lookup id_tag (user's), respond Accepted/Invalid                                                             |
+| StartTransaction              | CHARGE_SESSION_PKG opens session (state PREPARING→CHARGING on first meter)                                   |
+| MeterValues                   | CHARGE_SESSION_PKG.record_meter_tick (billing row + outbox event)                                            |
+| StopTransaction               | CHARGE_SESSION_PKG.transition COMPLETED, end meter frozen                                                    |
+| Heartbeat                     | refresh last_seen                                                                                            |
 
 The gateway sets `CLIENT_IDENTIFIER = 'ocpp-gw'` on its pooled connections — the connector-guard trigger (15.5) distinguishes protocol-driven state changes from any other path. A malicious or buggy client cannot set connector states by calling the REST API; the API has no endpoint that does.
 
@@ -87,21 +87,26 @@ The gateway sets `CLIENT_IDENTIFIER = 'ocpp-gw'` on its pooled connections — t
 
 Business errors surface as numbered ORA errors from packages; the API maps them deterministically:
 
-| Package code | HTTP | Client meaning |
-|---|---|---|
-| -20501 | 422 | invalid reservation window |
-| -20502 | 409 | connector not bookable |
-| -20503 | 409 | window overlaps an existing reservation |
-| -20601 | 409 | illegal session transition |
-| -20703/-20704 | 409 | billing state conflict |
-| -20705 | 402 | insufficient wallet balance |
+| Package code  | HTTP | Client meaning                          |
+| ------------- | ---- | --------------------------------------- |
+| -20501        | 422  | invalid reservation window              |
+| -20502        | 409  | connector not bookable                  |
+| -20503        | 409  | window overlaps an existing reservation |
+| -20601        | 409  | illegal session transition              |
+| -20703/-20704 | 409  | billing state conflict                  |
+| -20705        | 402  | insufficient wallet balance             |
 
 Unknown ORA errors log with request ID and return a 500 envelope without internals. The error envelope is uniform:
 
 ```json
-{ "error": { "code": "RESERVATION_OVERLAP", "message": "Connector already reserved for the requested window",
-             "detail": { "connectorRef": "17:2", "window": ["2026-11-02T18:00+05:30", "2026-11-02T18:45+05:30"] } },
-  "requestId": "req_9f3a" }
+{
+  "error": {
+    "code": "RESERVATION_OVERLAP",
+    "message": "Connector already reserved for the requested window",
+    "detail": { "connectorRef": "17:2", "window": ["2026-11-02T18:00+05:30", "2026-11-02T18:45+05:30"] }
+  },
+  "requestId": "req_9f3a"
+}
 ```
 
 ### 18.6 Cross-cutting

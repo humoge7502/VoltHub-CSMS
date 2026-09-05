@@ -1,0 +1,32 @@
+{
+  "root": true,
+  "env": { "node": true, "es2022": true, "browser": true },
+  "parserOptions": { "ecmaVersion": 2022, "sourceType": "script" },
+  "extends": ["eslint:recommended"],
+  "rules": {
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "no-console": ["error", { "allow": ["warn", "error", "info", "log"] }],
+    "no-empty": ["error", { "allowEmptyCatch": true }],
+    "eqeqeq": ["error", "smart"],
+    "no-throw-literal": "error",
+    "prefer-const": "error"
+  },
+  "overrides": [
+    {
+      "files": ["apps/web/src/**/*.js"],
+      "env": { "browser": true, "es2022": true },
+      "parserOptions": { "ecmaVersion": 2022, "sourceType": "module", "ecmaFeatures": { "jsx": true } },
+      "globals": { "React": "readonly", "process": "readonly" },
+      "rules": { "no-unused-vars": "off" }
+    },
+    {
+      "files": ["**/test/**/*.js", "scripts/**/*.js", "apps/worker/src/**/*.js", "apps/simulator/src/**/*.js"],
+      "rules": { "no-console": "off" }
+    },
+    {
+      "files": ["test/load/**/*.js"],
+      "parserOptions": { "ecmaVersion": 2022, "sourceType": "module" },
+      "rules": { "no-console": "off", "no-undef": "off", "no-unused-vars": "off", "prefer-const": "off" }
+    }
+  ]
+}

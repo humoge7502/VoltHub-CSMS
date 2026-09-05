@@ -3,18 +3,39 @@
 'use strict';
 const spec = {
   openapi: '3.0.3',
-  info: { title: 'VoltHub CSMS API', version: '1.0.0', description: 'Two-engine EV charging management. Oracle error bands (-205xx..-208xx) map to HTTP in `error.ora`.' },
+  info: {
+    title: 'VoltHub CSMS API',
+    version: '1.0.0',
+    description: 'Two-engine EV charging management. Oracle error bands (-205xx..-208xx) map to HTTP in `error.ora`.',
+  },
   servers: [{ url: '/api/v1' }],
   components: {
     securitySchemes: { bearer: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } },
     schemas: {
-      Error: { type: 'object', properties: { error: { type: 'object', properties: { code: { type: 'string' }, message: { type: 'string' }, ora: { type: 'integer', nullable: true }, requestId: { type: 'string' } } } } },
+      Error: {
+        type: 'object',
+        properties: {
+          error: {
+            type: 'object',
+            properties: {
+              code: { type: 'string' },
+              message: { type: 'string' },
+              ora: { type: 'integer', nullable: true },
+              requestId: { type: 'string' },
+            },
+          },
+        },
+      },
     },
   },
   security: [{ bearer: [] }],
   paths: {},
 };
-const P = (summary, extra = {}) => ({ ...extra, summary, responses: { 200: { description: 'ok' }, '4xx': { description: 'client error' } } });
+const P = (summary, extra = {}) => ({
+  ...extra,
+  summary,
+  responses: { 200: { description: 'ok' }, '4xx': { description: 'client error' } },
+});
 Object.assign(spec.paths, {
   '/health': { get: P('Liveness + mode/outbox lag (see /health/deep for engine probes)', { security: [] }) },
   '/health/deep': { get: P('Deep probes: SELECT 1 FROM DUAL + pool + Timescale reachability', { security: [] }) },
@@ -32,12 +53,17 @@ Object.assign(spec.paths, {
   '/stations': { get: P('Search: q/std/minKw/lat/lng/radius/page (RSC, 15s revalidate)', { security: [] }) },
   '/stations/{id}': { get: P('Detail: charge points, live connectors, amenities, rating', { security: [] }) },
   '/stations/{id}/connectors/live': { get: P('Live connector feed (15s poll)', { security: [] }) },
-  '/stations/{id}/sessions/active': { get: P('Active sessions on this station (auth: driver sees own scope, staff scoped)') },
+  '/stations/{id}/sessions/active': {
+    get: P('Active sessions on this station (auth: driver sees own scope, staff scoped)'),
+  },
   '/stations/{id}/analytics': { get: P('Revenue/energy/util/active/faults (operator)') },
   '/stations/{id}/faults': { post: P('Manual fault report (connector → FAULTED)') },
   '/stations/{id}/reviews': { get: P('Station reviews', { security: [] }) },
   '/tariffs/active': { get: P('Current tariff versions + ToU bands (public preview)', { security: [] }) },
-  '/reservations': { get: P('My bookings (driver) / all (staff)'), post: P('Reserve 15–120 min. 409 OVERLAP / NOT_BOOKABLE, Idempotency-Key replay') },
+  '/reservations': {
+    get: P('My bookings (driver) / all (staff)'),
+    post: P('Reserve 15–120 min. 409 OVERLAP / NOT_BOOKABLE, Idempotency-Key replay'),
+  },
   '/reservations/{id}/cancel': { post: P('Optimistic cancel pre-start') },
   '/sessions/start': { post: P('Plug-in: RESERVED→PREPARING (converts reservation)') },
   '/sessions': { get: P('History, keyset cursor pagination') },
@@ -53,14 +79,24 @@ Object.assign(spec.paths, {
   '/faults': { get: P('Fault queue (?open=1, ?station=)') },
   '/faults/{id}/maintenance': { post: P('Open maintenance record (operator)') },
   '/maintenance/{id}/complete': { patch: P('Resolve → connector back to AVAILABLE') },
-  '/telemetry/load-curve': { get: P('Gap-filled load curve (?station&from&to&bucket). Timescale cagg when TS_HOST set, else local rollup (auth required)') },
+  '/telemetry/load-curve': {
+    get: P(
+      'Gap-filled load curve (?station&from&to&bucket). Timescale cagg when TS_HOST set, else local rollup (auth required)'
+    ),
+  },
   '/telemetry/utilization-heatmap': { get: P('7×24 utilization matrix (auth required)') },
   '/admin/users': { post: P('Create operator (admin)') },
   '/admin/users/{id}': { patch: P('Suspend / assign station (admin)') },
-  '/admin/stations': { get: P('All stations incl. inactive (staff)'), post: P('Create station + charge points + connectors (admin)') },
+  '/admin/stations': {
+    get: P('All stations incl. inactive (staff)'),
+    post: P('Create station + charge points + connectors (admin)'),
+  },
   '/admin/stations/{id}': { patch: P('Activate/deactivate, reassign operator (admin)') },
   '/admin/charge-points': { post: P('Provision charge point → OCPP identity (admin)') },
-  '/admin/tariff-plans': { get: P('Version timeline (staff)'), post: P('New immutable version, supersedes active (admin)') },
+  '/admin/tariff-plans': {
+    get: P('Version timeline (staff)'),
+    post: P('New immutable version, supersedes active (admin)'),
+  },
   '/admin/audit-logs': { get: P('Mutation trail with old/new JSON (admin)') },
 });
 module.exports = spec;

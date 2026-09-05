@@ -1,12 +1,18 @@
-// Timescale relay (§7.4): Oracle outbox -> hypertables via batched COPY.
+// Timescale relay (§7.4): Oracle outbox -> hypertables via batched INSERT (dep-light).
 // At-least-once + dedupe-key idempotency = effectively-once (ADR-0003, now real).
-// Crash-after-COPY replays safely (PK ON CONFLICT DO NOTHING); ack only after COMMIT.
+// Crash-after-INSERT replays safely (PK ON CONFLICT DO NOTHING); ack only after COMMIT.
 // Local profile (no TS_HOST): delegates to the JSONL mirror in index.js.
 'use strict';
 
 let _pg = null;
 function pg() {
-  if (!_pg) { try { _pg = require('pg'); } catch { throw new Error('pg not installed (npm i -w apps/worker pg)'); } }
+  if (!_pg) {
+    try {
+      _pg = require('pg');
+    } catch {
+      throw new Error('pg not installed (npm i -w apps/worker pg)');
+    }
+  }
   return _pg;
 }
 function pool() {
@@ -21,18 +27,46 @@ function pool() {
   });
 }
 
-// Split outbox events into COPY-ready rows. PK alignment: meter_tick(session_id, ts),
-// connector_state_event(connector_ref, ts) — dedupe_key maps 1:1 to those PKs.
+// Split outbox events into INSERT-ready rows. PK alignment: meter_tick(session_id, seq_no, ts),
+// connector_state_event(connector_ref, ts) — seq_no/dedupe_key carry the pipeline dedupe key (B2G-006).
 function toRows(events) {
-  const ticks = [], states = [];
+  const ticks = [],
+    states = [];
   for (const e of events) {
     const p = e.payload || {};
     if (e.kind === 'METER_TICK' && p.session_id && p.ts) {
-      ticks.push([new Date(p.ts), Number(p.session_id), String(p.connector_ref || ''), Number(p.meter_kwh), p.power_kw ?? null, null, null, e.dedupe_key]);
+      // B2G-006: pass seq + dedupe_key so same-second ticks don't collide on the PK.
+      ticks.push([
+        new Date(p.ts),
+        Number(p.session_id),
+        Number(p.seq ?? 0),
+        String(p.connector_ref || ''),
+        Number(p.meter_kwh),
+        p.power_kw ?? null,
+        null,
+        null,
+        e.dedupe_key,
+      ]);
     } else if (e.kind === 'CONNECTOR_STATE' && p.connector_ref) {
-      states.push([new Date(e.created_at || Date.now()), String(p.connector_ref), p.from || null, p.to || 'UNKNOWN', p.cause || 'OCPP', p.session_id ?? p.reservation_id ?? null, e.dedupe_key]);
+      states.push([
+        new Date(e.created_at || Date.now()),
+        String(p.connector_ref),
+        p.from || null,
+        p.to || 'UNKNOWN',
+        p.cause || 'OCPP',
+        p.session_id ?? p.reservation_id ?? null,
+        e.dedupe_key,
+      ]);
     } else if (e.kind === 'SESSION_EVENT' && p.session_id) {
-      states.push([new Date(e.created_at || Date.now()), String(p.connector_ref || `sess:${p.session_id}`), p.from || null, p.to || 'UNKNOWN', 'SESSION', Number(p.session_id), e.dedupe_key]);
+      states.push([
+        new Date(e.created_at || Date.now()),
+        String(p.connector_ref || `sess:${p.session_id}`),
+        p.from || null,
+        p.to || 'UNKNOWN',
+        'SESSION',
+        Number(p.session_id),
+        e.dedupe_key,
+      ]);
     }
   }
   return { ticks, states };
@@ -40,14 +74,13 @@ function toRows(events) {
 
 async function copyBatch(client, table, cols, rows, conflict) {
   if (!rows.length) return 0;
-  const { COPY } = await import('pg-copy-streams').catch(() => ({}));
   // Dependency-light path: multi-row INSERT ... ON CONFLICT DO NOTHING in 500-row chunks.
   let n = 0;
   for (let i = 0; i < rows.length; i += 500) {
     const chunk = rows.slice(i, i + 500);
     const vals = [];
     const ph = chunk.map((r, ri) => `(${r.map((_, ci) => `$${ri * r.length + ci + 1}`).join(',')})`).join(',');
-    chunk.forEach(r => vals.push(...r.slice(0, cols.length)));
+    chunk.forEach((r) => vals.push(...r.slice(0, cols.length)));
     await client.query(`INSERT INTO ${table} (${cols.join(',')}) VALUES ${ph} ${conflict}`, vals);
     n += chunk.length;
   }
@@ -65,18 +98,32 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
   const client = await p.connect();
   try {
     await client.query('BEGIN');
-    const nt = await copyBatch(client, 'meter_tick (ts, session_id, connector_ref, meter_kwh, power_kw, voltage_v, current_a)',
-      ['ts', 'session_id', 'connector_ref', 'meter_kwh', 'power_kw', 'voltage_v', 'current_a'],
-      ticks.map(t => t.slice(0, 7)), 'ON CONFLICT DO NOTHING');
-    const ns = await copyBatch(client, 'connector_state_event (ts, connector_ref, from_state, to_state, cause, session_id)',
+    const nt = await copyBatch(
+      client,
+      'meter_tick (ts, session_id, seq_no, connector_ref, meter_kwh, power_kw, voltage_v, current_a, dedupe_key)',
+      ['ts', 'session_id', 'seq_no', 'connector_ref', 'meter_kwh', 'power_kw', 'voltage_v', 'current_a', 'dedupe_key'],
+      ticks.map((t) => t.slice(0, 9)),
+      'ON CONFLICT DO NOTHING'
+    );
+    const ns = await copyBatch(
+      client,
+      'connector_state_event (ts, connector_ref, from_state, to_state, cause, session_id)',
       ['ts', 'connector_ref', 'from_state', 'to_state', 'cause', 'session_id'],
-      states.map(s => s.slice(0, 6)), 'ON CONFLICT DO NOTHING');
+      states.map((s) => s.slice(0, 6)),
+      'ON CONFLICT DO NOTHING'
+    );
     await client.query('COMMIT');
-    const ack = await fetchFn(`${apiBase}/internal/outbox/ack`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-internal': internalToken }, body: JSON.stringify({ ids: events.map(e => e.event_id) }) });
+    const ack = await fetchFn(`${apiBase}/internal/outbox/ack`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-internal': internalToken },
+      body: JSON.stringify({ ids: events.map((e) => e.event_id) }),
+    });
     if (!ack.ok) throw new Error(`ack ${ack.status}`);
     return { relayed: events.length, ticks: nt, states: ns };
   } catch (e) {
-    try { await client.query('ROLLBACK'); } catch {}
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
     throw e;
   } finally {
     client.release();

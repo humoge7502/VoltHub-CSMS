@@ -7,9 +7,10 @@
   `password_hash` column already stores PHC-shaped strings so the migration is a hasher swap.
 - JWT: 15-min access + rotating SHA-256 refresh with **family revocation on reuse**
   (`apps/api/src/middleware/auth.js:consumeRefresh`). Reusing a revoked token burns its family.
-- Boot discipline: production-like profiles (`NODE_ENV=production` or `ORACLE_HOST` set) refuse
+- Boot discipline: production (`NODE_ENV=production`) refuses
   to start with a missing/default `JWT_SECRET` or `INTERNAL_TOKEN` (fail-fast, `auth.js:secret`,
-  `routes.js:internalOk`).
+  `routes.js:internalOk`). Demo compose (ORACLE_HOST set, NODE_ENV unset) boots with a loud
+  warning instead — one-command demo must work; production must not.
 - RBAC: `authRequired` + `roles()` + operator station-scope on session state
   (`extended.js`). Session/live/telemetry/admin endpoints require auth; drivers see only their
   own sessions (403 otherwise). See `TEST-SEC-AUTHZ5` in `apps/api/test/security.js`.
