@@ -99,7 +99,9 @@ function mountOcpp(wss, store, log) {
       try {
         ws.close(4401, 'ocpp basic auth required (Security Profile 1)');
       } catch {}
-      (log.warn || log.info)({ identity }, 'ocpp rejected: bad basic auth');
+      // Method-call form: a detached `(log.warn || log.info)(...)` loses pino `this`
+      // and throws under pino 9/10 (B3G-001) — always call as a method.
+      log.warn({ identity }, 'ocpp rejected: bad basic auth');
       return;
     }
     cp.status = 'ONLINE';
@@ -263,8 +265,14 @@ function mountOcpp(wss, store, log) {
       }
     });
     ws.on('close', () => {
-      registry.delete(identity);
-      cp.status = 'OFFLINE';
+      // BUG-021: only the socket that OWNS the registry slot may deregister it.
+      // When a CP reconnects, the gateway closes the stale predecessor (above) —
+      // that predecessor's close event must NOT delete the successor's registration
+      // or flip the live CP to OFFLINE (remote commands resolve via registry.get).
+      if (registry.get(identity) === ws) {
+        registry.delete(identity);
+        cp.status = 'OFFLINE';
+      }
       log.info({ identity }, 'ocpp disconnected');
     });
   });
