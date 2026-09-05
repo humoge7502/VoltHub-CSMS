@@ -58,6 +58,9 @@ BEGIN
   END LOOP;
 END;
 /
+-- Commit per story: audit_pkg.log is an AUTONOMOUS_TRANSACTION, so a single giant
+-- seed transaction holding locks across sections self-deadlocks (ORA-00060).
+COMMIT;
 
 -- fault story: one CCS2 highway connector faulted (last ECR DC point)
 -- NB: PL/SQL cannot use a scalar subquery inside a procedure argument — select first.
@@ -69,6 +72,7 @@ BEGIN
     p_desc => 'Ground fault detected mid-session (seed story)', p_fault => v_fault);
 END;
 /
+COMMIT;
 
 -- ---- tariffs: City group 1 v1->v2 (ToU 18-22h peak), Highway group 2 flat ----
 DECLARE v_v1 NUMBER; v_v2 NUMBER; v_h1 NUMBER; BEGIN

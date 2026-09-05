@@ -377,6 +377,8 @@ CREATE OR REPLACE PACKAGE BODY maintenance_pkg AS
       DECLARE v_cp NUMBER := TO_NUMBER(REGEXP_SUBSTR(p_ref, '^[^:]+'));
               v_cn NUMBER := TO_NUMBER(REGEXP_SUBSTR(p_ref, '[^:]+$'));
       BEGIN
+        -- V004 guard: package-owned connector writes need the pkg: identifier.
+        BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:maintenance_pkg.report_fault'); EXCEPTION WHEN OTHERS THEN NULL; END;
         UPDATE connector SET status='FAULTED', last_state_change_at=SYSTIMESTAMP
          WHERE cp_id=v_cp AND connector_no=v_cn;
       EXCEPTION WHEN NO_DATA_FOUND THEN NULL; WHEN DUP_VAL_ON_INDEX THEN NULL; END;
@@ -393,6 +395,8 @@ CREATE OR REPLACE PACKAGE BODY maintenance_pkg AS
       DECLARE v_cp NUMBER := TO_NUMBER(REGEXP_SUBSTR(v_ref, '^[^:]+'));
               v_cn NUMBER := TO_NUMBER(REGEXP_SUBSTR(v_ref, '[^:]+$'));
       BEGIN
+        -- V004 guard: package-owned connector writes need the pkg: identifier.
+        BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:maintenance_pkg.resolve_maintenance'); EXCEPTION WHEN OTHERS THEN NULL; END;
         UPDATE connector SET status='AVAILABLE', last_state_change_at=SYSTIMESTAMP
          WHERE cp_id=v_cp AND connector_no=v_cn AND status='FAULTED';
       EXCEPTION WHEN NO_DATA_FOUND THEN NULL; WHEN DUP_VAL_ON_INDEX THEN NULL; END;
