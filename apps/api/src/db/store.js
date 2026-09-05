@@ -62,7 +62,12 @@ function hashPassword(pw) {
 function verifyPassword(pw, stored) {
   if (!stored.startsWith('$scrypt$')) return false;
   const [, , salt, h] = stored.split('$');
-  return crypto.timingSafeEqual(Buffer.from(crypto.scryptSync(pw, salt, 32).toString('hex')), Buffer.from(h));
+  // Length-safe: timingSafeEqual needs equal-length buffers. A malformed/short
+  // stored hash (e.g. an old '$scrypt$demo$<user>' placeholder) must read as
+  // invalid, never throw ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH on login.
+  const got = crypto.scryptSync(String(pw), salt, 32).toString('hex');
+  if (!h || got.length !== h.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(h));
 }
 
 function createStore() {
