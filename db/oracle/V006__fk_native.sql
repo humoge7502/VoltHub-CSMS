@@ -270,10 +270,16 @@ COMMENT ON COLUMN tariff_band.start_minute IS 'D-02: minute-of-day 0-1439 derive
 -- package audit payloads (plan names, 'DUE'/'PAID', fault codes) and NULL diffs, so
 -- tariff/seed writes failed (ORA-02290) and Oracle ended up with plans:0. Fresh DBs
 -- no longer create them (V001 updated) — drop them on any already-migrated DB.
+-- NB: user_constraints.search_condition is LONG and cannot be filtered/compared —
+-- resolve the CHECK constraints via user_cons_columns instead.
 BEGIN
-  FOR c IN (SELECT constraint_name FROM user_constraints
-             WHERE table_name = 'AUDIT_LOG' AND constraint_type = 'C'
-               AND search_condition LIKE '%IS JSON%') LOOP
+  FOR c IN (SELECT DISTINCT cc.constraint_name
+            FROM user_cons_columns cc
+            JOIN user_constraints uc
+              ON uc.constraint_name = cc.constraint_name AND uc.table_name = 'AUDIT_LOG'
+            WHERE cc.table_name = 'AUDIT_LOG'
+              AND uc.constraint_type = 'C'
+              AND cc.column_name IN ('OLD_VALUE', 'NEW_VALUE')) LOOP
     BEGIN
       EXECUTE IMMEDIATE 'ALTER TABLE audit_log DROP CONSTRAINT ' || c.constraint_name;
     EXCEPTION WHEN OTHERS THEN NULL; END;
