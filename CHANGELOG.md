@@ -6,6 +6,22 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ### Fixed
 
+- **BUG-028 (authz): `POST /invoices/:id/pay` skipped the ownership guard.**
+  `GET /invoices/:id` enforces `requireOwned(store, 'invoice')`, but the pay route did
+  not — any driver could settle (and flip the state of) another driver's invoice with
+  their own wallet. The pay route now runs the same guard (ADMIN bypasses; OPERATOR
+  must be in station scope). Regression-gated in `apps/api/test/run.js` test 9.
+- **BUG-027 (web): Discover's 15 s live-poll ran on a stale closure.** The `setInterval`
+  callback captured the first render's `q`/`std`/`sel` state, so polling always replayed
+  the initial search filter and — worse — re-selected the first station on every tick,
+  undoing whatever the operator had clicked. The poll now reads the latest values through
+  refs; initial-load-only auto-select behaviour preserved.
+- **BUG-026 (provisioning): newly provisioned charge points reported ONLINE before ever
+  connecting.** Both provisioning paths (`provisionStation` and `POST /admin/charge-points`)
+  seeded `status: 'ONLINE'`, so `volthub_ocpp_online`, the operator dashboard and the
+  CorridorMap dots counted chargers that had never opened an OCPP socket. New CPs now
+  start `OFFLINE`; the gateway flips them on the first accepted socket (the one already
+  documented contract). Regression-gated in `apps/api/test/run.js` test 16.
 - **BUG-025 (security middleware): the login-throttle bucket map leaked.** The
   BUG-015 idle sweep evicted stale buckets from the per-user/per-IP throttle map
   but never from the per-IP login map (`loginWindows`), so buckets for one-shot

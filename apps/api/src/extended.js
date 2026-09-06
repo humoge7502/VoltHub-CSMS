@@ -203,7 +203,9 @@ module.exports = function extended(store) {
         vendor: b.vendor || 'VoltHub',
         model: b.model || 'VH-DC60',
         firmware_version: '1.6.5',
-        status: 'ONLINE',
+        // Provisioned ≠ connected: the gateway flips this to ONLINE on the first
+        // OCPP socket (same contract as provisionStation).
+        status: 'OFFLINE',
         last_boot_at: null,
         last_seen_at: null,
       };

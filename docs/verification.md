@@ -183,6 +183,38 @@ All local items EXECUTED in this repo against the post-upgrade stack:
   CI passed every gate including `db-tests` against real Oracle 23ai.
 - `ci.yml` push trigger scoped to `main` (tag pushes no longer duplicate CI).
 
+## BUG-027 + BUG-028 (2026-09-06) — receipts
+
+- **BUG-027 red→green (EXECUTED):** `apps/web/src/app/discover/page.js` polled via a
+  `setInterval(load, 15000)` whose closure captured the FIRST render's `q`/`std`/`sel`.
+  Effects: (1) user-applied search filters were never used by the poll (it replayed the
+  initial query forever) and (2) because `sel` was always `null` inside that closure,
+  every poll re-selected the first station, snapping the user's selection back within
+  15 s. Fixed by mirroring the three values into refs the interval reads; initial-load
+  auto-select behaviour is unchanged. Verified by `next build` (17 routes) + lint clean
+  ( behavioural proof is in the browser: select station 3, wait 15 s — selection stays).
+- **BUG-028 red→green (EXECUTED):** `POST /invoices/:id/pay` lacked the
+  `requireOwned(store, 'invoice')` guard that `GET /invoices/:id` enforces — a second
+  driver could POST pay on the first driver's invoice (draining their own wallet and
+  mutating someone else's invoice state). Guard added; regression test 9
+  (`pay: foreign driver cannot pay someone else's invoice`) asserts 403 for a foreign
+  driver while the owner still hits the normal 409 already-paid path.
+- **Post-fix full gate (EXECUTED):** lint + prettier clean · api tests **17** passed ·
+  sim 2 · security 14 · xlayer 4 · ocpp-remote 2 · gateway-close 3 · invariants 11 ·
+  drift `spec=49 routes~53` OK · race 2/2 · e2e 7/7.
+
+## BUG-026 provision-status honesty (2026-09-06) — receipt
+
+- **Baseline full gate (EXECUTED):** lint + prettier clean · `npm audit` 0 findings on
+  both lockfiles · `npm test` green · race 2/2 · e2e 7/7 · `next build` 17 routes.
+- **BUG-026 red→green (EXECUTED):** `provisionStation` (store.js) and
+  `POST /admin/charge-points` (extended.js) seeded `status: 'ONLINE'` on freshly
+  provisioned charge points — a CP that has never opened an OCPP socket counted in
+  `volthub_ocpp_online`, the dashboard, and CorridorMap availability dots. Fixed to
+  `OFFLINE` in both paths; the gateway flips status on first socket. Regression
+  assertion added to `apps/api/test/run.js` test 16 (`charge_point.status === 'OFFLINE'`).
+- **Post-fix (EXECUTED):** lint clean · api tests 16/16.
+
 ## Truth pass + BUG-024 / BUG-025 (2026-09-06) — receipts
 
 Full gate EXECUTED locally before any change (baseline): `npm run lint` clean ·
