@@ -34,7 +34,7 @@ export default function Home() {
         </div>
       </section>
       <div className="grid cards" style={{ marginTop: 24 }}>
-        <Kpi l="Engine A · Oracle 23ai" v="25 rel" sub="6 PL/SQL packages" />
+        <Kpi l="Engine A · Oracle 23ai" v="29 rel" sub="7 PL/SQL packages" />
         <Kpi l="Engine B · TimescaleDB" v="1m caggs" sub="10–20x compression" />
         <Kpi l="Race-proof" v="201+409" sub="FOR UPDATE + CI test" />
         <Kpi l="Outbox lag" v={h ? `${h.outbox_lag} ev` : '…'} sub={h ? `api: ${h.oracle}` : 'connecting…'} />

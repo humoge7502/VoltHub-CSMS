@@ -41,7 +41,7 @@
 > | 🔧 **Engineer**            | [Quickstart](#quickstart) → [`ARCHITECTURE.md`](ARCHITECTURE.md) → [ADR index](docs/adr/) → run the [race suite](apps/api/test/race.js) yourself                                                              |
 > | 🔍 **Reviewer / sceptic**  | [ADRs](docs/adr/) (trade-offs named) → [`docs/verification.md`](docs/verification.md) (every claim has a receipt) → [`docs/perf.md`](docs/perf.md) (numbers, methodology) → [`SECURITY.md`](SECURITY.md)      |
 
-|              **48**              |              **2**               |             **7**              |         **7**          |         **6**         |             **0**             |
+|              **49**              |              **2**               |             **7**              |         **7**          |         **6**         |             **0**             |
 | :------------------------------: | :------------------------------: | :----------------------------: | :--------------------: | :-------------------: | :---------------------------: |
 | REST routes, OpenAPI drift-gated | DB engines behind one store port | PL/SQL packages own the writes | ADRs, trade-offs named | CI jobs on every push | known CVEs, `npm audit` gated |
 
@@ -98,13 +98,13 @@ flowchart TB
   SIM["OCPP 1.6J simulator fleet<br/>normal · race · fault · no-show · burst"] --> GW
   SIM --> REST
   subgraph API["apps/api — one port :4000"]
-    REST["REST /api/v1 — ~40 routes, OpenAPI drift-gated"]
+    REST["REST /api/v1 — 49 routes, OpenAPI drift-gated"]
     GW["OCPP 1.6J gateway<br/>(WS · Basic auth · 10 msg/s)"]
   end
   REST --> ST
   GW --> ST
   subgraph ENG["the two engines (store port, ADR-0005)"]
-    ORA[("Oracle 23ai<br/>25 relations · 7 PL/SQL packages<br/>money path — reservations · billing · ledger")]
+    ORA[("Oracle 23ai<br/>29 relations · 7 PL/SQL packages<br/>money path — reservations · billing · ledger")]
     TS[("TimescaleDB<br/>hypertables · caggs · compression<br/>telemetry path — meter ticks")]
   end
   ST -- "write-through pkg calls" --> ORA
@@ -121,11 +121,11 @@ Mermaid renders natively on GitHub. Full 1-page version + ADR table: [`ARCHITECT
 
 | Layer            | Evidence                                                                                                                                                                                                              |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Oracle OLTP**  | 25-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V006`                                                   |
+| **Oracle OLTP**  | 29-relation BCNF-honest schema, 7 PL/SQL packages, connector-state guard trigger, least-privilege role (no DELETE anywhere), MV + scheduler — `db/oracle/V001–V006`                                                   |
 | **Concurrency**  | `SELECT … FOR UPDATE` / `SKIP LOCKED` bulk expiry, error bands `-2050x…-209xx` mapped to HTTP once (`src/errors.js`), race suites in CI on both engines — `apps/api/test/race.js`                                     |
 | **OCPP 1.6J**    | WebSocket gateway with HTTP Basic auth on upgrade (Security Profile 1), per-CP credentials, 10 msg/s limit, 7 core messages + monotonic tick sequencing — `apps/api/src/ocpp/gateway.js`                              |
 | **DA3 pipeline** | Outbox → 2s relay → hypertables → caggs; crash-after-COPY replays safely — `apps/worker/`, `db/timescale/`                                                                                                            |
-| **API**          | 48 spec'd REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                                                  |
+| **API**          | 49 spec'd REST routes, OpenAPI 3.0 with a CI **drift gate**, Idempotency-Key replay, keyset pagination, request-ID error envelopes — `apps/api/src/`                                                                  |
 | **Web**          | 17 routes, "Grid Current" design system (Space Grotesk / IBM Plex Mono tabular numerals), zero chart dependencies, unified PageState + toasts + URL-as-state — `apps/web/`                                            |
 | **CI**           | 6 jobs: lint (Node 20/22 matrix) · security (npm audit gate, both lockfiles) · quality · coverage (c8 → Codecov) · db-tests (Oracle + Timescale service containers) · e2e (full compose) — `.github/workflows/ci.yml` |
 | **Releases**     | tag-driven GitHub Releases with notes extracted from a Keep-a-Changelog `CHANGELOG.md`; conventional commits throughout — `.github/workflows/release.yml`                                                             |
@@ -173,7 +173,7 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@
 | Security posture                  | `SECURITY.md`                                                                                                                                                                                          |
 | Contributing (the full bar)       | `CONTRIBUTING.md` — testing ladder, ground rules, ADR-first changes                                                                                                                                    |
 | Performance methodology           | `docs/perf.md`                                                                                                                                                                                         |
-| REST contract (OpenAPI 3.0)       | [`docs/openapi.json`](docs/openapi.json) — 48 paths / 52 operations, static snapshot of the live `/api/v1/docs` spec, drift-gated against routes in CI                                                 |
+| REST contract (OpenAPI 3.0)       | [`docs/openapi.json`](docs/openapi.json) — 49 paths / 53 operations, static snapshot of the live `/api/v1/docs` spec, drift-gated against routes in CI                                                 |
 | Demo beats                        | `docs/demo-script.md`                                                                                                                                                                                  |
 | ER / architecture / race diagrams | `diagrams/*.mmd` (Mermaid)                                                                                                                                                                             |
 | Verification receipts             | `docs/verification.md` (every claim names what actually ran)                                                                                                                                           |

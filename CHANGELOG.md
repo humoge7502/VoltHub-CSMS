@@ -2,6 +2,43 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- **BUG-025 (security middleware): the login-throttle bucket map leaked.** The
+  BUG-015 idle sweep evicted stale buckets from the per-user/per-IP throttle map
+  but never from the per-IP login map (`loginWindows`), so buckets for one-shot
+  or scanner IPs accumulated forever on a long-lived process. The sweep now
+  trims both maps. Regression-gated by `TEST-SEC-SWEEP-1` in
+  `apps/api/test/security.js` (stale buckets in BOTH maps must be evicted).
+- **BUG-024 (OCPP): a CSMS restart silently swallowed in-flight sessions' meter data.**
+  The gateway's per-session MeterValues sequence counter (`seqByTx`) was memory-only
+  while sessions are durable (Oracle + hydrate on boot). After a restart, the counter
+  restarted at 1 and every replayed `seq_no` hit the store's idempotent dedupe
+  (`{deduped:true}`) — ticks were dropped without error until the counter caught up
+  with the pre-restart max, understating kWh and billing on stale meters. The gateway
+  now recovers the cursor from the persisted readings on first sight of a session
+  (logs `ocpp tick cursor recovered after restart`). Regression-gated by
+  `gateway-close.js` test 3 (cursor cleared + socket recycled mid-session; validates
+  all three ticks persist and the post-restart tick lands at the recovered seq).
+- **Docs truth pass** — every count in prose now matches what the code ships:
+  REST surface is **49 paths / 53 operations** (was written as 48/52 in the
+  README, docs map, docs site and web KPI), the Oracle schema is
+  **29 relations** (25 was stale since `refresh_token` + `idempotency_key`
+  joined `V001`; masterplan §10.1 arithmetic reconciled), `V001` carries
+  **12 indexes** (+2 FK-pair indexes from V006, now also listed in §10.5),
+  `invariants.sql` defines **11 CI-gated checks** (was "7"), and the docs-site
+  stat counts CI correctly at **6 jobs**. Masterplan §10.2 now documents the
+  two previously missing relations (`IDEMPOTENCY_KEY`, `REFRESH_TOKEN`) in the
+  same notation as the rest. `CITATION.cff` points at v1.4.0 (tag + commit)
+  instead of v1.3.0. Note: `docs/architecture-hero.png` still renders the
+  previous 25-relation diagram — re-render it from `diagrams/architecture.mmd`
+  when an image toolchain is available.
+- Web console homepage KPI now reads 29 relations / 7 PL/SQL packages (the
+  "25 rel / 6 packages" card predates the SEC-012/B2G-014 schema additions).
+- CHANGELOG: `[1.3.0]` date corrected to 2026-09-05 (the tag's actual date).
+
 ## [1.4.0] — 2026-09-05
 
 ### Added
@@ -33,7 +70,7 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   the actual toolchain (eslint/prettier/mermaid/Oracle dev tools/rest-client).
 - README docs map + `docs/README.md` index the new contract artifact.
 
-## [1.3.0] — 2026-09-06
+## [1.3.0] — 2026-09-05
 
 ### Added
 

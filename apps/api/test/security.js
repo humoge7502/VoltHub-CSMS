@@ -313,6 +313,22 @@ async function main() {
     assert.ok(sc && /max-age=0/i.test(sc), 'logout must clear the cookie (max-age=0)');
   });
 
+  await t('TEST-SEC-SWEEP-1: idle throttle buckets are evicted from BOTH maps (BUG-015/BUG-025)', async () => {
+    const sec = require('../src/middleware/security');
+    const { _windows: windows, _loginWindows: loginWindows, _sweepIdle: sweepIdle } = sec;
+    // Seed both maps with one stale (5-min-old) and one fresh bucket.
+    const now = Date.now();
+    windows.set('ip:198.18.0.1', [now - 300000, now]);
+    windows.set('ip:198.18.0.2', [now - 300000]);
+    loginWindows.set('login:198.18.1.1', [now - 300000, now]);
+    loginWindows.set('login:198.18.1.2', [now - 300000]);
+    sweepIdle(now);
+    assert.ok(!windows.has('ip:198.18.0.2'), 'fully-stale window bucket must be deleted');
+    assert.ok(windows.has('ip:198.18.0.1'), 'mixed-age window bucket must be trimmed, not deleted');
+    assert.ok(!loginWindows.has('login:198.18.1.2'), 'fully-stale LOGIN bucket must also be deleted');
+    assert.ok(loginWindows.has('login:198.18.1.1'), 'mixed-age LOGIN bucket must be trimmed, not deleted');
+  });
+
   console.log(`\nSecurity tests: ${pass} passed`);
   server.close();
   process.exit(0);

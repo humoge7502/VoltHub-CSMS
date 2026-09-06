@@ -17,7 +17,7 @@
 | 10    | EER notation: USER specialization (disjoint/total), PAYMENT specialization (partial), multivalued + derived attributes labeled                        |
 | 11–12 | Weak entities justification (CONNECTOR, METER_READING) with identifying relationships drawn                                                           |
 | 13    | Relationship table (Part IV, 9.3)                                                                                                                     |
-| 14–17 | **Relational conversion**: all 25 relations in TABLE(...) notation (Part V) with PK/FK/UNIQUE/CHECK callouts                                          |
+| 14–17 | **Relational conversion**: all 29 relations in TABLE(...) notation (Part V) with PK/FK/UNIQUE/CHECK callouts                                          |
 | 18–19 | FD lists + candidate-key derivations (Part VI, 11)                                                                                                    |
 | 20–22 | The four normalization walkthroughs (Part VI, 12.1–12.4) — the 2NF, 3NF, and BCNF examples with decomposition diagrams                                |
 | 23    | Controlled-denormalization table + temporal versioning note (12.6–12.7)                                                                               |

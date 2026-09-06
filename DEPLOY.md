@@ -49,7 +49,7 @@ WS gateways connect to `wss://api.volthub.example/ocpp/<identity>` with
 ## 3. First boot
 
 ```bash
-bash scripts/migrate.sh          # V001..V005 + Timescale T001/T002
+bash scripts/migrate.sh          # V001..V006 + Timescale T001/T002
 SEED_DB=1 bash scripts/migrate.sh # optional: package-driven seed (db/oracle/seed/seed.sql)
 docker compose -f infra/docker-compose.yml up -d
 curl -sf localhost:4000/api/v1/health/deep  # oracle:connected, outbox_lag: 0

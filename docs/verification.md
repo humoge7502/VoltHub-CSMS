@@ -182,3 +182,37 @@ All local items EXECUTED in this repo against the post-upgrade stack:
 - **oracledb 6.10.0 → 7.0.1 merged** — the last deferred dependency, after PR #5
   CI passed every gate including `db-tests` against real Oracle 23ai.
 - `ci.yml` push trigger scoped to `main` (tag pushes no longer duplicate CI).
+
+## Truth pass + BUG-024 / BUG-025 (2026-09-06) — receipts
+
+Full gate EXECUTED locally before any change (baseline): `npm run lint` clean ·
+`npm run format:check` clean · `npm audit` 0 findings on both lockfiles ·
+`npm test` green · `npm run test:race` (R1 + R4, one winner each) ·
+`npm run test:e2e` 7 steps · `next build` 17 routes.
+
+- **Docs truth pass (EXECUTED):** every count re-derived from the code, not from
+  prose: `node scripts/check-openapi.js` → `spec=49 routes~53`; `grep -c 'CREATE TABLE'`
+  over `db/oracle/V001` → 29 relations; package specs → 7; V001 indexes → 12 (+2
+  V006 pair indexes); `invariants.sql` SELECTs → 11; `ci.yml` jobs → 6. All stale
+  mentions (48/52, 25 relations, "6 PL/SQL packages" on the web KPI card, "7
+  invariants", V001..V005 ranges, docs-site 5-CI stat, CITATION.cff v1.3.0) fixed
+  and reconciled; masterplan §10.2 now documents `IDEMPOTENCY_KEY` and
+  `REFRESH_TOKEN` (present in V001 since the initial commit, missing from the
+  inventory); §10.5 lists the two missing indexes.
+- **BUG-024 red→green (EXECUTED):** `gateway-close.js` test 3 clears the gateway's
+  tick cursor (`__ocppTickCursor`) and recycles the socket mid-session. With the
+  cursor-recovery disabled the test fails (`all three ticks must persist, got 1`);
+  with the fix it passes — the suite is validated to catch its own bug.
+- **BUG-025 red→green (EXECUTED):** `TEST-SEC-SWEEP-1` seeds stale buckets into
+  both throttle maps and runs `sweepIdle(now)`. With the login-map sweep removed
+  the test fails (`fully-stale LOGIN bucket must also be deleted`); with the fix
+  it passes.
+- **Post-fix full gate (EXECUTED):** lint + prettier clean; `npm test` green
+  (api 16 · relay · sim 2 · security **14** · xlayer 4 · ocpp-remote 2 ·
+  gateway-close **3** · invariants 11 · drift `spec=49 routes~53` OK);
+  `npm run test:race` 2 passed.
+- **Not run here (stated plainly):** local Oracle/Timescale runs remain blocked
+  by host disk (see P2V-01..03) — CI `db-tests` + compose `e2e` cover both
+  engines on every push. `docs/architecture-hero.png` still renders the previous
+  25-relation diagram (no image toolchain on this host); re-render from
+  `diagrams/architecture.mmd` when available.

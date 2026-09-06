@@ -2,7 +2,7 @@
 
 ## 1. Resume bullets (pick 3–5; keep numbers honest and reproducible)
 
-- Designed and built **VoltHub**, a two-engine EV charging station management system: **Oracle 23ai** as the ACID system of record (25 relations, 6 PL/SQL packages) and **TimescaleDB** for charger telemetry analytics (hypertables, continuous aggregates, 10x+ compression).
+- Designed and built **VoltHub**, a two-engine EV charging station management system: **Oracle 23ai** as the ACID system of record (29 relations, 7 PL/SQL packages) and **TimescaleDB** for charger telemetry analytics (hypertables, continuous aggregates, 10x+ compression).
 - Implemented a **race-condition-proof reservation core** using row-level locking inside PL/SQL packages; proved it with automated concurrency tests (two parallel bookings, exactly one succeeds) wired into CI.
 - Built an **OCPP 1.6J charger simulator and WebSocket gateway** (BootNotification → StatusNotification → Authorize → StartTransaction → MeterValues → StopTransaction) that drives the database end-to-end like real hardware.
 - Modeled **versioned time-of-use tariffs** and itemized invoicing entirely in Oracle (immutable plan versions, band lookups, double-entry wallet ledger with reconciliation invariants).

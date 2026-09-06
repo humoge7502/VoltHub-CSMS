@@ -10,14 +10,14 @@ flowchart TB
   SIM["OCPP simulator fleet<br/>normal · race · fault · no-show · burst"] --> GW
   SIM --> REST
   subgraph API["apps/api — one port :4000"]
-    REST["REST /api/v1 (~40 routes)"]
+    REST["REST /api/v1 (49 routes)"]
     GW["OCPP 1.6J gateway (WS, Basic auth)"]
   end
   REST --> ST
   GW --> ST
   subgraph ENGINES["the two engines"]
     ST["store surface<br/>(port, ADR-0005)"]
-    ORA[("Oracle 23ai<br/>25 relations · 7 packages<br/>money path")]
+    ORA[("Oracle 23ai<br/>29 relations · 7 packages<br/>money path")]
     TS[("TimescaleDB<br/>hypertables · caggs 1m/1h<br/>analytics path")]
   end
   ST -- "write-through (pkg calls)" --> ORA
