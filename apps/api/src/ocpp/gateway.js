@@ -85,6 +85,7 @@ function mountOcpp(wss, store, log) {
   const registry = new Map(); // ocpp_identity -> ws
   const lastMsg = new Map();
   const seqByTx = new Map(); // BUG-006: monotonic per-session seq (OCPP has no seq; gateway owns it)
+  global.__ocppTickCursor = seqByTx; // test seam (BUG-024): lets a suite drop the cursor to simulate a CSMS restart
 
   wss.on('connection', (ws, req) => {
     const m = String(req.url || '').match(/\/ocpp\/([^/?]+)/);
@@ -227,11 +228,24 @@ function mountOcpp(wss, store, log) {
             const e = vals.find((v) => v.measurand === 'Energy.Active.Import.Register');
             const pr = vals.find((v) => v.measurand === 'Power.Active.Import');
             // BUG-006 fix: monotonic per-session counter, never Date.now() (collides + breaks (session_id,seq_no) PK).
+            // BUG-024 fix: seqByTx is memory-only, but sessions are durable (Oracle + hydrate).
+            // After a CSMS restart, an in-flight session's counter would restart at 1 and
+            // every replayed seq_no would be silently swallowed by the store's idempotent
+            // dedupe ({deduped:true}) — meter data dropped until the counter caught up.
+            // Recover the cursor from the persisted readings on first sight of a session.
             if (tx && e) {
-              const next = (seqByTx.get(Number(tx)) || 0) + 1;
-              seqByTx.set(Number(tx), next);
+              const sid = Number(tx);
+              if (!seqByTx.has(sid)) {
+                const maxSeq = store.readings
+                  .filter((r) => r.session_id === sid)
+                  .reduce((m, r) => Math.max(m, Number(r.seq_no) || 0), 0);
+                seqByTx.set(sid, maxSeq);
+                if (maxSeq) log.info({ identity, sessionId: sid, maxSeq }, 'ocpp tick cursor recovered after restart');
+              }
+              const next = seqByTx.get(sid) + 1;
+              seqByTx.set(sid, next);
               await store.recordTick(
-                tx,
+                sid,
                 next,
                 new Date().toISOString(),
                 Number(e.value) / 1000,

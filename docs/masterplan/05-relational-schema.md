@@ -6,7 +6,7 @@
 
 ## 10.1 Relation inventory
 
-25 relations: 21 business tables + 3 state lookups + 1 audit + 1 outbox. Naming: `SNAKE_CASE`, singular entity names, `*_id` surrogate keys, `*_at` timestamps. All tables `NOMONITORING`-friendly and created by versioned migration `db/oracle/V001__core_schema.sql`.
+29 relations: 24 business tables + 3 state lookups + 1 audit + 1 outbox — the security/persistence tables `refresh_token` and `idempotency_key` joined the inventory when SEC-012 (httpOnly refresh-cookie rotation with family-wide revocation) and B2G-014 (Idempotency-Key replay backed by a real table) hardened the API. Naming: `SNAKE_CASE`, singular entity names, `*_id` surrogate keys, `*_at` timestamps. All tables `NOMONITORING`-friendly and created by versioned migration `db/oracle/V001__core_schema.sql`.
 
 ---
 
@@ -325,6 +325,26 @@ NOTIFICATION(
   created_at      TIMESTAMP(6) NOT NULL
 )
 
+IDEMPOTENCY_KEY(
+  key_value     VARCHAR2(120) PK,                        -- '<user_id>:<Idempotency-Key>' (auth-scoped)
+  user_id       NUMBER(9)     FK -> APP_USER(user_id),
+  method        VARCHAR2(12)  NOT NULL,
+  path          VARCHAR2(300) NOT NULL,
+  status_code   NUMBER        NOT NULL,
+  response_body CLOB          CHECK (response_body IS JSON),
+  created_at    TIMESTAMP(6)  NOT NULL DEFAULT SYSTIMESTAMP,
+  expires_at    TIMESTAMP(6)  NOT NULL
+)
+
+REFRESH_TOKEN(
+  token_hash   VARCHAR2(128) PK,                         -- only the SHA-256 hash is stored
+  user_id      NUMBER(9)     NOT NULL FK -> APP_USER(user_id),
+  device_label VARCHAR2(120),
+  created_at   TIMESTAMP(6)  NOT NULL DEFAULT SYSTIMESTAMP,
+  expires_at   TIMESTAMP(6)  NOT NULL,
+  revoked_at   TIMESTAMP(6)                             -- non-NULL = revoked (family-wide logout)
+)
+
 AUDIT_LOG(
   audit_id      NUMBER(14)    PK,
   actor_user_id NUMBER(9)     FK -> APP_USER(user_id),      -- NULL = system/OCPP
@@ -388,5 +408,7 @@ OUTBOX_EVENT(
 | IX_STATION_GEO        | STATION(city, status)                      | search prefilter; true geo via bounding-box predicate on lat/lng |
 | IX_OUTBOX_UNPROCESSED | OUTBOX_EVENT(processed_at, created_at)     | relay cursor                                                     |
 | IX_INVOICE_STATUS     | INVOICE(status, issued_at)                 | "due invoices" worklist                                          |
+| IX_AUDIT_ENTITY       | AUDIT_LOG(entity_name, entity_id)          | per-entity audit trail reads                                     |
+| IX_LEDGER_PAYMENT     | WALLET_LEDGER(payment_id)                  | payment → ledger traceability                                    |
 
-Rationale: every index maps to a named query in Section 17 — no speculative indexes. Composite orderings follow the equality-then-range rule (e.g., `connector_id` equality before `start_at` range).
+Rationale: every index maps to a named query in Section 17 — no speculative indexes. Composite orderings follow the equality-then-range rule (e.g., `connector_id` equality before `start_at` range). V006 (ADR-0006) adds the FK-pair indexes `IX_RES_CP (cp_id, connector_no, start_at)` and `IX_SESS_CP (cp_id, connector_no, state)` so station aggregates run sargable against the native pair columns.

@@ -87,7 +87,7 @@ The order encodes the philosophy: **database first, protocol second, UI third, p
 - [x] ER/EER with cardinality + participation annotated (`diagrams/er-model.mmd`)
 - [x] weak entities justified (`docs/masterplan/04`, `05`)
 - [ ] specializations labeled
-- [x] relational conversion complete (25 relations)
+- [x] relational conversion complete (29 relations)
 - [x] FDs + candidate keys derived (`docs/masterplan/04`)
 - [x] 2NF/3NF/BCNF worked examples (`docs/masterplan/06-normalization-bcnf.md`)
 - [x] lossless/dependency-preservation discussed (`docs/masterplan/06-normalization-bcnf.md`)

@@ -35,12 +35,19 @@ function checkLoginThrottle(req, res) {
   }
   return true;
 }
-// BUG-015: stale IP/user buckets are evicted (idle > 2 min) so the map cannot grow unbounded.
+// BUG-015: stale IP/user buckets are evicted (idle > 2 min) so neither map can grow
+// unbounded — BUG-025 fix: the login throttle map is swept too (it used to be skipped,
+// so buckets for one-shot/scanner IPs accumulated forever).
 function sweepIdle(now = Date.now()) {
   for (const [k, arr] of windows) {
     const fresh = arr.filter((t) => now - t < 120000);
     if (!fresh.length) windows.delete(k);
     else if (fresh.length !== arr.length) windows.set(k, fresh);
+  }
+  for (const [k, arr] of loginWindows) {
+    const fresh = arr.filter((t) => now - t < 120000);
+    if (!fresh.length) loginWindows.delete(k);
+    else if (fresh.length !== arr.length) loginWindows.set(k, fresh);
   }
 }
 setInterval(() => {

@@ -8,6 +8,8 @@
 // receive CSMS-initiated CALLs (remote commands resolve via registry.get) and the
 // CP must still read ONLINE. Validated to catch the bug: against the unguarded
 // handler the remote-stop below returns 409 CP_OFFLINE and cp.status flips OFFLINE.
+// Test 3 is the BUG-024 regression: a CSMS restart must not swallow in-flight
+// sessions' meter data (the per-session tick cursor is recovered from the store).
 // Run: node apps/api/test/gateway-close.js (RATE_LIMIT_OFF=1).
 'use strict';
 process.env.RATE_LIMIT_OFF = '1';
@@ -123,7 +125,94 @@ async function main() {
     assert.strictEqual(cp.status, 'OFFLINE', 'final close must mark the CP OFFLINE');
     assert.strictEqual(registry.get(identity), undefined, 'final close must deregister the identity');
     console.log('  close 2 - registered socket close still deregisters + OFFLINE');
-    console.log('\nOCPP gateway-close tests: 2 passed');
+
+    // --- t3 (BUG-024): a CSMS restart must not swallow in-flight sessions' meter data ---
+    // Sessions are durable (Oracle + hydrate) but the gateway's per-session tick cursor
+    // was memory-only. After a restart the cursor restarted at 1 and every replayed
+    // seq_no was silently deduped ({deduped:true}) — meter updates dropped until the
+    // counter caught up with the pre-restart max. The gateway now recovers the cursor
+    // from the persisted readings; this test proves ticks keep advancing past the old max.
+    const cursor = global.__ocppTickCursor;
+    assert.ok(cursor, 'gateway must expose the tick cursor (test seam)');
+    cursor.clear(); // simulate: CSMS process restarted, per-session counters lost
+    const ws3 = await connect();
+    await sleep(150);
+    // The session above is COMPLETED — start a fresh one on the same connector.
+    const st3 = await api('/sessions/start', {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ cpId: cp.cp_id, connectorNo: connNo }),
+    });
+    assert.equal(st3.status, 201, `session restart start must be 201, got ${st3.status}`);
+    const sid3 = st3.j.session.session_id;
+    // Pre-charge the cursor the old-fashioned way: two OCPP ticks (seq 1 and 2).
+    ws3.send(
+      JSON.stringify([
+        2,
+        'mv-1',
+        'MeterValues',
+        {
+          transactionId: sid3,
+          meterValue: [
+            {
+              timestamp: new Date().toISOString(),
+              sampledValue: [{ measurand: 'Energy.Active.Import.Register', value: '1000' }],
+            },
+          ],
+        },
+      ])
+    );
+    await sleep(120);
+    ws3.send(
+      JSON.stringify([
+        2,
+        'mv-2',
+        'MeterValues',
+        {
+          transactionId: sid3,
+          meterValue: [
+            {
+              timestamp: new Date().toISOString(),
+              sampledValue: [{ measurand: 'Energy.Active.Import.Register', value: '2000' }],
+            },
+          ],
+        },
+      ])
+    );
+    await sleep(120);
+    // Simulate the CSMS restart with the session still open (durable): cursor dropped.
+    cursor.clear();
+    // Reconnect (the restarted gateway has no sockets; also proves recovery needs no reconnect ordering).
+    ws3.close();
+    await sleep(200);
+    const ws4 = await connect();
+    await sleep(150);
+    // Post-restart MeterValues: a gateway with the old bug would assign seq 1 again →
+    // dedupe swallow. Fixed: cursor recovers from store.readings and writes seq 3.
+    ws4.send(
+      JSON.stringify([
+        2,
+        'mv-3',
+        'MeterValues',
+        {
+          transactionId: sid3,
+          meterValue: [
+            {
+              timestamp: new Date().toISOString(),
+              sampledValue: [{ measurand: 'Energy.Active.Import.Register', value: '3500' }],
+            },
+          ],
+        },
+      ])
+    );
+    await sleep(200);
+    const post = store.readings.filter((r) => r.session_id === sid3);
+    assert.strictEqual(post.length, 3, `all three ticks must persist, got ${post.length} (cursor recovery broken?)`);
+    assert.strictEqual(post.find((r) => r.meter_kwh === 3.5).seq_no, 3, 'post-restart tick must land at seq 3');
+    console.log('  close 3 - CSMS restart recovers the tick cursor; no meter data swallowed');
+    ws4.close();
+
+    console.log('\nOCPP gateway-close tests: 3 passed');
   } finally {
     server.close();
   }
