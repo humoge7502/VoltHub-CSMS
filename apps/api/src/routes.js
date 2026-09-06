@@ -695,6 +695,10 @@ module.exports = function routes(store) {
     authRequired,
     roles('OPERATOR', 'ADMIN'),
     safe(async (req, res) => {
+      // BUG-030: station scope — an operator assigned to station A must not read
+      // station B's revenue (same contract as PATCH /sessions/:id/state + requireOwned).
+      if (req.user.role === 'OPERATOR' && !(req.user.stationScope || []).includes(Number(req.params.id)))
+        return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
       const sid = Number(req.params.id);
       const keys = new Set([...store.cps.values()].filter((c) => c.station_id === sid).map((c) => String(c.cp_id)));
       const sess = [...store.sessions.values()].filter(
@@ -778,6 +782,14 @@ module.exports = function routes(store) {
     authRequired,
     safe(async (req, res) => {
       const sid = Number(req.params.id);
+      // BUG-029: a review must reference a real session and (for drivers) their own —
+      // the old route accepted any session id, so a driver could rate nonexistent or
+      // foreign sessions and skew station ratings. Oracle's FK enforces existence;
+      // ownership is app-level in both engines, so it is checked here.
+      const sess = store.sessions.get(sid);
+      if (!sess) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'session' } });
+      if (req.user.role === 'DRIVER' && sess.user_id !== req.user.id)
+        return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your session' } });
       if ([...store.reviews.values()].some((x) => x.session_id === sid))
         return res.status(409).json({ error: { code: 'DUPLICATE_REVIEW', message: 'one review per session' } });
       const rid = ++store.seq.review;

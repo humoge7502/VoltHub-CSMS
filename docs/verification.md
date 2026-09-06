@@ -183,6 +183,26 @@ All local items EXECUTED in this repo against the post-upgrade stack:
   CI passed every gate including `db-tests` against real Oracle 23ai.
 - `ci.yml` push trigger scoped to `main` (tag pushes no longer duplicate CI).
 
+## BUG-029 + BUG-030 (2026-09-06) — receipts
+
+- **BUG-029 red→green (EXECUTED):** `POST /sessions/:id/review` validated only the
+  rating and one-per-session rule — any session id was accepted. A driver could review
+  a nonexistent session (skewing `avg_rating` on `/stations/:id` which sums reviews by
+  session→connector→station) or a foreign one. Fixed: 404 `NOT_FOUND` for unknown
+  sessions, 403 `FORBIDDEN` for drivers reviewing someone else's (admins/operators
+  unaffected; Oracle `review.session_id` FK already enforced existence in durable
+  mode). Regression test 15 (`review guards`) asserts both.
+- **BUG-030 red→green (EXECUTED):** `GET /stations/:id/analytics` (revenue/energy/
+  faults per station) checked role but not `stationScope` — an operator assigned to
+  station A could read station B's revenue. Every other operator path enforces scope
+  (`PATCH /sessions/:id/state`, `requireOwned`). Fixed with the same `OUT_OF_SCOPE`
+  contract. Regression test 19 provisions an operator on the newest station and
+  asserts 200 there / 403 `OUT_OF_SCOPE` on another.
+- **Post-fix full gate (EXECUTED):** lint + prettier clean · api tests **19** ·
+  sim 2 · security 14 · xlayer 4 · ocpp-remote 2 · gateway-close 3 · relay 4 ·
+  invariants 11 · drift `spec=49 routes~53` OK · race 2/2 · e2e 7/7 · `next build`
+  17 routes (0 errors).
+
 ## BUG-027 + BUG-028 (2026-09-06) — receipts
 
 - **BUG-027 red→green (EXECUTED):** `apps/web/src/app/discover/page.js` polled via a
