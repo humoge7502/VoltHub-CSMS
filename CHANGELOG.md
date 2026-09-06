@@ -6,6 +6,18 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ### Fixed
 
+- **BUG-030 (authz): station analytics ignored operator station scope.**
+  `GET /stations/:id/analytics` was `roles('OPERATOR','ADMIN')` only — an operator
+  assigned to station A could read station B's revenue, energy and fault counts, while
+  every other operator path (`PATCH /sessions/:id/state`, `requireOwned`) enforces
+  `stationScope`. Revenue is exactly the data the scope exists to protect. Regression
+  test 19 asserts 200 on the assigned station and 403 `OUT_OF_SCOPE` elsewhere.
+- **BUG-029 (integrity): reviews could target nonexistent or foreign sessions.**
+  `POST /sessions/:id/review` accepted any session id — a driver could rate a session
+  that does not exist (404 now) or belongs to someone else (403 for drivers now;
+  Oracle's FK already enforced existence, ownership is app-level in both engines).
+  Station ratings can no longer be skewed by fabricating sessions. Regression
+  test 15 covers both paths.
 - **BUG-028 (authz): `POST /invoices/:id/pay` skipped the ownership guard.**
   `GET /invoices/:id` enforces `requireOwned(store, 'invoice')`, but the pay route did
   not — any driver could settle (and flip the state of) another driver's invoice with

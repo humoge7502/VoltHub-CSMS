@@ -189,6 +189,30 @@ async function main() {
     const { j } = await api(`/stations/${owner.station_id}/reviews`);
     assert.ok(j.reviews.some((x) => x.session_id === sess.session_id));
   });
+  await t('review guards: nonexistent + foreign session rejected (BUG-029)', async () => {
+    const nf = await api('/sessions/999999/review', {
+      method: 'POST',
+      headers: H(),
+      body: JSON.stringify({ rating: 5 }),
+    });
+    assert.equal(nf.status, 404);
+    // second driver cannot review the first driver's session
+    const other = await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `nosy.${Date.now()}@example.in`,
+        password: 'Driver@123',
+        full_name: 'Nosy Driver',
+      }),
+    });
+    const OH = { Authorization: `Bearer ${other.j.accessToken}` };
+    const f = await api(`/sessions/${sess.session_id}/review`, {
+      method: 'POST',
+      headers: OH,
+      body: JSON.stringify({ rating: 1, comment: 'not mine' }),
+    });
+    assert.equal(f.status, 403);
+  });
   await t('notifications emitted + readable', async () => {
     const { j } = await api('/me/notifications', { headers: H() });
     assert.ok(j.notifications.length >= 2); // reservation + invoice
@@ -243,6 +267,35 @@ async function main() {
     // Provisioned ≠ connected: a freshly provisioned CP must report OFFLINE until
     // its first OCPP socket (keeps volthub_ocpp_online honest).
     assert.equal(cp.j.charge_point.status, 'OFFLINE', 'newly provisioned CP must not be ONLINE before it connects');
+  });
+  await t('analytics: operator station scope enforced (BUG-030)', async () => {
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+    });
+    const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
+    // Station created in the previous test is the highest id; assign an operator to it.
+    const stations = await api('/admin/stations', { headers: AH });
+    const stId = Math.max(...stations.j.stations.map((s) => s.station_id));
+    const op = await api('/admin/users', {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({ email: `scoped.${Date.now()}@volthub.in`, role: 'OPERATOR', stationId: stId }),
+    });
+    assert.equal(op.status, 201);
+    const opLogin = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: op.j.user.email, password: 'Temp@1234' }),
+    });
+    const OH = { Authorization: `Bearer ${opLogin.j.accessToken}` };
+    const okScope = await api(`/stations/${stId}/analytics`, { headers: OH });
+    assert.equal(okScope.status, 200, 'operator must read their assigned station');
+    const other = stations.j.stations.find((s) => s.station_id !== stId);
+    if (other) {
+      const denied = await api(`/stations/${other.station_id}/analytics`, { headers: OH });
+      assert.equal(denied.status, 403, "operator must not read another station's revenue");
+      assert.equal(denied.j.error.code, 'OUT_OF_SCOPE');
+    }
   });
   console.log(`\nAPI tests: ${pass} passed`);
   server.close();
