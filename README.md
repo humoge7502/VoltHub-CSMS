@@ -8,13 +8,13 @@
 
 ### 🎮 MISSION BRIEFING
 
-| | |
-|---|---|
-| 🎯 **OBJECTIVE** | One transaction boundary across two database engines — without losing a single cent |
-| 🧠 **INTEL** | Oracle 23ai owns the ACID money path · TimescaleDB owns telemetry · OCPP 1.6J gateway drives a simulator fleet |
-| 💣 **BOSS FIGHT** | Race conditions — respawned in CI on every push until they stayed dead |
-| 🏆 **LOOT** | CI + release pipelines · Codecov coverage · OpenSSF Scorecard · typography-led Next.js ops console |
-| 🎮 **DIFFICULTY** | ★★★★★ · no hard mode, just engineering |
+|                   |                                                                                                                |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| 🎯 **OBJECTIVE**  | One transaction boundary across two database engines — without losing a single cent                            |
+| 🧠 **INTEL**      | Oracle 23ai owns the ACID money path · TimescaleDB owns telemetry · OCPP 1.6J gateway drives a simulator fleet |
+| 💣 **BOSS FIGHT** | Race conditions — respawned in CI on every push until they stayed dead                                         |
+| 🏆 **LOOT**       | CI + release pipelines · Codecov coverage · OpenSSF Scorecard · typography-led Next.js ops console             |
+| 🎮 **DIFFICULTY** | ★★★★★ · no hard mode, just engineering                                                                         |
 
 **Two-engine EV charging management: Oracle for ACID billing/reservations, TimescaleDB for telemetry — driven by an OCPP 1.6J gateway + simulator fleet, race-tested in CI on both database engines, with a typography-led Next.js operations console.**
 
