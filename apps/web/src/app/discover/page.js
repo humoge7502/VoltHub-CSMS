@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, Pill, CorridorMap } from '../../lib/ui';
 
 export default function Discover() {
@@ -8,12 +8,23 @@ export default function Discover() {
   const [std, setStd] = useState('');
   const [sel, setSel] = useState(null);
   const [err, setErr] = useState('');
+  // The 15 s poll runs from a stable interval, so it reads the LATEST q/std/sel
+  // through refs — a closure over the first render would poll the initial search
+  // forever and re-select the first station on every tick (BUG-027).
+  const qRef = useRef(q);
+  const stdRef = useRef(std);
+  const selRef = useRef(sel);
+  qRef.current = q;
+  stdRef.current = std;
+  selRef.current = sel;
   const load = () =>
-    api(`/stations?q=${encodeURIComponent(q)}${std ? `&std=${std}` : ''}&lat=12.97&lng=80.06&radius=60`)
+    api(
+      `/stations?q=${encodeURIComponent(qRef.current)}${stdRef.current ? `&std=${stdRef.current}` : ''}&lat=12.97&lng=80.06&radius=60`
+    )
       .then((j) => {
         setErr('');
         setSt(j.stations);
-        if (!sel && j.stations[0]) setSel(j.stations[0].station_id);
+        if (!selRef.current && j.stations[0]) setSel(j.stations[0].station_id);
       })
       .catch((e) => setErr('API unreachable — start it: npm run dev:api (localhost:4000)'));
   useEffect(() => {

@@ -127,6 +127,24 @@ async function main() {
     const p2 = await api(`/invoices/${inv}/pay`, { method: 'POST', headers: H() });
     assert.equal(p2.status, 409); // no double-pay (R4)
   });
+  await t("pay: foreign driver cannot pay someone else's invoice (BUG-028)", async () => {
+    // Fresh driver with their own wallet; inv belongs to the first test user.
+    const other = await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `foreign.${Date.now()}@example.in`,
+        password: 'Driver@123',
+        full_name: 'Foreign Driver',
+      }),
+    });
+    const OH = { Authorization: `Bearer ${other.j.accessToken}` };
+    const inv = store.invoices.get(store.seq.inv); // latest invoice (owner = first user)
+    const denied = await api(`/invoices/${inv.invoice_id}/pay`, { method: 'POST', headers: OH });
+    assert.equal(denied.status, 403);
+    // Owner can still pay (state unchanged here — already PAID above; expect 409 not 403).
+    const owner = await api(`/invoices/${inv.invoice_id}/pay`, { method: 'POST', headers: H() });
+    assert.equal(owner.status, 409);
+  });
   await t('RBAC: driver cannot list audit log', async () => {
     const r = await api('/admin/audit-logs', { headers: H() });
     assert.equal(r.status, 403);
@@ -214,6 +232,7 @@ async function main() {
     });
     assert.equal(created.status, 201);
     assert.ok(created.j.provisioned[0].ocpp_identity.startsWith('VH-'));
+    assert.ok(created.j.provisioned[0].auth_secret, 'provision response must carry the one-time secret');
     const cp = await api('/admin/charge-points', {
       method: 'POST',
       headers: AH,
@@ -221,6 +240,9 @@ async function main() {
     });
     assert.equal(cp.status, 201);
     assert.ok(cp.j.ws_url.startsWith('/ocpp/'));
+    // Provisioned ≠ connected: a freshly provisioned CP must report OFFLINE until
+    // its first OCPP socket (keeps volthub_ocpp_online honest).
+    assert.equal(cp.j.charge_point.status, 'OFFLINE', 'newly provisioned CP must not be ONLINE before it connects');
   });
   console.log(`\nAPI tests: ${pass} passed`);
   server.close();

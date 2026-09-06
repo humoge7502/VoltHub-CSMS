@@ -728,7 +728,10 @@ function createStore() {
         vendor: p.vendor || 'VoltHub',
         model: p.model || 'VH-AC22',
         firmware_version: '1.6.5',
-        status: 'ONLINE',
+        // A freshly provisioned charge point has never connected — it must not
+        // count as online until the gateway accepts its first OCPP socket
+        // (volthub_ocpp_online would otherwise report chargers that do not exist).
+        status: 'OFFLINE',
         last_boot_at: null,
         last_seen_at: null,
       });

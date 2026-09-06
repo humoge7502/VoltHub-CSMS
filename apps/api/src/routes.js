@@ -580,6 +580,10 @@ module.exports = function routes(store) {
   r.post(
     '/invoices/:id/pay',
     authRequired,
+    // BUG-028: pay must obey the same ownership guard as GET /invoices/:id —
+    // otherwise any driver could settle (and mutate the state of) another
+    // driver's invoice. ADMIN always passes; OPERATOR must be in station scope.
+    requireOwned(store, 'invoice'),
     safe(async (req, res) => {
       try {
         res.status(201).json({ payment: await store.payInvoice(req.params.id, req.user.id) });
