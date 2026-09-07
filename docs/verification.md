@@ -47,6 +47,13 @@ vs **PENDING** (blocked here; exact command given). No claim without a receipt.
   scope". Drivers now see only their own sessions in the station feed; the connector
   probe returns a minimized payload (state + timing, no identity) to non-owners;
   operators are station-scoped. Test 22 asserts the peer/owner/minimized payloads.
+- **BUG-038 red→green (EXECUTED in CI):** the STORE=oracle gate failed on new test 20 —
+  a runtime-registered driver's first reservation 500'd on Oracle's FK because
+  `db/oracle.js` never mirrored `createUser` (nor `topup`/`cancelReservation`). The gate
+  had only ever passed because the adapter attached after the old suites finished.
+  Fix: user/wallet/cancel writes are write-through with explicit local ids and undo-on-
+  mirror-failure; cancels mirror `reservation_pkg.cancel_reservation` first. CI gate
+  now proves the durable path end-to-end instead of passing by timing luck.
 - **Post-fix full gate (EXECUTED):** lint + prettier clean · api tests **26** passed ·
   security **15** · relay 4 · sim 2 · xlayer 4 · ocpp-remote 2 · gateway-close 3 ·
   invariants 11 · drift `spec=49 routes~53` OK · race 2/2.

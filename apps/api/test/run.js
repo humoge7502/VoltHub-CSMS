@@ -280,7 +280,6 @@ async function main() {
     const op = await api('/admin/users', {
       method: 'POST',
       headers: AH,
-      body: JSON.stringify({ email: `scoped.${Date.now()}@volthub.in`, role: 'OPERATOR', stationId: stId }),
       body: JSON.stringify({
         email: `scoped.${Date.now()}@volthub.in`,
         role: 'OPERATOR',

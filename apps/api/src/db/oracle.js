@@ -422,8 +422,96 @@ function wrapWithOracle(local, pool) {
 
   // Keep references: override methods on the same object routes already hold.
   const origCreateReservation = local.createReservation.bind(local);
+  const origCreateUser = local.createUser.bind(local);
+  const origTopup = local.topup.bind(local);
 
   local._oracle = { pool, mode: 'oracle', hydratedAt: new Date().toISOString() };
+
+  // BUG-038: single-connection helper for multi-statement write-through mirrors
+  // (user + wallet rows must commit atomically). connExec targets the connection
+  // leased by the enclosing withConnSync call.
+  let mirrorConn = null;
+  const withConnSync = async (fn) => {
+    const c = await pool.getConnection();
+    mirrorConn = c;
+    try {
+      return await fn();
+    } finally {
+      mirrorConn = null;
+      try {
+        await c.close();
+      } catch {}
+    }
+  };
+  const connExec = (sql, binds) => {
+    if (!mirrorConn) throw new Error('connExec called outside withConnSync');
+    return mirrorConn.execute(sql, binds || {});
+  };
+
+  // BUG-038: identity + wallet writes are write-through too. Before this, a user who
+  // registered AFTER boot existed only in the local Map — their first reservation hit
+  // Oracle's FK (reservation.user_id -> app_user) and 500'd. The compose demo path
+  // (register -> reserve) was broken against the durable engine; CI's STORE=oracle step
+  // only passed because the adapter attached after the old suites finished.
+  // Id authority: the LOCAL store assigns ids (JWT sub, wallet ledger seq, route bindings
+  // all use them); Oracle mirrors with EXPLICIT ids (V001 uses IDENTITY BY DEFAULT ON NULL
+  // precisely so mirrored rows can carry the local id). On mirror failure the local write
+  // is undone — the caller sees the Oracle error, never a silent divergence.
+  local.createUser = (args) => {
+    const u = origCreateUser(args);
+    const walletCreated = (args.role || 'DRIVER') === 'DRIVER';
+    return withConnSync(async () => {
+      await connExec(
+        `INSERT INTO app_user (user_id, email, password_hash, full_name, phone, role, status)
+         VALUES (:id, :email, :hash, :name, :phone, :role, 'ACTIVE')`,
+        { id: u.user_id, email: u.email, hash: u.password_hash, name: u.full_name, phone: u.phone, role: u.role }
+      );
+      if (local.wallets.has(u.user_id)) {
+        await connExec('INSERT INTO wallet_account (user_id, balance) VALUES (:id, 0)', { id: u.user_id });
+      }
+      await mirrorConn.commit();
+      return u;
+    }).catch((e) => {
+      // Undo the local write so a failed registration leaves no ghost identity.
+      local.users.delete(u.user_id);
+      if (walletCreated) local.wallets.delete(u.user_id);
+      local.audit = local.audit.filter((a) => !(a.entity_name === 'APP_USER' && a.entity_id === String(u.user_id)));
+      throw fromDriver(e);
+    });
+  };
+
+  local.topup = (uid, amount) => {
+    const wBefore = local.wallets.get(Number(uid));
+    const preBalance = wBefore ? wBefore.balance : 0;
+    const ledgerBefore = local.ledgers.length;
+    const w = origTopup(uid, amount);
+    const entry = local.ledgers[local.ledgers.length - 1];
+    return withConnSync(async () => {
+      await connExec(
+        `INSERT INTO wallet_ledger (user_id, seq_no, kind, amount, balance_after, note)
+         VALUES (:u, :seq, 'TOPUP', :amt, :bal, 'top-up')`,
+        { u: Number(uid), seq: entry.seq_no, amt: amount, bal: entry.balance_after }
+      );
+      await connExec('UPDATE wallet_account SET balance = :bal, updated_at = SYSTIMESTAMP WHERE user_id = :u', {
+        bal: entry.balance_after,
+        u: Number(uid),
+      });
+      await mirrorConn.commit();
+      return w;
+    }).catch((e) => {
+      // Undo: restore balance, drop the ledger row, filter the audit entry.
+      if (wBefore) {
+        wBefore.balance = preBalance;
+        wBefore.updated_at = new Date().toISOString();
+        local.wallets.set(Number(uid), wBefore);
+      } else local.wallets.delete(Number(uid));
+      local.ledgers.length = ledgerBefore;
+      local.audit = local.audit.filter(
+        (a) => !(a.entity_name === 'WALLET' && a.entity_id === String(uid) && a.action === 'TOPUP')
+      );
+      throw fromDriver(e);
+    });
+  };
 
   local.createReservation = async (uid, vehicleId, cpId, connNo, startAt, endAt) => {
     try {
@@ -468,6 +556,35 @@ function wrapWithOracle(local, pool) {
       }
     } catch (e) {
       throw fromDriver(e);
+    }
+  };
+
+  // BUG-038 (part 2): cancels must reach Oracle too, else a rehydrate resurrects a
+  // cancelled booking as BOOKED. Local cancel already enforces role scope + status;
+  // mirror it to reservation_pkg.cancel_reservation first, undo local on mirror failure.
+  const origCancelReservation = local.cancelReservation.bind(local);
+  local.cancelReservation = async (rid, actor, role, scopeStations) => {
+    try {
+      await withConn(async (conn) => {
+        await conn.execute('BEGIN reservation_pkg.cancel_reservation(:p_res, :p_actor); END;', {
+          p_res: Number(rid),
+          p_actor: actor ?? null,
+        });
+        await conn.commit();
+      });
+    } catch (e) {
+      throw fromDriver(e);
+    }
+    try {
+      return await origCancelReservation(rid, actor, role, scopeStations);
+    } catch (e) {
+      // Oracle won but local disagreed (e.g. clock-skewed status): trust Oracle.
+      if (e && e.code === 'CANCEL_CONFLICT') {
+        const r = local.reservations.get(Number(rid));
+        if (r) r.status = 'CANCELLED';
+        return r;
+      }
+      throw e;
     }
   };
 

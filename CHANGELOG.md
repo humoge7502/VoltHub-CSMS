@@ -35,6 +35,17 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   but 401 `BAD_REFRESH` for an unknown one — an oracle for which refresh tokens exist.
   Logout is now uniformly 200 `{ok:true}` regardless of token validity (idempotent,
   uninformative); the security suite gained TEST-SEC-LOGOUT-1.
+- **BUG-038 (coherence): the Oracle adapter mirrored only 6 of the money-path writes.**
+  `db/oracle.js` wrapped `createReservation`/`transition`/`recordTick`/`billSession`/
+  `payInvoice`/`expireStale` — but NOT `createUser`, `topup` or `cancelReservation`. A user
+  who registered after boot existed only in the local Map, so their first reservation hit
+  Oracle's FK (`reservation.user_id → app_user`) and 500'd; wallet top-ups never reached
+  Oracle (so `billing_pkg.pay_invoice` would later 402 on an empty durable balance); a
+  cancelled booking resurrected as BOOKED after restart+rehydrate. All three writes are
+  now write-through with explicit local ids (V001 uses IDENTITY BY DEFAULT ON NULL so
+  mirrored rows carry the local id) and undo-on-failure — a failed mirror leaves no ghost
+  identity, balance or booking. The compose demo path (register → reserve) and CI's
+  STORE=oracle step now exercise this directly. Exposed by new regression test 20.
 - **BUG-036 (drift): the request throttle kept its own copy of the dev JWT secret.**
   `middleware/security.js` hardcoded `'dev-only-32-byte-secret-0123456789'` as the
   verify fallback instead of importing `secret()` from `middleware/auth.js` — a future
