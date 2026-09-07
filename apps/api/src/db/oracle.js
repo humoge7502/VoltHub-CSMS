@@ -430,18 +430,31 @@ function wrapWithOracle(local, pool) {
   // BUG-038: single-connection helper for multi-statement write-through mirrors
   // (user + wallet rows must commit atomically). connExec targets the connection
   // leased by the enclosing withConnSync call.
+  // BUG-042: mirrors are SERIALIZED. Two overlapping write-throughs (e.g. register's
+  // welcome top-up racing the next request's reservation mirror) interleaved on the
+  // single mirrorConn — connExec/commit landed on the wrong connection and the
+  // reservation 500'd. A promise-chain queue gives each mirror exclusive access.
   let mirrorConn = null;
-  const withConnSync = async (fn) => {
-    const c = await pool.getConnection();
-    mirrorConn = c;
-    try {
-      return await fn();
-    } finally {
-      mirrorConn = null;
+  let mirrorChain = Promise.resolve();
+  const withConnSync = (fn) => {
+    const run = mirrorChain.then(async () => {
+      const c = await pool.getConnection();
+      mirrorConn = c;
       try {
-        await c.close();
-      } catch {}
-    }
+        return await fn();
+      } finally {
+        mirrorConn = null;
+        try {
+          await c.close();
+        } catch {}
+      }
+    });
+    // Keep the chain alive regardless of individual mirror failures.
+    mirrorChain = run.then(
+      () => {},
+      () => {}
+    );
+    return run;
   };
   const connExec = (sql, binds) => {
     if (!mirrorConn) throw new Error('connExec called outside withConnSync');

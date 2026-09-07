@@ -300,7 +300,9 @@ async function main() {
     assert.equal(a.code, 'BAD_CREDENTIALS');
     assert.equal(b.code, 'BAD_CREDENTIALS', 'unknown email must read as bad credentials, not user-missing');
     // The unknown path must actually run the Argon2id pad (not return instantly).
-    assert.ok(med(unknown) >= 15, `unknown-email path too fast (${med(unknown)}ms) — pad not running`);
+    // Hardware-independent floor: a real 19 MiB Argon2id verify is ≥5 ms everywhere
+    // (CI runners measured 11 ms; this host 26 ms); an instant reject is <1 ms.
+    assert.ok(med(unknown) >= 5, `unknown-email path too fast (${med(unknown)}ms) — pad not running`);
     // And it must sit inside the same band as a real (wrong-password) verify.
     assert.ok(
       Math.abs(med(known) - med(unknown)) < 120,

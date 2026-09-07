@@ -48,7 +48,9 @@ module.exports = function routes(store) {
         full_name: req.body.full_name,
         role: 'DRIVER',
       });
-      store.topup(u.user_id, 500); // welcome credit (capped demo economy; see topup caps)
+      // Awaited: the top-up is a write-through mirror too (BUG-042) — an unawaited
+      // mirror raced the caller's very next request on the shared mirror connection.
+      await store.topup(u.user_id, 500); // welcome credit (capped demo economy; see topup caps)
       store.auditLog(u.user_id, 'APP_USER', u.user_id, 'REGISTER', null, { email: u.email });
       const rt = issueRefresh(store, u, req.body.device);
       setRefreshCookie(res, rt); // SEC-012: register grants the same cookie as login
@@ -159,7 +161,8 @@ module.exports = function routes(store) {
       const amt = Number(req.body.amount);
       if (!Number.isFinite(amt) || amt <= 0)
         return res.status(422).json({ error: { code: 'INVALID_AMOUNT', message: 'amount must be a positive number' } });
-      res.json({ wallet: store.topup(req.user.id, amt) });
+      // Mirror write-through is promise-shaped under STORE=oracle — await it (BUG-042).
+      res.json({ wallet: await store.topup(req.user.id, amt) });
     })
   );
   // vehicles
