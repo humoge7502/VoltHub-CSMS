@@ -583,6 +583,53 @@ async function main() {
       store.createUser = orig;
     }
   });
+  await t('BUG-043: fromDriver restores canonical store codes from ORA- messages', async () => {
+    // The Oracle packages raise RAISE_APPLICATION_ERROR numbers; callers and tests key
+    // on the canonical names ('OVERLAP', 'TICK_REJECTED', …) that the local store throws.
+    // Before BUG-043, fromDriver left e.code as 'ORA_20503' — the durable engine and the
+    // local profile disagreed on the error contract (routes mapped 409 on num, but route
+    // error responses and client checks matched on code).
+    const { fromDriver } = require('../src/errors');
+    const overlap = fromDriver(new Error('ORA-20503: overlapping reservation window'));
+    assert.equal(overlap.code, 'OVERLAP', 'ORA-20503 must restore the canonical OVERLAP code');
+    assert.equal(overlap.num, -20503);
+    assert.equal(overlap.status, 409, 'overlap stays a 409 conflict');
+    const funds = fromDriver(new Error('ORA-20705: insufficient funds'));
+    assert.equal(funds.code, 'INSUFFICIENT_FUNDS', 'ORA-20705 must restore INSUFFICIENT_FUNDS');
+    assert.equal(funds.status, 402, 'insufficient funds stays a 402');
+    const guard = fromDriver(new Error('ORA-20801: connector state guard'));
+    assert.equal(guard.code, 'CONNECTOR_GUARD');
+    // Unknown numbers keep the ORA_ fallback (never crash, never invent a name).
+    const unknown = fromDriver(new Error('ORA-99999: mystery'));
+    assert.equal(unknown.code, 'ORA_99999');
+    assert.equal(unknown.status, 500);
+    // Already-normalized errors pass through untouched (status filled, code preserved).
+    const norm = fromDriver({ num: -20503, code: 'OVERLAP' });
+    assert.equal(norm.code, 'OVERLAP');
+    assert.equal(norm.status, 409);
+  });
+
+  await t('BUG-044: listen defers to the store-upgrade promise but still binds + fires the callback', async () => {
+    // Before BUG-044 the Oracle upgrade ran while the socket was ALREADY accepting
+    // (ghost local-only rows in the hydration window; STORE=oracle tests raced the
+    // adapter attach). The listen wrapper must: return the server (chainable), fire
+    // the bind callback, and — on the no-Oracle path — bind without hanging. This
+    // pins the wrapper contract; the durable ordering itself is exercised by the
+    // STORE=oracle suite against a live Oracle. We re-bind after a full close:
+    // close() alone waits on the suite's keep-alive sockets, so drop them first.
+    server.closeAllConnections && server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    const ret = await new Promise((resolve, reject) => {
+      const t0 = setTimeout(() => reject(new Error('listen never fired the bind callback')), 8000);
+      const s = server.listen(4108, () => {
+        clearTimeout(t0);
+        resolve(s);
+      });
+    });
+    assert.equal(ret, server, 'listen must return the server object (chainable)');
+    await new Promise((r) => server.close(r));
+  });
+
   console.log(`\nAPI tests: ${pass} passed`);
   server.close();
   process.exit(0);
