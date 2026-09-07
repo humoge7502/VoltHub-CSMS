@@ -4,6 +4,61 @@ Evidence discipline: **EXECUTED** (ran in this repo's environment) vs
 **STRONGLY INFERRED** (CI config verified line-by-line; execution on runners)
 vs **PENDING** (blocked here; exact command given). No claim without a receipt.
 
+## DB-backed gate, run locally for the FIRST time (2026-09-07) — BUG-045/046/047 + real-SQL invariants + e2e — receipts
+
+Environment: Docker 29.5.3 · Oracle 23ai free (gvenzl/oracle-free:23-slim, fresh volume, migrate+seed applied) · TimescaleDB 2.17.2-pg16 · Node v20.20.2. Every suite below ran against the LIVE engines, not the local store.
+
+- **BUG-045 (write-through session start, red→green):** the REST `/sessions/start` and OCPP
+  `StartTransaction` paths ran the local store only — the durable engine never saw the
+  session, so the first wrapped call (`recordTick` → `charge_session_pkg.record_meter_tick`)
+  500'd `ORA-01403 no data found`. `db/oracle.js` now wraps `startSession` with
+  `charge_session_pkg.start_session` (local-first validation incl. B2G-013b owner-adoption;
+  package only sees validated starts) and remaps the read-cache to the durable id when the
+  counters diverge (a failed mirror consumes an Oracle IDENTITY value — the remap makes it
+  harmless). Exposed by BUG-044's timing fix, which finally attached the adapter BEFORE
+  the suites ran.
+- **BUG-046 (boot seed/hydrate pollution, red→green):** the demo pre-seed ran before the
+  Oracle upgrade; `hydrate()` is additive by design, so 60 ghost demo sessions + their
+  readings survived in the read-cache and poisoned the tick dedupe — every real tick on a
+  fresh session read `{deduped:true}` and never flipped PREPARING→CHARGING. With
+  `ORACLE_HOST` set the store now starts EMPTY, hydrates to exactly what Oracle owns, and
+  seeds only when the DB is genuinely empty (the rule `getStore` already documented).
+- **BUG-047 (admin hardware write-through, red→green):** `POST /admin/stations`,
+  `POST /admin/charge-points` and `PATCH /admin/stations/:id` existed only in the
+  read-cache — a reservation on a provisioned connector 500'd `ORA-01403` (the connector
+  row was never in Oracle). All three are now store methods mirrored with explicit local
+  ids (the BUG-038 pattern); the routes await them (BUG-041-class promise-shape); the
+  mirror preserves the local return shape. Also fixed: `station.address_line` defaulted to
+  `''` which Oracle treats as NULL (mirror now sends the city/state-style non-empty
+  sentinel).
+- **Seed data fix:** the Oracle seed funded `divya.shankar1`/`rohan.menon2` wallets (2500)
+  with no `wallet_ledger` rows — INV-2 (ledger reconciles) failed against a fresh seed.
+  Added the missing ledger rows.
+- **Invariants runner fix (CI honesty):** the oracle branch split the SQL on ALL `;` — the
+  header comment carries one, so the first "statement" was garbage (`ORA-00900`) and the
+  gate silently fell back to local checks on every run. Now strips full-line comments
+  before splitting; the real SQL runs. Also made the `oracledb` require resolve from the
+  hoisted workspace root or `apps/api/node_modules`.
+- **STORE=oracle gate (EXECUTED, fresh DB):** contract suite **29/29** · race **2/2** ·
+  invariants **oracle mode 11/11** (real SQL, 0 rows) · Timescale cagg refresh smoke OK
+  (tick_1m/tick_1h/state_1m + enriched views).
+- **e2e on the full compose stack (EXECUTED — the never-run-locally gap):** Oracle +
+  Timescale + API + worker + web built and booted; `/api/v1/health/deep`, `/docs` and
+  `/metrics` healthy; the worker relay populated `station_map` (18 rows incl. a
+  provisioned "Test Yard" station); `npm run test:e2e` **7/7 steps**
+  (register→reserve→charge→pay→review→triage→tariff) against the real two-engine stack.
+- **Experiment 4 — cagg vs raw (EXECUTED):** seeded 1.2M synthetic ticks; 24 h window:
+  raw hypertable scan 86,340 rows → **41.6 ms**; `tick_1m` cagg 46,033 rows → **52.2 ms**;
+  `tick_1h` cagg 768 rows → **0.74 ms (~56× vs raw)**. Honest notes: the 1 m cagg's win is
+  repeated/wide-window dashboard loads, not one 24 h slice (its per-minute rows ≈ 2× raw
+  buckets here); compression stats are NULL because the 7-day policy hasn't triggered —
+  nothing compressed, nothing claimed.
+- **Post-round full gate (EXECUTED):** local `npm test` green (relay 7 · api **29** incl.
+  new BUG-043/044 regressions · sim 2 · security 17 · xlayer 4 · ocpp-remote 2 ·
+  gateway-close 6 · ai 6 · invariants 11 · drift spec=52 routes~56) · race 2/2 ·
+  `test:ai` 8 passed + 1 GPU-skip · coverage **65.66 %** · `next build` 17 routes ·
+  `npm audit` 0 findings both lockfiles · eslint/prettier clean.
+
 ## Engineering mission (2026-09-07) — audit + AI platform + reliability round — receipts
 
 Full audit of the environment, money path, OCPP gateway, worker relay and authz

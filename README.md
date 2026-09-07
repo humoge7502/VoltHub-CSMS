@@ -158,7 +158,7 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@
 
 ## Status & releases
 
-- Current release: **[v1.4.0](https://github.com/humoge7502/VoltHub-CSMS/releases)** — tagged releases carry notes extracted from [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog / SemVer).
+- Current release: **[v1.5.0](https://github.com/humoge7502/VoltHub-CSMS/releases)** — tagged releases carry notes extracted from [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog / SemVer).
 - Engineering history is fully auditable: conventional-commit breadcrumbs (`fix(oracle): …`, `ci(e2e): …`) — including the failures and their fixes.
 - Roadmap notes (OCPP 2.0.1 migration path, scale exits): [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`docs/masterplan/18-da-plans-and-roadmap.md`](docs/masterplan/18-da-plans-and-roadmap.md).
 

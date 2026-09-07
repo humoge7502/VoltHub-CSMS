@@ -6,21 +6,21 @@
     "mem_gb": 1771.7,
     "platform": "linux 6.17.0-1010-azure",
     "profile": "local (in-process store, no Docker)",
-    "at": "2026-09-07T18:40:19.140Z"
+    "at": "2026-09-07T22:35:40.497Z"
   },
   "exp1": {
     "n": 200,
     "p50": 1,
     "p95": 4,
-    "p99": 7,
+    "p99": 5,
     "errors": 0,
     "note": "200 sequential GET /stations (local profile)"
   },
   "exp2": {
     "n": 20,
-    "p50": 47,
-    "p95": 67,
-    "p99": 67,
+    "p50": 45,
+    "p95": 64,
+    "p99": 64,
     "winners": 1,
     "conflicts": 19,
     "wall_ms": 71,
@@ -28,31 +28,31 @@
   },
   "exp3": {
     "ticks": 2000,
-    "wall_ms": 47,
-    "ticks_per_s": 42553,
+    "wall_ms": 52,
+    "ticks_per_s": 38462,
     "outbox_lag_after": 2002,
     "note": "2000 sequential recordTick on one session (local profile; relay drains via worker JSONL mirror)"
   },
   "exp5": {
     "vu10": {
       "n": 10,
-      "p50": 11,
-      "p95": 11,
-      "p99": 11,
+      "p50": 9,
+      "p95": 10,
+      "p99": 10,
       "errors": 0
     },
     "vu50": {
       "n": 50,
-      "p50": 195,
-      "p95": 383,
-      "p99": 385,
+      "p50": 66,
+      "p95": 106,
+      "p99": 108,
       "errors": 0
     },
     "vu100": {
       "n": 100,
-      "p50": 82,
-      "p95": 120,
-      "p99": 124,
+      "p50": 75,
+      "p95": 144,
+      "p99": 147,
       "errors": 0
     },
     "note": "single concurrent batch per level (local profile, poolMax n/a)"

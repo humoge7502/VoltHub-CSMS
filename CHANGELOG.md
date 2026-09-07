@@ -4,6 +4,8 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-07
+
 ### Added
 
 - **AI advisory platform (`apps/ai`, ADR-0008) on the 8× A100 host.** A FastAPI
@@ -40,6 +42,53 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   standalone-provisioned CP could never charge (reservations 404'd "unknown
   connector"), diverging from `provisionStation`'s default. Same default now: one
   TYPE2/22 kW connector unless `connectors[]` is given.
+- **BUG-043 (contract parity): the Oracle packages raised `ORA_20503`-style codes
+  while the local store throws `OVERLAP`/`TICK_REJECTED`/… — callers, routes and
+  tests key on the canonical names, so the durable engine and the local profile
+  disagreed on the error contract.** `fromDriver` now restores the canonical code
+  from the package number via an explicit `ORA_CODE_BY_NUM` table (mirror of the
+  store's own ORA table; both keyed to the `RAISE_APPLICATION_ERROR` numbers in
+  V003, with a comment demanding they stay in sync). Unknown numbers keep the
+  `ORA_XXXXX` fallback; already-normalized errors pass through untouched.
+  Regression test in `apps/api/test/run.js`.
+- **BUG-044 (boot race, P1): the Oracle upgrade ran while the socket was ALREADY
+  accepting.** Requests in the hydration window wrote local-only ghost rows
+  (register → user missing in Oracle, invoice → `billing_pkg` later 500'd) and the
+  STORE=oracle CI step attached the adapter MID-SUITE at a nondeterministic test
+  boundary. `server.listen` now awaits the store upgrade (attached or
+  local-fallback) before binding the port — the durable engine is armed before the
+  first request can arrive, in tests and in compose. Regression test in
+  `apps/api/test/run.js`; the ordering itself is exercised by the STORE=oracle
+  suite against a live Oracle.
+- **BUG-045 (durable engine, exposed by BUG-044): session STARTS were local-only.**
+  REST `/sessions/start` and OCPP `StartTransaction` never reached Oracle — the
+  first wrapped call on a fresh session 500'd `ORA-01403` (no data found).
+  `db/oracle.js` now wraps `startSession` with `charge_session_pkg.start_session`
+  (local-first validation incl. B2G-013b owner-adoption; the package only sees
+  validated starts) and remaps the read-cache to the durable id when the counters
+  diverge (a failed mirror consumes an Oracle IDENTITY value — the remap makes it
+  harmless). Red→green against a live Oracle.
+- **BUG-046 (durable engine, exposed by BUG-044): the demo pre-seed poisoned the
+  Oracle-hydrated read-cache.** `seedStore` ran before the upgrade and `hydrate()`
+  is additive, so 60 ghost demo sessions + their meter readings survived — every
+  real tick on a fresh session read `{deduped:true}` and never flipped
+  PREPARING→CHARGING. With `ORACLE_HOST` set the store now starts empty, hydrates
+  to exactly what Oracle owns, and seeds only when the DB is genuinely empty (the
+  rule `getStore` already documented).
+- **BUG-047 (durable engine, exposed by BUG-044): admin hardware writes were
+  local-only.** `POST /admin/stations`, `POST /admin/charge-points` and
+  `PATCH /admin/stations/:id` never reached Oracle — the first reservation on a
+  provisioned connector 500'd `ORA-01403` (no connector row). All three are now
+  store methods mirrored with explicit local ids (BUG-038 pattern); the routes
+  await them (BUG-041-class promise-shape) and the mirror preserves the local
+  return shape. `station.address_line` now defaults to a non-empty sentinel
+  (`''` is NULL in Oracle, violating NOT NULL).
+- **Seed + invariants-runner honesty fixes.** The Oracle seed funded two wallets
+  with no `wallet_ledger` rows (INV-2 failed on a fresh DB) — ledger rows added.
+  `test/sql/run-invariants.js` split its SQL on ALL `;` — the header comment
+  carries one, so the oracle gate silently fell back to local checks on every run;
+  it now strips full-line comments first and resolves `oracledb` from the hoisted
+  root or `apps/api/node_modules`. The real SQL runs and gates CI.
 
 ### Changed
 
@@ -61,11 +110,14 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   seeded connectors and the one-socket-per-CP guard rightly killed duplicates), and
   the sim's OCPP tag is the sim driver's own `TAG-<uid>` (hardcoded `TAG-1` was
   user 1). `--ramp-ms` staggers cold connects. Receipt: **100/100 provisioned
-  fleet, 0 timeouts, 0 errors** (was 7+ timeouts at 100 simultaneous).
-- **RESIL chaos tests (relay):** API-down accumulate/backoff, ack-failure replay
+  fleet, 0 timeouts, 0 errors** (was 7+ timeouts at 100 simultaneous).- **RESIL chaos tests (relay):** API-down accumulate/backoff, ack-failure replay
   dedupe (crash-after-append never duplicates), and recovery drain are pinned by
   three new worker tests using injected failure seams (`relayOnce({fetchImpl,
 outFile})`); the real mirror is never touched by tests.
+- **Deps: `pg` promoted to a direct dependency of `@volthub/api`** (was optional /
+  transitive). The worker's Timescale relay (`relay-timescale.js`) loads `pg` and
+  ships in the api image (`apps/api/Dockerfile`), so `npm ci` must install it — the
+  compose worker failed on a missing `pg` after a clean `npm ci`.
 
 - **SEC-013: Argon2id password hashing implemented (the documented production target).**
   `hashPassword` now emits standard Argon2id PHC strings (m=19456 KiB, t=2, p=1 — the
