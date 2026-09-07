@@ -16,7 +16,7 @@ function readCookie(header, name) {
   }
   return null;
 }
-const { vRegister, vReservation, vVehicle } = require('@volthub/shared');
+const { vEmail, vRegister, vReservation, vVehicle } = require('@volthub/shared');
 const {
   signAccess,
   issueRefresh,
@@ -130,6 +130,8 @@ module.exports = function routes(store) {
             if (sib.family_id === t.family_id) sib.revoked_at = sib.revoked_at || new Date().toISOString();
           store.auditLog(t.user_id, 'APP_USER', t.user_id, 'LOGOUT', null, { at: new Date().toISOString() });
         }
+        // BUG-035: an unknown/invalid refresh token in a logout call must not leak
+        // that fact — logout always answers 200 {ok:true} (idempotent, uninformative).
       }
       clearRefreshCookie(res);
       res.json({ ok: true });
@@ -147,7 +149,12 @@ module.exports = function routes(store) {
     '/me/wallet/topup',
     authRequired,
     safe(async (req, res) => {
-      res.json({ wallet: store.topup(req.user.id, Number(req.body.amount)) });
+      // BUG-032: the store caps per-transaction (<=10000) but `NaN`/non-numeric
+      // bodies must fail as a client error, not 500. Guard before the store call.
+      const amt = Number(req.body.amount);
+      if (!Number.isFinite(amt) || amt <= 0)
+        return res.status(422).json({ error: { code: 'INVALID_AMOUNT', message: 'amount must be a positive number' } });
+      res.json({ wallet: store.topup(req.user.id, amt) });
     })
   );
   // vehicles
@@ -375,7 +382,21 @@ module.exports = function routes(store) {
     authRequired,
     safe(async (req, res) => {
       try {
-        res.json({ reservation: await store.cancelReservation(req.params.id, req.user.id, req.user.role) });
+        // BUG-031: scope the cancel like every other operator path — an operator
+        // assigned to station A must not cancel bookings on station B. Drivers are
+        // ownership-checked inside cancelReservation; ADMIN always passes.
+        let scopeStations;
+        if (req.user.role === 'OPERATOR') {
+          const resv = store.reservations.get(Number(req.params.id));
+          if (!resv) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'reservation' } });
+          const stationId = store.cps.get(Number(String(resv.connector_ref).split(':')[0]))?.station_id;
+          if (stationId && !(req.user.stationScope || []).includes(stationId))
+            return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+          scopeStations = req.user.stationScope;
+        }
+        res.json({
+          reservation: await store.cancelReservation(req.params.id, req.user.id, req.user.role, scopeStations),
+        });
       } catch (e) {
         res.status(oraStatus(e)).json({ error: { code: e.code, message: e.message } });
       }
@@ -404,7 +425,9 @@ module.exports = function routes(store) {
       }
     })
   );
-  // SEC-001: per-connector active session exposes user_id/id_tag — auth required.
+  // SEC-001: per-connector active session is auth-required; BUG-037: the payload is
+  // also minimized — other roles get presence only (state + timing), never another
+  // driver's user_id/id_tag. Owner and staff keep the full row.
   r.get(
     '/sessions/active/:ref',
     authRequired,
@@ -412,7 +435,20 @@ module.exports = function routes(store) {
       const s = [...store.sessions.values()].find(
         (x) => x.connector_ref === req.params.ref && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(x.state)
       );
-      res.json({ session: s || null });
+      if (!s) return res.json({ session: null });
+      const mine = s.user_id === req.user.id;
+      const staff = req.user.role === 'OPERATOR' || req.user.role === 'ADMIN';
+      res.json({
+        session:
+          mine || staff
+            ? s
+            : {
+                session_id: s.session_id,
+                connector_ref: s.connector_ref,
+                state: s.state,
+                started_at: s.started_at,
+              },
+      });
     })
   );
   // SEC-001: live session exposes energy profile + user_id — driver-own or staff only.
@@ -491,6 +527,11 @@ module.exports = function routes(store) {
       const idTag = String(req.body.idTag || '');
       const cp = store.cps.get(cpId);
       if (!cp) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'charge point' } });
+      // BUG-031: same station-scope contract as the operator state transition —
+      // remote commands are station mutations, so an operator assigned to station A
+      // must not drive chargers on station B.
+      if (!(req.user.stationScope || []).includes(cp.station_id))
+        return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
       const m = /^TAG-(\d+)$/.exec(idTag);
       if (!m || !store.users.has(Number(m[1])))
         return res.status(422).json({ error: { code: 'INVALID_IDTAG', message: 'allow-list only' } });
@@ -822,11 +863,25 @@ module.exports = function routes(store) {
     authRequired,
     roles('ADMIN'),
     safe(async (req, res) => {
+      // BUG-033: admin-only route, but garbage must still fail as 422 — a bad
+      // role enum would otherwise surface as a raw 500 from the store layer.
+      const { ROLES } = require('@volthub/shared');
+      const role = req.body.role || 'OPERATOR';
+      if (!ROLES.includes(role))
+        return res
+          .status(422)
+          .json({ error: { code: 'INVALID_ROLE', message: `role must be one of ${ROLES.join('/')}` } });
+      if (!vEmail(req.body.email))
+        return res.status(422).json({ error: { code: 'INVALID_EMAIL', message: 'valid email required' } });
+      if (req.body.password != null && (typeof req.body.password !== 'string' || req.body.password.length < 8))
+        return res.status(422).json({ error: { code: 'WEAK_PASSWORD', message: 'password >= 8 chars' } });
+      if (typeof req.body.full_name !== 'string' || req.body.full_name.length < 2)
+        return res.status(422).json({ error: { code: 'INVALID_NAME', message: 'full_name required' } });
       const u = store.createUser({
         email: req.body.email,
         password: req.body.password || 'Temp@1234',
         full_name: req.body.full_name,
-        role: req.body.role || 'OPERATOR',
+        role,
       });
       if (req.body.stationId) {
         const s = store.stations.get(Number(req.body.stationId));

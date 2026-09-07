@@ -4,6 +4,53 @@ Evidence discipline: **EXECUTED** (ran in this repo's environment) vs
 **STRONGLY INFERRED** (CI config verified line-by-line; execution on runners)
 vs **PENDING** (blocked here; exact command given). No claim without a receipt.
 
+## Fresh-eyes audit round: BUG-031..037 (2026-09-07) — receipts
+
+- **Baseline full gate (EXECUTED):** lint + prettier clean · `npm test` green
+  (api 19 · relay 4 · sim 2 · security 14 · xlayer 4 · ocpp-remote 2 ·
+  gateway-close 3 · invariants 11 · drift `spec=49 routes~53` OK) ·
+  `npm run test:race` 2/2 · `next build` 17 routes. The working tree already held
+  the uncommitted BUG-024..030 round; this round audits code that round did not touch.
+- **BUG-031 red→green (EXECUTED):** two operator-scope gaps. (a)
+  `POST /reservations/:id/cancel` accepted any operator for any booking (drivers were
+  ownership-checked, operators were not scoped); (b) `POST /sessions/remote-start`
+  gated on `roles('OPERATOR','ADMIN')` only, so an operator assigned to station A could
+  drive chargers on station B. Both now enforce `stationScope` like every other
+  operator path; `cancelReservation` re-asserts scope for direct store callers.
+  Tests 20/21 assert 403 `OUT_OF_SCOPE` out of scope, success (cancel) and
+  `CP_OFFLINE` (remote-start, no socket in tests) in scope.
+- **BUG-032 red→green (EXECUTED):** `/me/wallet/topup` with `amount: "lots"` or a
+  missing amount hit `Number(...) => NaN`, passed the store's `amount > 0` guard
+  (NaN comparisons are false), and surfaced as a 500. The route now 422s
+  `INVALID_AMOUNT` for non-finite/non-positive amounts. Test 23.
+- **BUG-033 red→green (EXECUTED):** `POST /admin/users` accepted any `role` string
+  (Oracle CHECK allows DRIVER/OPERATOR/ADMIN) and any email — garbage surfaced as a
+  raw 500; `POST /admin/charge-points` accepted any `ocpp_identity` (embedded in the
+  gateway's `/ocpp/:identity` URL routing) and any `auth_secret`. All four fields now
+  validate (422, same codes as `@volthub/shared`); `full_name` is required, matching
+  Oracle's NOT NULL (pre-existing test 19 updated to match the contract). Tests 24 +
+  provision-flow assertions.
+- **BUG-034 red→green (EXECUTED):** `PATCH /admin/stations/:id` accepted any status
+  string; Oracle's `station.status` is CHECK-constrained to ACTIVE/INACTIVE and the
+  web console flips exactly those two. The route now mirrors the schema. Test 25.
+- **BUG-035 red→green (EXECUTED):** logout answered 200 for a valid refresh token but
+  401 `BAD_REFRESH` for an unknown one — an oracle for token existence. Logout is now
+  uniformly 200 `{ok:true}` (idempotent, uninformative). TEST-SEC-LOGOUT-1 asserts the
+  unknown-token path leaks nothing.
+- **BUG-036 (drift, fixed):** the request throttle hardcoded its own copy of the dev
+  JWT secret instead of importing `secret()` from `middleware/auth.js`. Single source
+  of truth restored; behaviour unchanged (same literal today, one place to change it
+  tomorrow).
+- **BUG-037 red→green (EXECUTED):** `GET /stations/:id/sessions/active` returned every
+  active session (with `user_id`/`id_tag`) to any authenticated caller, and
+  `GET /sessions/active/:ref` did the same per connector — docs said "driver sees own
+  scope". Drivers now see only their own sessions in the station feed; the connector
+  probe returns a minimized payload (state + timing, no identity) to non-owners;
+  operators are station-scoped. Test 22 asserts the peer/owner/minimized payloads.
+- **Post-fix full gate (EXECUTED):** lint + prettier clean · api tests **26** passed ·
+  security **15** · relay 4 · sim 2 · xlayer 4 · ocpp-remote 2 · gateway-close 3 ·
+  invariants 11 · drift `spec=49 routes~53` OK · race 2/2.
+
 ## B3G-001 — OCPP remote-command contract (EXECUTED, local profile)
 
 `node apps/api/test/ocpp-remote.js` — boots the real gateway, connects a fake

@@ -56,6 +56,9 @@ module.exports = function extended(store) {
   );
 
   // active sessions per station (O1 active table) — SEC-001: auth required (per-driver presence data).
+  // BUG-037: honor the documented contract — drivers see only their OWN active
+  // sessions here, operators only their assigned stations (ADMIN all). The old
+  // handler returned every session with user_id/id_tag to any authenticated caller.
   r.get(
     '/stations/:id/sessions/active',
     authRequired,
@@ -64,11 +67,13 @@ module.exports = function extended(store) {
       const cpIds = new Set(
         [...store.cps.values()].filter((c) => String(c.station_id) === sid).map((c) => String(c.cp_id))
       );
-      res.json({
-        sessions: [...store.sessions.values()].filter(
-          (s) => cpIds.has(s.connector_ref.split(':')[0]) && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(s.state)
-        ),
-      });
+      let list = [...store.sessions.values()].filter(
+        (s) => cpIds.has(s.connector_ref.split(':')[0]) && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(s.state)
+      );
+      if (req.user.role === 'DRIVER') list = list.filter((s) => s.user_id === req.user.id);
+      if (req.user.role === 'OPERATOR' && !(req.user.stationScope || []).includes(Number(sid)))
+        return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      res.json({ sessions: list });
     })
   );
 
@@ -175,6 +180,13 @@ module.exports = function extended(store) {
     safe(async (req, res) => {
       const s = store.stations.get(Number(req.params.id));
       if (!s) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'station' } });
+      // BUG-034: mirror Oracle's station.status CHECK (ACTIVE/INACTIVE) — the web
+      // console flips ACTIVE<->INACTIVE, so an arbitrary string must not be writable
+      // (the local store would otherwise accept values the schema rejects).
+      if (req.body.status && !['ACTIVE', 'INACTIVE'].includes(req.body.status))
+        return res
+          .status(422)
+          .json({ error: { code: 'INVALID_STATUS', message: 'station status must be ACTIVE or INACTIVE' } });
       if (req.body.status) s.status = req.body.status;
       if (req.body.operator_id !== undefined) s.operator_id = req.body.operator_id;
       if (req.body.name) s.name = req.body.name;
@@ -190,6 +202,21 @@ module.exports = function extended(store) {
       const b = req.body;
       if (!store.stations.get(Number(b.station_id)))
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'station' } });
+      // BUG-033: validate admin-supplied hardware fields before any write — a bad
+      // ocpp_identity would corrupt the gateway's URL routing (it is embedded in
+      // /ocpp/:identity), and a weak auth_secret undermines OCPP Security Profile 1
+      // basic auth. Generated values (random hex / defaults) always pass.
+      if (b.ocpp_identity != null) {
+        const id = String(b.ocpp_identity);
+        if (!id || id.length > 64 || !/^[A-Za-z0-9._-]+$/.test(id))
+          return res.status(422).json({
+            error: { code: 'INVALID_OCPP_ID', message: 'ocpp_identity must be 1..64 chars of [A-Za-z0-9._-]' },
+          });
+      }
+      if (b.auth_secret != null && (typeof b.auth_secret !== 'string' || b.auth_secret.length < 16))
+        return res
+          .status(422)
+          .json({ error: { code: 'WEAK_SECRET', message: 'auth_secret must be a string of >= 16 chars' } });
       const n = [...store.cps.values()].filter((c) => c.station_id === Number(b.station_id)).length + 1;
       const ocpp_identity = b.ocpp_identity || `VH-${b.station_id}-CP${n}`;
       if (store.cpsByOcpp.has(ocpp_identity))

@@ -33,11 +33,21 @@ export function LoginForm({ mode }) {
         )}
         <label className="f">
           Email
-          <input value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
+          <input
+            type="email"
+            autoComplete="email"
+            value={f.email}
+            onChange={(e) => setF({ ...f, email: e.target.value })}
+          />
         </label>
         <label className="f">
           Password
-          <input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
+          <input
+            type="password"
+            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            value={f.password}
+            onChange={(e) => setF({ ...f, password: e.target.value })}
+          />
         </label>
         {err && <div className="err">{err}</div>}
         <button className="btn pri" type="submit">

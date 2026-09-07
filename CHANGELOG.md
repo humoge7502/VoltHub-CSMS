@@ -6,6 +6,46 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ### Fixed
 
+- **BUG-031 (authz): operator cancel + remote-start ignored station scope.**
+  `POST /reservations/:id/cancel` accepted any operator for any booking, and
+  `POST /sessions/remote-start` gated on role only — an operator assigned to station A
+  could cancel bookings and drive chargers on station B. Both now enforce the same
+  `stationScope` contract as `PATCH /sessions/:id/state` and `requireOwned` (scope
+  checked in the route, re-asserted in `cancelReservation` for direct store callers).
+  Regression tests 20/21 assert 403 `OUT_OF_SCOPE` out of scope and success/`CP_OFFLINE`
+  in scope.
+- **BUG-032 (input): `/me/wallet/topup` crashed on non-numeric bodies.**
+  `Number(req.body.amount)` on `"lots"`/`undefined` is `NaN`, which slipped past the
+  store's `amount > 0` guard as a 500. The route now returns 422 `INVALID_AMOUNT` for
+  non-finite/non-positive amounts (per-transaction cap unchanged, still enforced in the
+  store). Regression test 23.
+- **BUG-033 (input): admin user + charge-point creation accepted garbage.**
+  `POST /admin/users` took any `role` string (Oracle CHECK allows DRIVER/OPERATOR/ADMIN)
+  and any email; `POST /admin/charge-points` took any `ocpp_identity` (which is embedded
+  in the gateway's `/ocpp/:identity` URL routing) and any `auth_secret`. All four fields
+  now validate and fail as 422 with the same codes `@volthub/shared` uses. Note: this
+  also makes `full_name` required on admin user creation, matching Oracle's NOT NULL.
+  Regression tests 24 + provision-flow assertions.
+- **BUG-034 (parity): `PATCH /admin/stations/:id` accepted any status string.**
+  Oracle's `station.status` is CHECK-constrained to ACTIVE/INACTIVE and the web console
+  flips exactly those two; the local store accepted anything. The route now mirrors the
+  schema (422 `INVALID_STATUS` otherwise). Regression test 25.
+- **BUG-035 (info-leak): logout revealed token validity.**
+  `POST /auth/logout` answered 200 `{ok:true}` for a valid token (revoking the family)
+  but 401 `BAD_REFRESH` for an unknown one — an oracle for which refresh tokens exist.
+  Logout is now uniformly 200 `{ok:true}` regardless of token validity (idempotent,
+  uninformative); the security suite gained TEST-SEC-LOGOUT-1.
+- **BUG-036 (drift): the request throttle kept its own copy of the dev JWT secret.**
+  `middleware/security.js` hardcoded `'dev-only-32-byte-secret-0123456789'` as the
+  verify fallback instead of importing `secret()` from `middleware/auth.js` — a future
+  change to the dev default would silently desync the two verifiers. Now imports the
+  single source of truth.
+- **BUG-037 (data-minimization): station active-session feeds over-shared.**
+  `GET /stations/:id/sessions/active` returned every active session (with `user_id` and
+  `id_tag`) to any authenticated caller, and `GET /sessions/active/:ref` did the same for
+  a single connector — despite docs saying "driver sees own scope". Drivers now see only
+  their own sessions in the station feed; the connector probe returns a minimized payload
+  (state + timing only) to non-owners; operators are station-scoped. Regression test 22.
 - **BUG-030 (authz): station analytics ignored operator station scope.**
   `GET /stations/:id/analytics` was `roles('OPERATOR','ADMIN')` only — an operator
   assigned to station A could read station B's revenue, energy and fault counts, while

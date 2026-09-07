@@ -329,6 +329,18 @@ async function main() {
     assert.ok(loginWindows.has('login:198.18.1.1'), 'mixed-age LOGIN bucket must be trimmed, not deleted');
   });
 
+  await t('TEST-SEC-LOGOUT-1: logout with an unknown refresh token leaks nothing (BUG-035)', async () => {
+    const lo = await fetch(B + '/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken: 'deadbeef'.repeat(8) }),
+    });
+    assert.equal(lo.status, 200, 'logout must answer 200 even for an unknown token');
+    const j = await lo.json();
+    assert.equal(j.ok, true);
+    assert.equal(j.error, undefined, 'logout must never reveal token validity');
+  });
+
   console.log(`\nSecurity tests: ${pass} passed`);
   server.close();
   process.exit(0);

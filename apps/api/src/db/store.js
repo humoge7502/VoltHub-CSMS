@@ -303,11 +303,18 @@ function createStore() {
       return r;
     });
   };
-  s.cancelReservation = async (rid, actor, role, _scopeStations) => {
+  s.cancelReservation = async (rid, actor, role, scopeStations) => {
     return s.mutex.run('res:' + rid, async () => {
       const r = s.reservations.get(Number(rid));
       if (!r) throw err('NOT_FOUND', 'reservation not found', 404);
       if (role === 'DRIVER' && r.user_id !== actor) throw err('FORBIDDEN', 'not your booking', 403);
+      // BUG-031: operator station scope — cancelling is a station mutation, so the
+      // caller's assigned stations bound which bookings they may cancel (mirrors
+      // PATCH /sessions/:id/state + requireOwned). ADMIN/DRIVER unaffected.
+      if (role === 'OPERATOR' && Array.isArray(scopeStations)) {
+        const stationId = s.cps.get(Number(String(r.connector_ref).split(':')[0]))?.station_id;
+        if (stationId && !scopeStations.includes(stationId)) throw err('OUT_OF_SCOPE', 'station not assigned', 403);
+      }
       if (r.status !== 'BOOKED') {
         const e = new Error('CANCEL_CONFLICT');
         e.num = ORA.CANCEL_CONFLICT;

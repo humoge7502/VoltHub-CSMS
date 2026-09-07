@@ -12,6 +12,7 @@
   --tx2: #9aa3ad;
   --tx3: #5c6670;
   --cream: #fffdd0;
+  --cream-hi: #fffef4;
   --carbon: #10130a;
   --lime: #c6f24e;
   --blue: #6e96b8;
@@ -23,6 +24,8 @@
   --r-s: 4px;
   --r-m: 8px;
   --r-l: 12px;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --dur: 140ms;
 }
 * {
   box-sizing: border-box;
@@ -38,6 +41,15 @@ body {
     system-ui,
     sans-serif;
 }
+html {
+  color-scheme: dark;
+  scrollbar-color: var(--s3) transparent;
+  scroll-behavior: smooth;
+}
+::selection {
+  background: var(--cream);
+  color: var(--carbon);
+}
 h1,
 h2,
 h3,
@@ -51,6 +63,7 @@ h3,
   font-size: clamp(2rem, 6vw, 5.5rem);
   line-height: 0.95;
   font-weight: 700;
+  text-wrap: balance;
 }
 .micro {
   font: 600 11px/1.2 Inter;
@@ -146,6 +159,11 @@ a {
   color: var(--tx);
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur) var(--ease-out),
+    border-color var(--dur) var(--ease-out),
+    transform var(--dur) var(--ease-out);
 }
 .btn.pri {
   background: var(--cream);
@@ -156,6 +174,17 @@ a {
   border-color: var(--bad);
   color: var(--bad);
   background: transparent;
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled) {
+    background: var(--s2);
+  }
+  .btn.pri:hover:not(:disabled) {
+    background: var(--cream-hi);
+  }
+}
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
 }
 .btn:disabled {
   opacity: 0.5;
@@ -178,6 +207,13 @@ textarea {
   height: 36px;
   padding: 0 12px;
   width: 100%;
+  caret-color: var(--cream);
+  transition: border-color var(--dur) var(--ease-out);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--cream);
 }
 label.f {
   display: grid;
@@ -327,4 +363,36 @@ svg text {
 .okmsg {
   color: var(--ok);
   font-size: 13px;
+}
+/* Toasts: enter on a transition (interruptible), not a keyframe. */
+.toast {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 200ms var(--ease-out);
+}
+@starting-style {
+  .toast {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .btn,
+  .toast,
+  input,
+  select,
+  textarea {
+    transition-duration: 0.01ms;
+  }
+  @starting-style {
+    .toast {
+      opacity: 1;
+      transform: none;
+    }
+  }
 }
