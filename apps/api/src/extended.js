@@ -1,7 +1,6 @@
 // Extended modules: tariffs-public, reviews-read, notifications, vehicle-default,
 // operator session control, admin station hardware CRUD. Mounted at /api/v1.
 'use strict';
-const crypto = require('crypto');
 const express = require('express');
 const spec = require('./docs');
 const { authRequired, roles } = require('./middleware/auth');
@@ -165,7 +164,9 @@ module.exports = function extended(store) {
     roles('ADMIN'),
     safe(async (req, res) => {
       try {
-        const { station, provisioned } = store.provisionStation(req.user.id, req.body);
+        // Await is REQUIRED: the Oracle mirror makes provisionStation promise-shaped
+        // (BUG-047 — the same BUG-041 class; an un-awaited call publishes a promise).
+        const { station, provisioned } = await store.provisionStation(req.user.id, req.body);
         // Return secrets once at provision time (operator configures the physical charger).
         res.status(201).json({ station, provisioned });
       } catch (e) {
@@ -178,8 +179,8 @@ module.exports = function extended(store) {
     authRequired,
     roles('ADMIN'),
     safe(async (req, res) => {
-      const s = store.stations.get(Number(req.params.id));
-      if (!s) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'station' } });
+      if (!store.stations.get(Number(req.params.id)))
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'station' } });
       // BUG-034: mirror Oracle's station.status CHECK (ACTIVE/INACTIVE) — the web
       // console flips ACTIVE<->INACTIVE, so an arbitrary string must not be writable
       // (the local store would otherwise accept values the schema rejects).
@@ -187,9 +188,14 @@ module.exports = function extended(store) {
         return res
           .status(422)
           .json({ error: { code: 'INVALID_STATUS', message: 'station status must be ACTIVE or INACTIVE' } });
-      if (req.body.status) s.status = req.body.status;
-      if (req.body.operator_id !== undefined) s.operator_id = req.body.operator_id;
-      if (req.body.name) s.name = req.body.name;
+      // BUG-047: station metadata updates go through the store method so the Oracle
+      // adapter mirrors them (PATCH on a provisioned/seed station must be durable).
+      // Await required — the mirror wrapper is promise-shaped (BUG-041 class).
+      const { station: s } = await store.updateStation(Number(req.params.id), {
+        status: req.body.status,
+        operator_id: req.body.operator_id,
+        name: req.body.name,
+      });
       store.auditLog(req.user.id, 'STATION', s.station_id, 'UPDATE', null, { status: s.status });
       res.json({ station: s });
     })
@@ -217,44 +223,14 @@ module.exports = function extended(store) {
         return res
           .status(422)
           .json({ error: { code: 'WEAK_SECRET', message: 'auth_secret must be a string of >= 16 chars' } });
-      const n = [...store.cps.values()].filter((c) => c.station_id === Number(b.station_id)).length + 1;
-      const ocpp_identity = b.ocpp_identity || `VH-${b.station_id}-CP${n}`;
-      if (store.cpsByOcpp.has(ocpp_identity))
-        return res.status(409).json({ error: { code: 'DUPLICATE_OCPP_ID', message: ocpp_identity } });
-      const cp_id = ++store.seq.cp;
-      const cp = {
-        cp_id,
-        station_id: Number(b.station_id),
-        ocpp_identity,
-        auth_secret: b.auth_secret || crypto.randomBytes(18).toString('hex'),
-        vendor: b.vendor || 'VoltHub',
-        model: b.model || 'VH-DC60',
-        firmware_version: '1.6.5',
-        // Provisioned ≠ connected: the gateway flips this to ONLINE on the first
-        // OCPP socket (same contract as provisionStation).
-        status: 'OFFLINE',
-        last_boot_at: null,
-        last_seen_at: null,
-      };
-      store.cps.set(cp_id, cp);
-      store.cpsByOcpp.set(ocpp_identity, cp_id);
-      // GAP-002 (mission audit): the standalone provisioning route created NO connector
-      // — a freshly provisioned CP could never charge (reservations 404'd on
-      // "unknown connector"), silently diverging from provisionStation's default.
-      // Same default as provisionStation: one TYPE2/22kW connector unless overridden.
-      (b.connectors || [{ standard: 'TYPE2', max_power_kw: 22 }]).forEach((c, k) => {
-        const stdRow = store.standards.find((t) => t.code === c.standard) || store.standards[0];
-        store.connectors.set(`${cp_id}:${k + 1}`, {
-          cp_id,
-          connector_no: k + 1,
-          standard_id: stdRow.standard_id,
-          max_power_kw: Number(c.max_power_kw || 22),
-          status: 'AVAILABLE',
-          last_state_change_at: new Date().toISOString(),
-        });
-      });
-      store.auditLog(req.user.id, 'CHARGE_POINT', cp_id, 'PROVISION', null, { ocpp_identity });
-      res.status(201).json({ charge_point: { ...cp }, ws_url: `/ocpp/${ocpp_identity}` });
+      // BUG-047: standalone CP provisioning goes through the store method so the Oracle
+      // adapter mirrors it (a provisioned CP's connectors must exist in the durable
+      // engine or the first reservation on them 500s). Validation lives here; the store
+      // method owns the mutation + GAP-002's one-TYPE2/22kW default connector.
+      // Await required — the mirror wrapper is promise-shaped (BUG-041 class).
+      const cp = await store.provisionChargePoint(Number(b.station_id), b);
+      store.auditLog(req.user.id, 'CHARGE_POINT', cp.cp_id, 'PROVISION', null, { ocpp_identity: cp.ocpp_identity });
+      res.status(201).json({ charge_point: { ...cp }, ws_url: `/ocpp/${cp.ocpp_identity}` });
     })
   );
 

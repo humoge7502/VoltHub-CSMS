@@ -31,6 +31,9 @@ INSERT INTO wallet_account (user_id, balance) SELECT user_id, 20 FROM app_user W
 INSERT INTO wallet_account (user_id, balance) SELECT user_id, 2500 FROM app_user WHERE email IN ('divya.shankar1@example.in','rohan.menon2@example.in');
 INSERT INTO wallet_ledger (user_id, seq_no, kind, amount, balance_after, note)
  SELECT user_id, 1, 'TOPUP', 20, 20, 'seed top-up' FROM app_user WHERE email='karthik.raja0@example.in';
+INSERT INTO wallet_ledger (user_id, seq_no, kind, amount, balance_after, note)
+ SELECT user_id, 1, 'TOPUP', 2500, 2500, 'seed top-up' FROM app_user
+  WHERE email IN ('divya.shankar1@example.in','rohan.menon2@example.in');
 
 -- ---- stations + hardware ----
 INSERT INTO station (name, latitude, longitude, address_line, city, state, pincode, operator_id)

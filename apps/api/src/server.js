@@ -18,21 +18,40 @@ const log = pino({ level: process.env.LOG_LEVEL || 'info' });
 const store = createStore();
 global.__store = store; // legacy fallback for signAccess callers that don't inject (see TD-07)
 store._mode = 'local';
-if ((process.env.SEED_PROFILE || 'demo') !== 'empty') seedStore(store, process.env.SEED_PROFILE || 'demo');
+const seedProfile = process.env.SEED_PROFILE || 'demo';
+// BUG-046: the demo seed is the LOCAL-profile truth only. Pre-seeding before the Oracle
+// upgrade left ghost demo rows (sessions 1..N + their readings) in the read-cache when
+// the durable engine hydrated — hydrate() is additive by design ("empty DB => keep
+// seeds"), so the extra demo sessions survived and their phantom meter readings poisoned
+// the tick dedupe: every real tick on a fresh session read `{deduped:true}` against a
+// ghost seq number and never flipped PREPARING→CHARGING. With ORACLE_HOST set the store
+// now starts EMPTY, hydrates to exactly what Oracle owns, and seeds only when the DB is
+// genuinely empty (the same rule db/index.js getStore documents).
+if (!process.env.ORACLE_HOST && seedProfile !== 'empty') seedStore(store, seedProfile);
 
-// Background Oracle upgrade (non-blocking so require('../src/server') stays sync for tests).
-// When ORACLE_HOST is set: hydrate Maps from Oracle, then wrap money-path methods with
-// package calls (row locks enforced in the DB). Health reports the transition.
-// B2G-007: sourced through db/index.js:upgradeStore() — the ADR-0005 seam, single truth.
+// Oracle upgrade (B2G-007: sourced through db/index.js:upgradeStore() — the ADR-0005
+// seam, single truth). require('../src/server') stays sync for the test suites; the
+// upgrade itself is awaited by the listen wrapper below.
+// BUG-044: the upgrade used to run while the socket was ALREADY accepting — requests
+// in the hydration window wrote local-only ghost rows (register → user not in Oracle,
+// invoice → billing_pkg later 500'd), and the STORE=oracle CI step attached the
+// adapter MID-SUITE at a nondeterministic test boundary. server.listen now waits for
+// the upgrade to settle (attached OR local-fallback) before binding the port — the
+// durable engine is armed before the first request can arrive, in tests and in compose.
+let _oracleReady = Promise.resolve();
 if (process.env.ORACLE_HOST) {
   store._mode = 'oracle-connecting';
-  (async () => {
+  _oracleReady = (async () => {
     try {
       const { upgradeStore } = require('./db/index');
       await upgradeStore(store, log);
+      // BUG-046 companion: seed only when Oracle is genuinely empty (never overwrite rows).
+      if (!store.users.size && seedProfile !== 'empty') seedStore(store, seedProfile);
     } catch (e) {
       store._mode = 'local-fallback';
       store._oracleError = e.message;
+      // Fallback keeps the local profile usable when Oracle is unreachable.
+      if (!store.users.size && seedProfile !== 'empty') seedStore(store, seedProfile);
       log.warn({ err: e.message }, 'oracle unavailable — running on local store');
     }
   })();
@@ -120,6 +139,13 @@ const __ocppRegistry = mountOcpp(wss, store, log);
 global.__ocppRegistry = __ocppRegistry;
 
 const PORT = Number(process.env.PORT || process.env.API_PORT || 4000);
+// BUG-044 companion: bind only after the store upgrade settles. Listen arguments are
+// forwarded untouched (port, host, callback); the callback still fires on bind.
+const _origListen = server.listen.bind(server);
+server.listen = (...args) => {
+  _oracleReady.then(() => _origListen(...args));
+  return server;
+};
 if (require.main === module) {
   server.listen(PORT, () =>
     log.info(`volthub api on :${PORT} (mode: ${store._mode}, sessions: ${store.sessions.size})`)

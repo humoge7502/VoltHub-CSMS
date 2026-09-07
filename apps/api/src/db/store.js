@@ -787,7 +787,9 @@ function createStore() {
       name: b.name,
       latitude: Number(b.latitude),
       longitude: Number(b.longitude),
-      address_line: b.address_line || '',
+      // Oracle station.address_line is NOT NULL and treats '' as NULL — mirror the
+      // city/state defaults with a non-empty sentinel (BUG-047 mirror parity).
+      address_line: b.address_line || 'N/A',
       city: b.city || 'Chennai',
       state: b.state || 'Tamil Nadu',
       pincode: b.pincode || null,
@@ -833,6 +835,72 @@ function createStore() {
     }
     s.auditLog(adminId, 'STATION', station_id, 'CREATE', null, { name: st.name });
     return { station: st, provisioned };
+  };
+  // BUG-047: standalone CP provisioning extracted from the route into a store method so
+  // the Oracle adapter can mirror it (one-port contract, same as provisionStation).
+  // HTTP-layer validation (BUG-033: ocpp_identity/auth_secret shape) stays in the route;
+  // this method owns the mutation. Mirrors provisionStation's defaults: one TYPE2/22 kW
+  // connector unless `connectors[]` is given (GAP-002), status OFFLINE until first socket.
+  s.provisionChargePoint = (stationId, b) => {
+    const sid = Number(stationId);
+    if (!s.stations.get(sid)) {
+      const e = new Error('station');
+      e.code = 'NOT_FOUND';
+      e.status = 404;
+      throw e;
+    }
+    const n = [...s.cps.values()].filter((c) => c.station_id === sid).length + 1;
+    const ocpp_identity = b.ocpp_identity || `VH-${sid}-CP${n}`;
+    if (s.cpsByOcpp.has(ocpp_identity)) {
+      const e = new Error(ocpp_identity);
+      e.code = 'DUPLICATE_OCPP_ID';
+      e.status = 409;
+      throw e;
+    }
+    const cp_id = ++s.seq.cp;
+    const cp = {
+      cp_id,
+      station_id: sid,
+      ocpp_identity,
+      auth_secret: b.auth_secret || crypto.randomBytes(18).toString('hex'),
+      vendor: b.vendor || 'VoltHub',
+      model: b.model || 'VH-DC60',
+      firmware_version: '1.6.5',
+      status: 'OFFLINE',
+      last_boot_at: null,
+      last_seen_at: null,
+    };
+    s.cps.set(cp_id, cp);
+    s.cpsByOcpp.set(ocpp_identity, cp_id);
+    (b.connectors || [{ standard: 'TYPE2', max_power_kw: 22 }]).forEach((c, k) => {
+      const stdRow = s.standards.find((t) => t.code === c.standard) || s.standards[0];
+      s.connectors.set(`${cp_id}:${k + 1}`, {
+        cp_id,
+        connector_no: k + 1,
+        standard_id: stdRow.standard_id,
+        max_power_kw: Number(c.max_power_kw || 22),
+        status: 'AVAILABLE',
+        last_state_change_at: new Date().toISOString(),
+      });
+    });
+    return cp;
+  };
+  // BUG-047: station metadata updates (PATCH /admin/stations/:id) extracted into a store
+  // method so the adapter can mirror them. Returns { station, prev } — prev is the undo
+  // snapshot for the mirror. Route keeps HTTP validation (BUG-034 status allow-list).
+  s.updateStation = (id, fields) => {
+    const st = s.stations.get(Number(id));
+    if (!st) {
+      const e = new Error('station');
+      e.code = 'NOT_FOUND';
+      e.status = 404;
+      throw e;
+    }
+    const prev = { status: st.status, operator_id: st.operator_id, name: st.name };
+    if (fields.status) st.status = fields.status;
+    if (fields.operator_id !== undefined) st.operator_id = fields.operator_id;
+    if (fields.name) st.name = fields.name;
+    return { station: st, prev };
   };
   return s;
 }
