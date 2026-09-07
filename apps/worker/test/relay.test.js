@@ -1,7 +1,12 @@
-// Worker relay unit tests (no DB needed): station_map sync upsert + error paths.
+// Worker relay unit tests (no DB needed): station_map sync upsert + error paths
+// + RESIL chaos cases (API down / ack failure / recovery drain — injected via the
+// relayOnce test seams; the real data/ mirror is never touched).
 // Run: node apps/worker/test/relay.test.js
 'use strict';
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 async function main() {
   const rt = require('../src/relay-timescale');
@@ -143,6 +148,83 @@ async function main() {
         'meter_tick (ts,session_id,seq_no,connector_ref,meter_kwh,power_kw,voltage_v,current_a,dedupe_key) (ts,'
       )
     );
+  });
+
+  // ---- RESIL chaos cases (local-mode relay via the injectable seams) ----
+  const worker = require('../src/index');
+  const tmpMirror = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'vh-relay-')), 'mirror.jsonl');
+  const lines = (file) =>
+    fs
+      .readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l).dedupe_key);
+  const ev = (id, key) => ({ event_id: id, dedupe_key: key, kind: 'METER_TICK', payload: {} });
+
+  await t('chaos: API down → relayOnce throws, mirror untouched (events accumulate API-side)', async () => {
+    worker._resetSeen();
+    const file = tmpMirror();
+    const down = async () => {
+      throw new Error('ECONNREFUSED 127.0.0.1:4000');
+    };
+    await assert.rejects(() => worker.relayOnce({ fetchImpl: down, outFile: file }), /ECONNREFUSED/);
+    assert.ok(!fs.existsSync(file), 'a failed poll must never write the mirror');
+  });
+
+  await t('chaos: ack failure after append → replay dedupes (no duplicate lines), ack retried', async () => {
+    worker._resetSeen();
+    const file = tmpMirror();
+    let acks = 0;
+    let ackOk = false;
+    const flaky = async (url) => {
+      if (url.endsWith('/internal/outbox')) {
+        return { ok: true, json: async () => ({ events: [ev(1, 'c1'), ev(2, 'c2')] }) };
+      }
+      if (url.endsWith('/internal/outbox/ack')) {
+        acks++;
+        if (!ackOk) return { ok: false, status: 500 };
+        return { ok: true };
+      }
+      return { ok: false, status: 404 };
+    };
+    // Cycle 1: append succeeds, ack 500 → the loop must throw (events NOT acked).
+    await assert.rejects(() => worker.relayOnce({ fetchImpl: flaky, outFile: file }), /ack 500/);
+    assert.deepEqual(lines(file).sort(), ['c1', 'c2'], 'events are durably mirrored before the ack');
+    // Cycle 2: same events re-polled → dedupe must skip the append, ack succeeds.
+    ackOk = true;
+    const out = await worker.relayOnce({ fetchImpl: flaky, outFile: file });
+    assert.equal(out.relayed, 2);
+    assert.equal(acks, 2, 'ack must be retried on the next cycle');
+    assert.deepEqual(lines(file).sort(), ['c1', 'c2'], 'crash-after-append must not duplicate lines');
+  });
+
+  await t('chaos: recovery drain — an outage backlog relays exactly once on recovery', async () => {
+    worker._resetSeen();
+    const file = tmpMirror();
+    let up = false;
+    const api = async (url) => {
+      if (!up) throw new Error('ECONNREFUSED');
+      if (url.endsWith('/internal/outbox')) {
+        return {
+          ok: true,
+          json: async () => ({ events: [ev(1, 'r1'), ev(2, 'r2'), ev(3, 'r3')] }),
+        };
+      }
+      if (url.endsWith('/internal/outbox/ack')) return { ok: true };
+      return { ok: false, status: 404 };
+    };
+    // outage cycles: every poll fails, nothing is written
+    await assert.rejects(() => worker.relayOnce({ fetchImpl: api, outFile: file }));
+    await assert.rejects(() => worker.relayOnce({ fetchImpl: api, outFile: file }));
+    // recovery: the backlog drains exactly once, no partials, no dupes
+    up = true;
+    const out = await worker.relayOnce({ fetchImpl: api, outFile: file });
+    assert.equal(out.relayed, 3);
+    assert.deepEqual(lines(file).sort(), ['r1', 'r2', 'r3']);
+    // and a second successful cycle over the same events stays a no-op
+    const again = await worker.relayOnce({ fetchImpl: api, outFile: file });
+    assert.equal(again.relayed, 3);
+    assert.deepEqual(lines(file).sort(), ['r1', 'r2', 'r3'], 'replay must stay idempotent');
   });
 
   console.log(`\nrelay: ${pass} tests passed`);

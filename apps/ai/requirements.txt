@@ -1,0 +1,13 @@
+# VoltHub AI sidecar + training + simulation. Python >= 3.11.
+# The dev host (8x A100) already provides these via its venv; this file pins the
+# contract for fresh environments:
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+torch>=2.1
+numpy>=1.26
+pandas>=2.0
+scikit-learn>=1.4
+scipy>=1.11
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+pytest>=8.0

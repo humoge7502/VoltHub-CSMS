@@ -31,6 +31,8 @@ const spec = {
   security: [{ bearer: [] }],
   paths: {},
 };
+// NOTE: keep this hand-maintained spec in lockstep with routes (drift gate fails CI
+// otherwise). AI endpoints (ADR-0008) are advisory-only reads/LP consultations.
 const P = (summary, extra = {}) => ({
   ...extra,
   summary,
@@ -103,5 +105,16 @@ Object.assign(spec.paths, {
     post: P('New immutable version, supersedes active (admin)'),
   },
   '/admin/audit-logs': { get: P('Mutation trail with old/new JSON (admin)') },
+  '/ai/forecast': {
+    get: P('AI advisory: per-station hourly demand forecast (operator in scope / admin; 503 when the sidecar is down)'),
+  },
+  '/ai/anomalies': {
+    get: P('AI advisory: robust z-score anomalies over recent station ticks (operator in scope / admin)'),
+  },
+  '/ai/optimize': {
+    post: P(
+      'AI advisory: deterministic LP smart-charging schedule under hard station/connector constraints (operator in scope / admin)'
+    ),
+  },
 });
 module.exports = spec;

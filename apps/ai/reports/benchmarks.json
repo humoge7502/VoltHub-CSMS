@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-09-07T19:13:06.331220+00:00",
+  "torch": "2.13.0+cu130",
+  "cuda": true,
+  "simulation": {
+    "shape": "24 stations x 28d x 2000 vehicles",
+    "cpu_seconds": 0.064,
+    "gpu_seconds": 0.005,
+    "gpu_speedup": 12.84
+  },
+  "forecast_inference": {
+    "rows": 4096,
+    "cpu_seconds": 0.1178,
+    "gpu_seconds": 0.0003,
+    "gpu_speedup": 412.5
+  },
+  "optimizer": {
+    "instance": "10 vehicles x 24h, station cap 120 kW",
+    "lp_highs_cpu_seconds": 0.0033,
+    "verdict": "LP (deterministic, exact) stays on CPU; GPU reserved for simulation/training/inference"
+  }
+}

@@ -2,12 +2,16 @@
 
 ## What is enforced (verify from code)
 
-- Passwords: scrypt (N=16384, r=8, p=1) locally with timing-safe compare (`apps/api/src/db/store.js`).
-  Argon2id (19 MiB, 2, 1) is the documented production target — **not yet implemented**; the
-  `password_hash` column already stores PHC-shaped strings so the migration is a hasher swap.
-- Login timing (SEC-011): unknown emails are verified against a fixed dummy scrypt hash, so
-  response time does not reveal whether an account exists (≈33 ms both paths, measured in the
-  hardening receipt; regression-gated in `apps/api/test/security.js`).
+- Passwords: **Argon2id** (19 MiB, t=2, p=1 — the OWASP-recommended baseline) via
+  `@node-rs/argon2` (prebuilt binaries, no node-gyp), stored as the standard PHC string in
+  `app_user.password_hash` (`apps/api/src/db/store.js:hashPassword`). Legacy `$scrypt$…`
+  rows (old seeds, pre-Argon2 durable rows) still verify — the migration needs no reset —
+  and malformed/garbage stored hashes fail closed without throwing. Regression-gated by
+  `TEST-SEC-ARGON2-1` in `apps/api/test/security.js`.
+- Login timing (SEC-011): unknown emails are verified against a fixed dummy Argon2id hash
+  (same parameters as real hashes), so response time does not reveal whether an account exists
+  (re-measured medians 26 ms vs 26 ms — 0 ms gap — under Argon2id; regression-gated
+  in `apps/api/test/security.js`).
 - Header hygiene (SEC-010): no `X-Powered-By` framework fingerprint; CSP/HSTS frame-ancestors
   policy at both the API and Next layers (`server.js:securityHeaders`, `apps/web/next.config.js`).
 - JWT: 15-min access + rotating SHA-256 refresh with **family revocation on reuse**

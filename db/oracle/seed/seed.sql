@@ -5,25 +5,26 @@
 --   sql volthub/<pwd>@localhost/freepdb1 @seed.sql
 -- Story: 4 Chennai stations, tariff City v1->v2 + Highway flat, one faulted ECR
 -- CCS2 connector, one EXPIRED no-show (via backdated BOOKED + expire_stale).
--- Password hashes below are REAL deterministic scrypt PHC hashes (fixed salts) for
--- the demo logins admin@volthub.in/Admin@123, *@volthub.in/Operator@123,
--- drivers/Driver@123 — regenerate via apps/api hashPassword if passwords change.
--- They must verify against apps/api/src/db/store.js verifyPassword (length-safe).
+-- Password hashes below are REAL Argon2id PHC strings (m=19456,t=2,p=1, 16-byte
+-- salts, 32-byte tags) for the demo logins admin@volthub.in/Admin@123,
+-- *@volthub.in/Operator@123, drivers/Driver@123 — regenerate via apps/api
+-- hashPassword if passwords change. verifyPassword accepts both this format and
+-- the legacy '$scrypt$...' shape (length-safe), so pre-Argon2 rows keep working.
 -- ============================================================================
 
 -- ---- users (admin, 2 operators, 3 drivers) ----
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES
- ('admin@volthub.in', '$scrypt$0123456789abcdef0123456789abcdef$f4cd3950d9a994b243d9a5d2167caae60674cea905c20600cfda28c48fa18254', 'VoltHub Admin', 'ADMIN');
+ ('admin@volthub.in', '$argon2id$v=19$m=19456,t=2,p=1$9U3zv2D07k8sliLwBJJCWQ$gXWMNq+15wGmCiymTksESkRH77I1KMiLDgchOrMsmts', 'VoltHub Admin', 'ADMIN');
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES
- ('arjun@volthub.in', '$scrypt$fedcba9876543210fedcba9876543210$61e52338f3c92fcf04b4a9dd649d058e56384eb2fe7cd224adeb2bbd9bcab9d5', 'Arjun Operator', 'OPERATOR');
+ ('arjun@volthub.in', '$argon2id$v=19$m=19456,t=2,p=1$4EJc3RqQ+/QeEnFHa7mr+Q$iHnZa051xMdsGRfWFFe4mfi9nl88bh5m2QbmBsU+Pic', 'Arjun Operator', 'OPERATOR');
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES
- ('meera@volthub.in', '$scrypt$fedcba9876543210fedcba9876543210$61e52338f3c92fcf04b4a9dd649d058e56384eb2fe7cd224adeb2bbd9bcab9d5', 'Meera Operator', 'OPERATOR');
+ ('meera@volthub.in', '$argon2id$v=19$m=19456,t=2,p=1$4EJc3RqQ+/QeEnFHa7mr+Q$iHnZa051xMdsGRfWFFe4mfi9nl88bh5m2QbmBsU+Pic', 'Meera Operator', 'OPERATOR');
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES
- ('karthik.raja0@example.in', '$scrypt$11223344556677889900aabbccddeeff$68855d21cb40778c71d31beddd1036b8a14338c0a1be554e9a924e579fc70542', 'Karthik Raja', 'DRIVER');
+ ('karthik.raja0@example.in', '$argon2id$v=19$m=19456,t=2,p=1$avtcXp0YdJP1T0uZW+XIbA$cieshnC8ntCtgJwavDd9Oh1jpUinE1zxrCUb13h4GrY', 'Karthik Raja', 'DRIVER');
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES
- ('divya.shankar1@example.in', '$scrypt$11223344556677889900aabbccddeeff$68855d21cb40778c71d31beddd1036b8a14338c0a1be554e9a924e579fc70542', 'Divya Shankar', 'DRIVER');
+ ('divya.shankar1@example.in', '$argon2id$v=19$m=19456,t=2,p=1$avtcXp0YdJP1T0uZW+XIbA$cieshnC8ntCtgJwavDd9Oh1jpUinE1zxrCUb13h4GrY', 'Divya Shankar', 'DRIVER');
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES
- ('rohan.menon2@example.in', '$scrypt$11223344556677889900aabbccddeeff$68855d21cb40778c71d31beddd1036b8a14338c0a1be554e9a924e579fc70542', 'Rohan Menon', 'DRIVER');
+ ('rohan.menon2@example.in', '$argon2id$v=19$m=19456,t=2,p=1$avtcXp0YdJP1T0uZW+XIbA$cieshnC8ntCtgJwavDd9Oh1jpUinE1zxrCUb13h4GrY', 'Rohan Menon', 'DRIVER');
 
 -- wallets: driver[0] thin (insufficient-funds story), others funded
 INSERT INTO wallet_account (user_id, balance) SELECT user_id, 20 FROM app_user WHERE email='karthik.raja0@example.in';

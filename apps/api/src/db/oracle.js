@@ -457,8 +457,10 @@ function wrapWithOracle(local, pool) {
   // all use them); Oracle mirrors with EXPLICIT ids (V001 uses IDENTITY BY DEFAULT ON NULL
   // precisely so mirrored rows can carry the local id). On mirror failure the local write
   // is undone — the caller sees the Oracle error, never a silent divergence.
-  local.createUser = (args) => {
-    const u = origCreateUser(args);
+  // PERF-002: origCreateUser is async now (off-loop Argon2id) — the wrapper awaits it
+  // and stays promise-shaped; routes await the whole chain.
+  local.createUser = async (args) => {
+    const u = await origCreateUser(args);
     const walletCreated = (args.role || 'DRIVER') === 'DRIVER';
     return withConnSync(async () => {
       await connExec(

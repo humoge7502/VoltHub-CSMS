@@ -5,6 +5,7 @@
 'use strict';
 const crypto = require('crypto');
 const { legalTransition } = require('@volthub/shared');
+const argon2 = require('@node-rs/argon2');
 
 function err(code, message, status) {
   const e = new Error(message);
@@ -53,21 +54,63 @@ class Mutex {
   }
 }
 
+// Password KDF policy (SECURITY.md / masterplan §15): Argon2id, 19 MiB, t=2,
+// p=1 — the OWASP-recommended baseline. New hashes are the standard PHC string
+// (`$argon2id$v=19$m=19456,t=2,p=1$…`); verifyPassword still accepts the legacy
+// `$scrypt$…` shape so hydrated durable rows (and old seeds) keep logging in.
+const ARGON2_POLICY = { memoryCost: 19456, timeCost: 2, parallelism: 1 };
+
 function hashPassword(pw) {
-  // Prod: Argon2id (19MiB,2,1) PHC in app_user.password_hash. Local: scrypt PHC-shaped.
-  const salt = crypto.randomBytes(16).toString('hex');
-  const h = crypto.scryptSync(pw, salt, 32).toString('hex');
-  return `$scrypt$${salt}$${h}`;
+  return argon2.hashSync(String(pw), ARGON2_POLICY);
 }
-function verifyPassword(pw, stored) {
-  if (!stored.startsWith('$scrypt$')) return false;
+
+// Legacy local-profile hasher (kept for verify-backward-compat only).
+function scryptHashSync(pw, salt) {
+  return crypto.scryptSync(pw, salt, 32).toString('hex');
+}
+function verifyScrypt(pw, stored) {
   const [, , salt, h] = stored.split('$');
   // Length-safe: timingSafeEqual needs equal-length buffers. A malformed/short
   // stored hash (e.g. an old '$scrypt$demo$<user>' placeholder) must read as
   // invalid, never throw ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH on login.
-  const got = crypto.scryptSync(String(pw), salt, 32).toString('hex');
+  const got = scryptHashSync(String(pw), salt);
   if (!h || got.length !== h.length) return false;
   return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(h));
+}
+
+function verifyPassword(pw, stored) {
+  if (typeof stored !== 'string') return false;
+  if (stored.startsWith('$argon2')) {
+    // Argon2 PHC verify — malformed strings must read as invalid, never throw.
+    try {
+      return argon2.verifySync(stored, String(pw));
+    } catch {
+      return false;
+    }
+  }
+  if (stored.startsWith('$scrypt$')) return verifyScrypt(pw, stored);
+  return false;
+}
+
+// PERF-002 (mission soak receipt): the SYNC verify burns ~29 ms ON the event loop —
+// a login storm freezes OCPP frame handling (100-charger burst => BootNotification
+// timeouts). The async variants run the same KDF on the sidecar's thread pool and
+// are the hot-path (HTTP login/register) entry points; the sync forms remain for
+// seed/store-internal use only.
+async function verifyPasswordAsync(pw, stored) {
+  if (typeof stored !== 'string') return false;
+  if (stored.startsWith('$argon2')) {
+    try {
+      return await argon2.verify(stored, String(pw));
+    } catch {
+      return false;
+    }
+  }
+  if (stored.startsWith('$scrypt$')) return verifyScrypt(pw, stored);
+  return false;
+}
+async function hashPasswordAsync(pw) {
+  return argon2.hash(String(pw), ARGON2_POLICY);
 }
 
 function createStore() {
@@ -134,6 +177,11 @@ function createStore() {
   };
   // Per-session reading-seq index: O(1) dedupe instead of O(n) scan (perf §11.1 item 2).
   s._seqSeen = new Map(); // session_id -> Set(seq_no)
+  // PERF-004: per-session max meter for the METER_REGRESSION check. The old per-tick
+  // `readings.filter(...).reduce(...)` is O(total readings) per tick — quadratic across
+  // a concurrent fleet (50-charger burst receipt: BootNotification timeouts from loop
+  // saturation). Seeded lazily from readings for hydrated sessions, O(1) afterwards.
+  s._maxMeter = new Map(); // session_id -> max meter_kwh
 
   // ---- lookups ----
   s.standards = [
@@ -186,13 +234,16 @@ function createStore() {
   };
 
   // ---- users/wallet ----
-  s.createUser = ({ email, password, full_name, role = 'DRIVER', phone }) => {
+  // PERF-002: async so Argon2id runs on the sidecar's thread pool — a registration
+  // storm must not block the event loop (same receipt as the login path). Await at
+  // the route layer; the Oracle mirror wrapper is already promise-shaped.
+  s.createUser = async ({ email, password, full_name, role = 'DRIVER', phone }) => {
     for (const u of s.users.values()) if (u.email === email) throw err('DUPLICATE_EMAIL', 'email taken', 409);
     const user_id = ++s.seq.user;
     const u = {
       user_id,
       email,
-      password_hash: hashPassword(password),
+      password_hash: await hashPasswordAsync(password),
       full_name,
       phone: phone || null,
       role,
@@ -372,6 +423,25 @@ function createStore() {
           e.status = 409;
           throw e;
         }
+      } else if (c.status === 'RESERVED') {
+        // B2G-013b (mission audit): a RESERVED connector without an explicit reservationId
+        // previously converted for ANY caller — omitting the id was enough to hijack another
+        // driver's window (OCPP StartTransaction and REST /sessions/start both hit this).
+        // Rule: the caller may only adopt a BOOKED window on this connector that they own;
+        // otherwise the start is a 409 RESERVATION_MISMATCH and the window stays untouched.
+        const mine = [...s.reservations.values()].find(
+          (r) => r.connector_ref === key && r.status === 'BOOKED' && r.user_id === uid
+        );
+        if (!mine) {
+          const e = new Error(
+            'RESERVATION_MISMATCH: connector is RESERVED — pass the reservationId that owns this window'
+          );
+          e.num = ORA.RESERVATION_MISMATCH;
+          e.code = 'RESERVATION_MISMATCH';
+          e.status = 409;
+          throw e;
+        }
+        reservationId = mine.reservation_id;
       }
       const session_id = ++s.seq.sess;
       const sess = {
@@ -462,9 +532,11 @@ function createStore() {
         s._seqSeen.set(Number(sid), seen);
       }
       if (seen.has(seq)) return { deduped: true }; // idempotent replay
-      const last = s.readings
-        .filter((r) => r.session_id === Number(sid))
-        .reduce((m, r) => Math.max(m, r.meter_kwh), -1);
+      let last = s._maxMeter.get(Number(sid));
+      if (last === undefined) {
+        last = s.readings.filter((r) => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), -1);
+        s._maxMeter.set(Number(sid), last);
+      }
       if (kwh < last - 0.001) {
         const e = new Error('METER_REGRESSION');
         e.num = ORA.METER_REGRESSION;
@@ -484,6 +556,7 @@ function createStore() {
         source: 'OCPP',
       });
       seen.add(seq);
+      if (kwh > last) s._maxMeter.set(Number(sid), kwh);
       if (sess.state === 'PREPARING' && seq >= 1) sess.state = 'CHARGING';
       s.emitOutbox('METER_TICK', `tick:${sid}:${seq}`, {
         session_id: Number(sid),
@@ -508,7 +581,9 @@ function createStore() {
   s.stopSession = async (sid, reason) => {
     const sess = s.sessions.get(Number(sid));
     if (!sess) throw err('NOT_FOUND', 'session not found', 404);
-    const peak = s.readings.filter((r) => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), 0);
+    const peak = s._maxMeter.has(Number(sid))
+      ? Math.max(s._maxMeter.get(Number(sid)), 0)
+      : s.readings.filter((r) => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), 0);
     sess.end_meter_kwh = peak;
     // CHARGING->COMPLETED directly, or via SUSPENDED
     if (sess.state === 'SUSPENDED' || sess.state === 'CHARGING' || sess.state === 'PREPARING') {
@@ -762,9 +837,18 @@ function createStore() {
   return s;
 }
 
-// SEC-011: fixed dummy hash so unknown-email logins burn the same scrypt cost as
-// real ones (defeats user enumeration by response timing). The salt is fixed, so
-// the cost is identical to a real verify; this value never authenticates anyone.
+// SEC-011: fixed dummy hash so unknown-email logins burn the same Argon2id cost
+// as real ones (defeats user enumeration by response timing). Same parameters as
+// ARGON2_POLICY, so the unknown path costs exactly what a real verify costs;
+// this value never authenticates anyone.
 const DUMMY_PASSWORD_HASH = hashPassword('sec-011-timing-pad-v1:not-a-real-user');
 
-module.exports = { createStore, hashPassword, verifyPassword, DUMMY_PASSWORD_HASH, ORA };
+module.exports = {
+  createStore,
+  hashPassword,
+  hashPasswordAsync,
+  verifyPassword,
+  verifyPasswordAsync,
+  DUMMY_PASSWORD_HASH,
+  ORA,
+};

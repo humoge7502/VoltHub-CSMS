@@ -4,6 +4,73 @@ Evidence discipline: **EXECUTED** (ran in this repo's environment) vs
 **STRONGLY INFERRED** (CI config verified line-by-line; execution on runners)
 vs **PENDING** (blocked here; exact command given). No claim without a receipt.
 
+## Engineering mission (2026-09-07) — audit + AI platform + reliability round — receipts
+
+Full audit of the environment, money path, OCPP gateway, worker relay and authz
+surface, followed by fixes (each red→green) and the new AI advisory platform.
+
+- **Environment truth (EXECUTED):** 8× NVIDIA A100-SXM4-80GB, CUDA 12.0, 24 cores,
+  1.7 TiB RAM, Docker 29.5.3 — the GPU premise is real; the pool is SHARED with
+  other tenants (foreign jobs observed), so all GPU picking is measured.
+- **BUG-039 / B2G-013b (EXECUTED red→green):** start-without-reservationId on a
+  RESERVED connector hijacked another driver's window (201 + session created while
+  the victim stayed BOOKED). Fixed with owner-only adoption; regression `sec 8`.
+- **BUG-040 (EXECUTED red→green):** an oversized WS frame crashed the API process
+  (unhandled `error` — found by the new test, not assumed). Fix: 256 KB maxPayload
+  - gateway socket error handler; `gateway-close.js` t4 asserts close 1009 + cleanup.
+- **PROTO-002/003 (EXECUTED red→green):** rate-limit CALLERROR uid + PREPARING
+  StopTransaction → CANCELLED. `gateway-close.js` t5/t6.
+- **RESIL (EXECUTED):** 3 relay chaos tests (API down / ack-fail replay dedupe /
+  recovery drain) via injectable seams. `relay: 7 passed`.
+- **PERF-002 (EXECUTED):** async Argon2id on login/register (thread pool) after the
+  connect-storm soak showed sync ~29 ms KDF burns blocking the loop.
+- **PERF-004 (EXECUTED):** O(1) max-meter index replaces the per-tick O(n) scan;
+  measured ingest **21,739 → 42,553 ticks/s** on the same bench (`bench/results-local.json`).
+- **Fleet soak (EXECUTED):** `--scenario burst --chargers 100 --provision` →
+  **0 BootNotification timeouts, 0 CALLERRORs, 100/100 sessions started** (before
+  the fixes: 7+ timeouts at 100, 8 at 50, plus `tx=0` Invalid-tag flows).
+- **AI platform (EXECUTED):** training receipt `apps/ai/reports/metrics.json`
+  (MLP 56.4 < ridge 63.1 < naive 73.8 MAE, 3.5 s on one A100; the first run
+  honestly recorded `beats_naive: false` before the normalization fix);
+  `benchmarks.json` (simulation 15× GPU, inference ~525× GPU batch, LP stays on
+  CPU at 3.4 ms); end-to-end smoke through the real API + real sidecar (forecast/
+  anomalies/optimize with RBAC). Tests: 6 JS contract + 8 pytest (1 GPU opt-in
+  skip). CI note: GitHub runners have no GPU — pytest is CPU-safe by design.
+- **ADR-0009 (DECISION):** multi-tenancy evaluated and deferred with a written
+  migration sketch — the platform is single-CPO by every existing ADR and doc.
+- **Post-mission full gate (EXECUTED):** lint clean · prettier clean · `npm test`
+  green (relay **7** · api **27** · sim 2 · security **17** · xlayer 4 ·
+  ocpp-remote 2 · gateway-close **6** · ai **6** · invariants 11 · drift
+  `spec=52 routes~56` OK) · race 2/2 · e2e 7/7 · `next build` 17 routes ·
+  `npm audit` 0 findings both lockfiles · `npm run test:ai` 8 passed.
+
+## SEC-013 — Argon2id password hashing (EXECUTED, 2026-09-07)
+
+The last "not yet implemented" item in `SECURITY.md` is now shipped:
+
+- `apps/api/src/db/store.js`: `hashPassword` emits standard Argon2id PHC strings
+  (`$argon2id$v=19$m=19456,t=2,p=1$…`) via `@node-rs/argon2` 2.2.0 — chosen over
+  `node-argon2` because its sync API fits the existing synchronous call sites
+  (`createUser`, `seed.js`, the module-level `DUMMY_PASSWORD_HASH`), it ships prebuilt
+  binaries (no node-gyp in Docker), and it supports Node ≥10 (the 20/22 CI matrix).
+  Parameters match the documented policy exactly (19 MiB, t=2, p=1 — OWASP baseline).
+- `verifyPassword` accepts both the new PHC format and the legacy `$scrypt$…` shape
+  (length-safe, timing-safe compare preserved), so hydrated Oracle rows and old seeds
+  keep logging in with zero data reset. Malformed/garbage/non-string stored hashes fail
+  closed without throwing.
+- `db/oracle/seed/seed.sql`: demo hashes regenerated as real Argon2id PHC strings.
+- SEC-011 pad (`DUMMY_PASSWORD_HASH`) re-derived with the same parameters — unknown-email
+  timing parity holds. Local sanity run: single hash ≈29 ms on this host; security suite
+  pad threshold (≥15 ms) and parity band (<120 ms gap) both pass.
+- Regression-gated by `TEST-SEC-ARGON2-1` (new-hashes-are-Argon2id, legacy-scrypt-still-
+  verifies, garbage-fails-closed): `node apps/api/test/security.js` → **16 passed**.
+- **Post-fix full gate (EXECUTED):** lint + prettier clean · api tests **26** ·
+  security **16** · relay 4 · sim 2 · xlayer 4 · ocpp-remote 2 · gateway-close 3 ·
+  invariants 11 · drift `spec=49 routes~53` OK · race 2/2 · e2e 7/7 · `next build`
+  17 routes · `npm audit` **0 findings** on both lockfiles (argon2 dep included).
+  Boot receipt: seeded `admin@volthub.in` logs in 200/ADMIN against the new hash;
+  SEC-011 medians re-measured **26 ms known vs 26 ms unknown — 0 ms gap**.
+
 ## Fresh-eyes audit round: BUG-031..037 (2026-09-07) — receipts
 
 - **Baseline full gate (EXECUTED):** lint + prettier clean · `npm test` green

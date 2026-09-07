@@ -56,14 +56,17 @@ function ocppCall(ws, action, payload) {
 async function loginDriver() {
   // seed drivers use Driver@123; pick first driver via register (idempotent-ish)
   const email = `sim.${Date.now()}@example.in`;
-  const { accessToken } = await api('/auth/register', {
+  const j = await api('/auth/register', {
     method: 'POST',
     body: JSON.stringify({ email, password: 'Driver@123', full_name: 'Sim Driver' }),
   });
-  return accessToken;
+  // The OCPP tag MUST be this driver's own tag: B2G-013b reservation matching +
+  // Authorize allow-list both bind TAG-<user_id>. The old hardcoded TAG-1 was user 1
+  // (admin) — it hijacked user 1's identity pre-BUG-A and now reads as Invalid.
+  return { token: j.accessToken, userId: j.user.user_id };
 }
 
-async function normalFlow(identity, cpId, connNo, token, faultMid = false) {
+async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag = 'TAG-1') {
   // SEC-003: Security Profile 1 — Basic(identity:secret) on the WS upgrade.
   // Demo seeds use deterministic `dev-<identity>`; provisioned CPs use the secret
   // returned once by POST /admin/stations|charge-points (env OCPP_SECRET_<n> override for fleets).
@@ -109,10 +112,10 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false) {
   } catch (e) {
     console.log(`[sim:${identity}] reserve skipped: ${e.message}`);
   }
-  await ocppCall(ws, 'Authorize', { idTag: 'TAG-1' });
+  await ocppCall(ws, 'Authorize', { idTag: tag });
   const { transactionId } = await ocppCall(ws, 'StartTransaction', {
     connectorId: connNo,
-    idTag: 'TAG-1',
+    idTag: tag,
     meterStart: 0,
     timestamp: new Date().toISOString(),
   });
@@ -159,15 +162,46 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false) {
 }
 
 async function main() {
-  const token = await loginDriver();
+  const { token, userId } = await loginDriver();
+  const TAG = `TAG-${userId}`;
   const { stations } = await api('/stations');
-  // resolve per-connector OCPP identities via live feed (identity lives on charge point)
+  // PERF-003 fleet mode: --provision builds N fresh charge points via the admin API
+  // so a burst of N has N REAL connectors (one session per connector is the physical
+  // reality). Without it the old burst mapped N flows onto the 16 seeded connectors —
+  // same OCPP identity reused concurrently, which the gateway's one-socket-per-CP
+  // guard (OCPP 1.6J §4) correctly kills. Physical fleet simulation needs physical
+  // connectors, not identity collisions.
   const cps = [];
-  for (const s of stations) {
-    try {
-      const { connectors } = await api(`/stations/${s.station_id}/connectors/live`);
-      connectors.forEach((c) => cps.push({ ...c, station_id: s.station_id }));
-    } catch {}
+  if (args.provision) {
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+    });
+    const sid = stations[0].station_id;
+    for (let i = 0; i < N; i++) {
+      // `-fleet` suffix keeps `dev-<identity>` >= 16 chars (BUG-033 secret policy)
+      // so normalFlow's default secret derivation matches the provisioned CP.
+      const identity = `SOAK-${i}-fleet`;
+      try {
+        const { charge_point } = await api('/admin/charge-points', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${adm.accessToken}` },
+          body: JSON.stringify({ station_id: sid, ocpp_identity: identity, auth_secret: `dev-${identity}` }),
+        });
+        cps.push({ connector_ref: `${charge_point.cp_id}:1`, ocpp_identity: identity });
+      } catch (e) {
+        console.log(`[sim] provision ${identity} skipped: ${e.message}`);
+      }
+    }
+    console.log(`[sim] provisioned ${cps.length} charge points on station ${sid}`);
+  } else {
+    // resolve per-connector OCPP identities via live feed (identity lives on charge point)
+    for (const s of stations) {
+      try {
+        const { connectors } = await api(`/stations/${s.station_id}/connectors/live`);
+        connectors.forEach((c) => cps.push({ ...c, station_id: s.station_id }));
+      } catch {}
+    }
   }
   if (SCENARIO === 'race') {
     // R1: two parallel reserves, same connector+window -> exactly 1x201 + 1x409
@@ -208,25 +242,32 @@ async function main() {
     return;
   }
   if (SCENARIO === 'burst') {
-    // DA3 burst: N chargers x fast ticks to show relay lag <30s
-    const jobs = cps.slice(0, N).map((c) => {
+    // DA3 burst: N chargers x fast ticks to show relay lag <30s.
+    // PERF-003: --ramp-ms staggers cold connects (real CPs do NOT reboot in the same
+    // millisecond after an outage — they retry per OCPP BootNotification backoff).
+    // A perfectly simultaneous 100-socket burst is the worst case; measure BOTH.
+    const RAMP = Number(args['ramp-ms'] || 0);
+    const jobs = cps.slice(0, N).map((c, i) => {
       const [cp, no] = c.connector_ref.split(':').map(Number);
-      return normalFlow(c.ocpp_identity, cp, no, token).catch((e) => console.log('burst charger err', e.message));
+      const delay = RAMP ? Math.floor((i * RAMP) / N) : 0;
+      return new Promise((resolve) => setTimeout(resolve, delay)).then(() =>
+        normalFlow(c.ocpp_identity, cp, no, token, false, TAG).catch((e) => console.log('burst charger err', e.message))
+      );
     });
     await Promise.all(jobs);
-    console.log('burst done');
-    return;
+    console.log(`burst done (n=${N}, ramp=${RAMP}ms)`);
+    process.exit(0); // failed flows may leave sockets open — never hang the harness
   }
   if (SCENARIO === 'fault-mid-session') {
     const c = cps[0];
     const [cp, no] = c.connector_ref.split(':').map(Number);
-    await normalFlow(c.ocpp_identity, cp, no, token, true);
+    await normalFlow(c.ocpp_identity, cp, no, token, true, TAG);
     return;
   }
   for (let i = 0; i < N; i++) {
     const c = cps[i % cps.length];
     const [cp, no] = c.connector_ref.split(':').map(Number);
-    await normalFlow(c.ocpp_identity, cp, no, token);
+    await normalFlow(c.ocpp_identity, cp, no, token, false, TAG);
   }
 }
 main().catch((e) => {

@@ -398,7 +398,7 @@
     },
     "/reservations/{id}/cancel": {
       "post": {
-        "summary": "Optimistic cancel pre-start",
+        "summary": "Optimistic cancel pre-start (operator: station-scoped)",
         "responses": {
           "200": {
             "description": "ok"
@@ -489,7 +489,7 @@
     },
     "/sessions/remote-start": {
       "post": {
-        "summary": "Operator RemoteStartTransaction to CP (allow-list idTag)",
+        "summary": "Operator RemoteStartTransaction to CP (allow-list idTag, station-scoped)",
         "responses": {
           "200": {
             "description": "ok"
@@ -682,7 +682,7 @@
     },
     "/admin/stations/{id}": {
       "patch": {
-        "summary": "Activate/deactivate, reassign operator (admin)",
+        "summary": "Activate/deactivate (ACTIVE|INACTIVE), reassign operator (admin)",
         "responses": {
           "200": {
             "description": "ok"
@@ -733,6 +733,45 @@
     "/admin/audit-logs": {
       "get": {
         "summary": "Mutation trail with old/new JSON (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/ai/forecast": {
+      "get": {
+        "summary": "AI advisory: per-station hourly demand forecast (operator in scope / admin; 503 when the sidecar is down)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/ai/anomalies": {
+      "get": {
+        "summary": "AI advisory: robust z-score anomalies over recent station ticks (operator in scope / admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/ai/optimize": {
+      "post": {
+        "summary": "AI advisory: deterministic LP smart-charging schedule under hard station/connector constraints (operator in scope / admin)",
         "responses": {
           "200": {
             "description": "ok"

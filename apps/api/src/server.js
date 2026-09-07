@@ -99,7 +99,10 @@ app.use((e, req, res, next) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+// HARD-001: cap OCPP frames at 256 KB. ws's default maxPayload is 100 MiB — with the
+// 10 msg/s rate limit that is ~1 GB/s of parse load per malicious connection. OCPP 1.6
+// CALL payloads are far below this; legitimate chargers never hit the cap.
+const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 server.on('upgrade', (req, socket, head) => {
   let path = '';
   try {

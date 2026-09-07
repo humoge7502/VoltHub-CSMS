@@ -4,6 +4,79 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **AI advisory platform (`apps/ai`, ADR-0008) on the 8× A100 host.** A FastAPI
+  sidecar with a GPU-batched fleet demand simulator (15× vs CPU), a trained
+  per-station demand forecaster evaluated against seasonal-naive + ridge baselines
+  on a held-out tail (MLP 56.4 < ridge 63.1 < naive 73.8 MAE; the first honest run
+  shipped `beats_naive: false` before a target-normalization fix), a deterministic
+  smart-charging LP (measured: stays on CPU at CSMS scale), and a measured GPU
+  allocator (least-loaded pick + file-lock quota + utilization receipts; no K8s by
+  design). API surface: `/ai/forecast`, `/ai/anomalies`, `/ai/optimize` — RBAC +
+  operator station scope enforced BEFORE the sidecar, `advisory: true` on every
+  response, audit-logged, `503 AI_UNAVAILABLE` degradation (6 JS contract tests +
+  8 pytest; GPU smoke opt-in). Docs: `docs/ai-platform.md`.
+
+### Fixed
+
+- **BUG-039 (B2G-013b, authz): starting WITHOUT reservationId hijacked RESERVED
+  connectors.** `startSession` allowed `RESERVED` with no reservation id — omitting
+  the field converted another driver's window (OCPP `StartTransaction` and REST
+  `/sessions/start` both). Rule now: a RESERVED connector converts only for the
+  owner of a BOOKED window on it (explicit id or owner-adoption for the OCPP idTag
+  flow); everyone else gets 409 `RESERVATION_MISMATCH` and the window is untouched.
+- **BUG-040 (robustness): an oversized OCPP frame crashed the whole API.** The
+  gateway had no socket `error` handler; a >maxPayload frame emitted an unhandled
+  `error` event and took the process down. Frames are now capped at 256 KB (ws
+  default was 100 MiB ⇒ ~1 GB/s parse load per malicious CP) and socket errors
+  clean up via the close path. Regression: `gateway-close.js` t4.
+- **BUG-041 (durable engine, latent P1): register published `pub(Promise)` under
+  `STORE=oracle`.** `routes.js` never awaited `store.createUser`, whose Oracle
+  mirror wrapper (BUG-038) is promise-shaped — the durable register response was a
+  garbage user + a `sub: undefined` JWT. All `createUser` call sites now await;
+  regression test 27 pins promise-shape parity.
+- **GAP-002 (provisioning): `POST /admin/charge-points` created NO connector.** A
+  standalone-provisioned CP could never charge (reservations 404'd "unknown
+  connector"), diverging from `provisionStation`'s default. Same default now: one
+  TYPE2/22 kW connector unless `connectors[]` is given.
+
+### Changed
+
+- **PERF-002: Argon2id moved off the event loop for HTTP auth.** Login verifies and
+  register hashes via the sidecar's async (thread-pool) API; the sync forms remain
+  for seeds/store-internal use. Motivation: the 100-charger connect-storm soak
+  showed synchronous ~29 ms KDF burns freezing OCPP frame handling.
+- **PERF-004: METER_REGRESSION check is O(1) per tick.** `recordTick` scanned ALL
+  readings per tick (quadratic across a concurrent fleet); a per-session max-meter
+  index seeded lazily from hydrated rows replaces it. Measured: ingest 21,739 →
+  **42,553 ticks/s** on the same bench.
+- **PROTO-002/003 (OCPP correctness):** the 10 msg/s rate-limit CALLERROR now
+  carries the offending message's uid (was `'0'`), and `StopTransaction` on a
+  never-charged (PREPARING) session ends `CANCELLED` with a normal CALLRESULT
+  (was: `InternalError` from an ILLEGAL_TRANSITION). Regression: `gateway-close.js`
+  t5/t6.
+- **Simulator fleet mode:** `--provision` builds N real charge points via the admin
+  API (a burst of N must mean N connectors — the old flow mapped N flows onto 16
+  seeded connectors and the one-socket-per-CP guard rightly killed duplicates), and
+  the sim's OCPP tag is the sim driver's own `TAG-<uid>` (hardcoded `TAG-1` was
+  user 1). `--ramp-ms` staggers cold connects. Receipt: **100/100 provisioned
+  fleet, 0 timeouts, 0 errors** (was 7+ timeouts at 100 simultaneous).
+- **RESIL chaos tests (relay):** API-down accumulate/backoff, ack-failure replay
+  dedupe (crash-after-append never duplicates), and recovery drain are pinned by
+  three new worker tests using injected failure seams (`relayOnce({fetchImpl,
+outFile})`); the real mirror is never touched by tests.
+
+- **SEC-013: Argon2id password hashing implemented (the documented production target).**
+  `hashPassword` now emits standard Argon2id PHC strings (m=19456 KiB, t=2, p=1 — the
+  OWASP-recommended baseline) via `@node-rs/argon2` (prebuilt binaries, no node-gyp,
+  Node ≥10 so the 20/22 CI matrix stays honest). `verifyPassword` accepts both the new
+  format and the legacy `$scrypt$…` shape, so hydrated durable rows and old seeds keep
+  logging in — no data reset. Malformed/garbage stored hashes fail closed without throwing.
+  The Oracle seed's demo hashes were regenerated as Argon2id; the SEC-011 dummy pad uses
+  the same parameters, so unknown-email timing parity holds (re-measured ≈20 ms both paths).
+  Regression-gated by `TEST-SEC-ARGON2-1` (16 security tests, all green).
+
 ### Fixed
 
 - **BUG-031 (authz): operator cancel + remote-start ignored station scope.**

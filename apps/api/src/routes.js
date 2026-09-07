@@ -40,7 +40,9 @@ module.exports = function routes(store) {
     '/auth/register',
     safe(async (req, res) => {
       vRegister(req.body);
-      const u = store.createUser({
+      // Await is REQUIRED: the durable engine's mirror wrapper is promise-shaped —
+      // without it the durable register response published pub(promise) (latent P1).
+      const u = await store.createUser({
         email: req.body.email,
         password: req.body.password,
         full_name: req.body.full_name,
@@ -64,10 +66,13 @@ module.exports = function routes(store) {
       if (!checkLoginThrottle(req, res)) return;
       const u = [...store.users.values()].find((x) => x.email === req.body.email);
       // SEC-011: verify against a fixed dummy hash when the email is unknown so the
-      // scrypt cost runs on BOTH paths — response timing must not reveal whether an
-      // account exists (measured ≈33 ms each in the hardening receipt).
-      const { verifyPassword, DUMMY_PASSWORD_HASH } = require('./db/store');
-      if (!verifyPassword(req.body.password || '', u ? u.password_hash : DUMMY_PASSWORD_HASH) || !u) {
+      // Argon2id cost runs on BOTH paths — response timing must not reveal whether an
+      // account exists (re-measured 26 ms vs 26 ms, 0 ms gap).
+      // PERF-002: the ASYNC verify keeps the ~29 ms KDF off the event loop — a login
+      // storm must not freeze OCPP frame handling (100-charger burst receipt).
+      const { verifyPasswordAsync, DUMMY_PASSWORD_HASH } = require('./db/store');
+      const pwOk = await verifyPasswordAsync(req.body.password || '', u ? u.password_hash : DUMMY_PASSWORD_HASH);
+      if (!pwOk || !u) {
         store.auditLog(u?.user_id ?? null, 'APP_USER', u?.user_id ?? 0, 'LOGIN_FAIL', null, { email: req.body.email });
         return res.status(401).json({ error: { code: 'BAD_CREDENTIALS', message: 'invalid email/password' } });
       }
@@ -877,7 +882,7 @@ module.exports = function routes(store) {
         return res.status(422).json({ error: { code: 'WEAK_PASSWORD', message: 'password >= 8 chars' } });
       if (typeof req.body.full_name !== 'string' || req.body.full_name.length < 2)
         return res.status(422).json({ error: { code: 'INVALID_NAME', message: 'full_name required' } });
-      const u = store.createUser({
+      const u = await store.createUser({
         email: req.body.email,
         password: req.body.password || 'Temp@1234',
         full_name: req.body.full_name,

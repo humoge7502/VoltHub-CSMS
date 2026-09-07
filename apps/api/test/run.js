@@ -557,6 +557,32 @@ async function main() {
     assert.equal(lo.status, 200);
     assert.equal(lo.j.ok, true);
   });
+  await t('PERF-002: register works when createUser is promise-shaped (durable-engine parity)', async () => {
+    // The Oracle mirror wrapper makes store.createUser promise-shaped even though the
+    // local one used to be sync. This pins the route to await it: without the await,
+    // the durable register published pub(Promise) — a garbage user + sub:undefined JWT.
+    const orig = store.createUser.bind(store);
+    store.createUser = async (args) => {
+      await new Promise((r) => setTimeout(r, 5)); // simulate any async backend
+      return orig(args);
+    };
+    try {
+      const r = await api('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: `promiseshape${Date.now()}@example.in`,
+          password: 'Driver@123',
+          full_name: 'Promise Shape',
+        }),
+      });
+      assert.equal(r.status, 201);
+      assert.equal(r.j.user.role, 'DRIVER', 'register must publish the REAL user, not a promise');
+      assert.ok(r.j.user.user_id >= 1, 'user_id must be present');
+      assert.ok(String(r.j.accessToken).split('.').length === 3, 'a usable access token must be issued');
+    } finally {
+      store.createUser = orig;
+    }
+  });
   console.log(`\nAPI tests: ${pass} passed`);
   server.close();
   process.exit(0);

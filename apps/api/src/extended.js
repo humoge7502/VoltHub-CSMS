@@ -238,8 +238,188 @@ module.exports = function extended(store) {
       };
       store.cps.set(cp_id, cp);
       store.cpsByOcpp.set(ocpp_identity, cp_id);
+      // GAP-002 (mission audit): the standalone provisioning route created NO connector
+      // — a freshly provisioned CP could never charge (reservations 404'd on
+      // "unknown connector"), silently diverging from provisionStation's default.
+      // Same default as provisionStation: one TYPE2/22kW connector unless overridden.
+      (b.connectors || [{ standard: 'TYPE2', max_power_kw: 22 }]).forEach((c, k) => {
+        const stdRow = store.standards.find((t) => t.code === c.standard) || store.standards[0];
+        store.connectors.set(`${cp_id}:${k + 1}`, {
+          cp_id,
+          connector_no: k + 1,
+          standard_id: stdRow.standard_id,
+          max_power_kw: Number(c.max_power_kw || 22),
+          status: 'AVAILABLE',
+          last_state_change_at: new Date().toISOString(),
+        });
+      });
       store.auditLog(req.user.id, 'CHARGE_POINT', cp_id, 'PROVISION', null, { ocpp_identity });
       res.status(201).json({ charge_point: { ...cp }, ws_url: `/ocpp/${ocpp_identity}` });
+    })
+  );
+
+  // ---- AI advisory surface (ADR-0008) ----
+  // Guardrails, enforced HERE (never inside the sidecar): OPERATOR/ADMIN only,
+  // operator station-scope checked before any AI call, and the AI is strictly
+  // advisory — no endpoint here can mutate charging, billing or connector state.
+  // The sidecar is internal-only; this proxy attaches the shared x-internal token
+  // and degrades to 503 AI_UNAVAILABLE (never a 500, never blocking the money path).
+  const AI = {
+    // Read per call (not at mount) so tests can point AI_URL at a stub, then at a
+    // dead port, within one process.
+    get url() {
+      return process.env.AI_URL || 'http://127.0.0.1:8100';
+    },
+    get token() {
+      return process.env.AI_TOKEN || 'dev-internal';
+    },
+    get timeoutMs() {
+      return Number(process.env.AI_TIMEOUT_MS || 3000);
+    },
+  };
+  async function aiPost(path, body) {
+    const res = await fetch(`${AI.url}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-internal': AI.token },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(AI.timeoutMs),
+    });
+    if (!res.ok) {
+      const e = new Error(`ai ${path} ${res.status}`);
+      e.code = 'AI_UPSTREAM';
+      e.status = 502;
+      throw e;
+    }
+    return res.json();
+  }
+  function aiScope(req, res, sid) {
+    if (req.user.role === 'OPERATOR' && !(req.user.stationScope || []).includes(Number(sid))) {
+      res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      return false;
+    }
+    return true;
+  }
+  function aiDown(res, e, path) {
+    if (e && e.code === 'AI_UPSTREAM') {
+      return res.status(502).json({ error: { code: 'AI_UNAVAILABLE', message: `AI sidecar answered ${e.message}` } });
+    }
+    return res.status(503).json({ error: { code: 'AI_UNAVAILABLE', message: `AI sidecar unreachable (${path})` } });
+  }
+
+  r.get(
+    '/ai/forecast',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const sid = Number(req.query.stationId);
+      if (!store.stations.has(sid)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
+      }
+      if (!aiScope(req, res, sid)) return;
+      const hours = Math.min(Math.max(Number(req.query.hours) || 24, 1), 48);
+      // Station-relative history: recent hourly kWh per connector aggregated to the
+      // station (last 14 days of local-store telemetry; the sidecar needs >= 168h).
+      const cpIds = [...store.cps.values()].filter((c) => c.station_id === sid).map((c) => c.cp_id);
+      // connector values carry cp_id/connector_no — the ref string is the map key
+      // (store._ref), not a field; deriving it here instead avoids undefined.split.
+      const refs = new Set(
+        [...store.connectors.values()]
+          .filter((c) => cpIds.includes(c.cp_id))
+          .map((c) => store._ref(c.cp_id, c.connector_no))
+      );
+      const sessByHour = new Map();
+      for (const s of store.sessions.values()) {
+        if (!refs.has(s.connector_ref)) continue;
+        const h = new Date(s.started_at);
+        h.setUTCMinutes(0, 0, 0);
+        sessByHour.set(h.toISOString().slice(0, 13), (sessByHour.get(h.toISOString().slice(0, 13)) || 0) + 1);
+      }
+      const history = [...sessByHour.entries()].sort(([a], [b2]) => (a < b2 ? -1 : 1)).map(([, v]) => v);
+      try {
+        // Sidecar contract: history is keyed by station id (it forecasts per station).
+        const j = await aiPost('/v1/forecast', { station_ids: [sid], hours, history: { [String(sid)]: history } });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_FORECAST', null, { hours });
+        res.json({ ...j, station_id: sid });
+      } catch (e) {
+        aiDown(res, e, '/v1/forecast');
+      }
+    })
+  );
+
+  r.get(
+    '/ai/anomalies',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const sid = Number(req.query.stationId);
+      if (!store.stations.has(sid)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
+      }
+      if (!aiScope(req, res, sid)) return;
+      const cpIds = new Set([...store.cps.values()].filter((c) => c.station_id === sid).map((c) => c.cp_id));
+      const sessIds = new Set(
+        [...store.sessions.values()]
+          .filter((s) => cpIds.has(Number(s.connector_ref.split(':')[0])))
+          .map((s) => s.session_id)
+      );
+      const ticks = store.readings
+        .filter((r2) => sessIds.has(r2.session_id))
+        .slice(-2000)
+        .map((r2) => ({ session_id: r2.session_id, ts: r2.taken_at, meter_kwh: r2.meter_kwh, power_kw: r2.power_kw }));
+      if (!ticks.length) {
+        return res.json({ advisory: true, checked: 0, flagged: [], method: 'median/MAD robust z-score' });
+      }
+      try {
+        const j = await aiPost('/v1/anomalies', { ticks });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_ANOMALY_SCAN', null, { checked: ticks.length });
+        res.json({ ...j, station_id: sid });
+      } catch (e) {
+        aiDown(res, e, '/v1/anomalies');
+      }
+    })
+  );
+
+  r.post(
+    '/ai/optimize',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const b = req.body || {};
+      const sid = Number(b.stationId);
+      if (!store.stations.has(sid)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
+      }
+      if (!aiScope(req, res, sid)) return;
+      const vehicles = Array.isArray(b.vehicles) ? b.vehicles : [];
+      if (!vehicles.length) {
+        return res.status(422).json({ error: { code: 'INVALID_VEHICLES', message: 'vehicles[] required' } });
+      }
+      // Hard electrical input: the station's installed connector capacity bounds the LP.
+      const cap = [...store.connectors.values()]
+        .filter((c) => {
+          const cp = store.cps.get(c.cp_id);
+          return cp && cp.station_id === sid;
+        })
+        .reduce((m, c) => m + Number(c.max_power_kw || 22), 0);
+      try {
+        const j = await aiPost('/v1/optimize', {
+          station_id: sid,
+          window_hours: Math.min(Math.max(Number(b.windowHours) || 24, 1), 72),
+          station_power_cap_kw: cap,
+          price_per_kwh: Array.isArray(b.pricePerKwh) && b.pricePerKwh.length ? b.pricePerKwh : [8.5],
+          vehicles: vehicles.slice(0, 200).map((v) => ({
+            id: String(v.id),
+            arrive: Number(v.arriveHour) || 0,
+            deadline: Number(v.deadlineHour) || 24,
+            energy_kwh: Number(v.energyKwh),
+            max_kw: Number(v.maxKw) || 22,
+          })),
+        });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_OPTIMIZE', null, { vehicles: vehicles.length });
+        res.json({ ...j, station_id: sid });
+      } catch (e) {
+        aiDown(res, e, '/v1/optimize');
+      }
     })
   );
 

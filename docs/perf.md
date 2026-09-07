@@ -29,6 +29,25 @@ Reporting format: one table per experiment + hardware spec (CPU/RAM/disk, contai
 limits) + committed scripts under `bench/`. Ratios (cagg vs raw) preferred over
 absolutes where hardware varies.
 
+## Measured — engineering-mission round (2026-09-07)
+
+Same hardware (AMD EPYC 7V12, Node v20.20.2, local profile). Additions this round,
+all from `bench/results-local.json` + simulator runs:
+
+- **Telemetry ingest 21,739 → 42,553 ticks/s** (PERF-004): `recordTick`'s
+  METER_REGRESSION check was O(total readings) per tick; a per-session max-meter
+  index makes it O(1). Same bench, same machine.
+- **100-charger fleet soak, clean** (PERF-002/003 + GAP-002 + simulator fixes):
+  `--scenario burst --chargers 100 --provision` → 0 BootNotification timeouts,
+  0 CALLERRORs, 100/100 sessions started (each on its own freshly provisioned CP —
+  one session per connector is the physical reality the old flow violated).
+  Before the fixes: 7+ timeouts at 100 simultaneous, 8 at 50, `tx=0` Invalid-tag
+  flows (hardcoded `TAG-1`). Cold-connect-storm behavior is covered by the
+  `gateway-close.js` oversized-frame + rate-limit tests.
+- **AI receipts** (`apps/ai/reports/`): simulation GPU 15× vs CPU; batched
+  forecast inference ~525× GPU; smart-charging LP 3.4 ms on CPU (GPU does not help
+  at CSMS scale — recorded as the verdict, not a victory). See `docs/ai-platform.md`.
+
 ## Measured — local profile (`node bench/run-local.js`, 2026-09-05)
 
 Hardware: AMD EPYC 7V12 (96 vCPU), 1771.7 GB RAM, Linux 6.17 Azure, Node v20.20.2.
