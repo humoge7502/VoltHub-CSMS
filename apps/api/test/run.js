@@ -280,7 +280,12 @@ async function main() {
     const op = await api('/admin/users', {
       method: 'POST',
       headers: AH,
-      body: JSON.stringify({ email: `scoped.${Date.now()}@volthub.in`, role: 'OPERATOR', stationId: stId }),
+      body: JSON.stringify({
+        email: `scoped.${Date.now()}@volthub.in`,
+        role: 'OPERATOR',
+        stationId: stId,
+        full_name: 'Scoped Operator',
+      }),
     });
     assert.equal(op.status, 201);
     const opLogin = await api('/auth/login', {
@@ -297,6 +302,334 @@ async function main() {
       assert.equal(denied.j.error.code, 'OUT_OF_SCOPE');
     }
   });
+  // ---- BUG-031..037 regression block (fresh-eyes audit round) ----
+  await t('BUG-031: operator cancel is station-scoped', async () => {
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+    });
+    const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
+    const stations = await api('/admin/stations', { headers: AH });
+    const stId = Math.max(...stations.j.stations.map((s) => s.station_id));
+    const op = await api('/admin/users', {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({
+        email: `cancelscope.${Date.now()}@volthub.in`,
+        role: 'OPERATOR',
+        stationId: stId,
+        full_name: 'Cancel Scope Op',
+      }),
+    });
+    assert.equal(op.status, 201);
+    const opLogin = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: op.j.user.email, password: 'Temp@1234' }),
+    });
+    const OH = { Authorization: `Bearer ${opLogin.j.accessToken}` };
+    // Driver reserves on a station the operator is NOT assigned to -> cancel must 403.
+    const disc = await api('/stations');
+    const foreign = disc.j.stations.find(
+      (s) => s.station_id !== stId && s.connectors.some((c) => c.status === 'AVAILABLE')
+    );
+    assert.ok(foreign, 'need an available connector on a non-assigned station');
+    const fc = foreign.connectors.find((c) => c.status === 'AVAILABLE');
+    const d1 = await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `c1.${Date.now()}@example.in`,
+        password: 'Driver@123',
+        full_name: 'Cancel Target',
+      }),
+    });
+    const H1 = { Authorization: `Bearer ${d1.j.accessToken}` };
+    const win = (cp, no) => ({
+      cpId: cp,
+      connectorNo: no,
+      startAt: new Date(Date.now() + 30 * 60000).toISOString(),
+      endAt: new Date(Date.now() + 80 * 60000).toISOString(),
+    });
+    const r1 = await api('/reservations', {
+      method: 'POST',
+      headers: H1,
+      body: JSON.stringify(win(Number(fc.connector_ref.split(':')[0]), Number(fc.connector_ref.split(':')[1]))),
+    });
+    assert.equal(r1.status, 201);
+    const denied = await api(`/reservations/${r1.j.reservation.reservation_id}/cancel`, {
+      method: 'POST',
+      headers: OH,
+    });
+    assert.equal(denied.status, 403, 'operator must not cancel bookings outside their station scope');
+    assert.equal(denied.j.error.code, 'OUT_OF_SCOPE');
+    // Driver reserves on the operator's OWN station -> cancel must succeed.
+    const own = await api(`/stations/${stId}`);
+    const oc = own.j.station.charge_points.flatMap((c) => c.connectors).find((c) => c.status === 'AVAILABLE');
+    assert.ok(oc, 'need an available connector on the assigned station');
+    const d2 = await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email: `c2.${Date.now()}@example.in`, password: 'Driver@123', full_name: 'In Scope' }),
+    });
+    const H2 = { Authorization: `Bearer ${d2.j.accessToken}` };
+    const r2 = await api('/reservations', {
+      method: 'POST',
+      headers: H2,
+      body: JSON.stringify(win(Number(oc.connector_ref.split(':')[0]), Number(oc.connector_ref.split(':')[1]))),
+    });
+    assert.equal(r2.status, 201);
+    const ok = await api(`/reservations/${r2.j.reservation.reservation_id}/cancel`, { method: 'POST', headers: OH });
+    assert.equal(ok.status, 200, 'operator must cancel bookings inside their station scope');
+    global.__H2 = H2;
+    global.__ownRef = oc.connector_ref;
+    global.__stId = stId;
+  });
+  await t('BUG-031: operator remote-start is station-scoped', async () => {
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+    });
+    const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
+    const stations = await api('/admin/stations', { headers: AH });
+    const stId = global.__stId ?? Math.max(...stations.j.stations.map((s) => s.station_id));
+    const op = await api('/admin/users', {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({
+        email: `startscope.${Date.now()}@volthub.in`,
+        role: 'OPERATOR',
+        stationId: stId,
+        full_name: 'Start Scope Op',
+      }),
+    });
+    const opLogin = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: op.j.user.email, password: 'Temp@1234' }),
+    });
+    const OH = { Authorization: `Bearer ${opLogin.j.accessToken}` };
+    const other = stations.j.stations.find((s) => s.station_id !== stId);
+    assert.ok(other, 'need a second station for the out-of-scope probe');
+    const otherCp = (await api(`/stations/${other.station_id}`)).j.station.charge_points[0];
+    const denied = await api('/sessions/remote-start', {
+      method: 'POST',
+      headers: OH,
+      body: JSON.stringify({ cpId: otherCp.cp_id, connectorNo: 1, idTag: 'TAG-1' }),
+    });
+    assert.equal(denied.status, 403, 'operator must not remote-start chargers outside their scope');
+    assert.equal(denied.j.error.code, 'OUT_OF_SCOPE');
+    // In-scope CP: scope passes, the command then fails on CP_OFFLINE (no socket in tests).
+    const ownCp = (await api(`/stations/${stId}`)).j.station.charge_points[0];
+    const ok = await api('/sessions/remote-start', {
+      method: 'POST',
+      headers: OH,
+      body: JSON.stringify({ cpId: ownCp.cp_id, connectorNo: 1, idTag: 'TAG-1' }),
+    });
+    assert.equal(ok.status, 409, 'in-scope remote-start must pass the scope gate (CP_OFFLINE next)');
+    assert.equal(ok.j.error.code, 'CP_OFFLINE');
+  });
+  await t('BUG-037: station active-sessions are scoped/minimized per role', async () => {
+    const H2 = global.__H2;
+    const stId = global.__stId;
+    // Driver 2 starts a session on the operator's station (connector freed by the cancel above).
+    const [cpId, no] = global.__ownRef.split(':').map(Number);
+    const st = await api('/sessions/start', {
+      method: 'POST',
+      headers: H2,
+      body: JSON.stringify({ cpId, connectorNo: no }),
+    });
+    assert.equal(st.status, 201);
+    const sess = st.j.session;
+    const d3 = await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email: `c3.${Date.now()}@example.in`, password: 'Driver@123', full_name: 'Peer Driver' }),
+    });
+    const H3 = { Authorization: `Bearer ${d3.j.accessToken}` };
+    // Station active table: a peer driver must not see driver 2's session at all.
+    const peer = await api(`/stations/${stId}/sessions/active`, { headers: H3 });
+    assert.equal(peer.status, 200);
+    assert.ok(
+      !peer.j.sessions.some((x) => x.session_id === sess.session_id),
+      'peer driver must not see another driver in the station active table'
+    );
+    // Owner sees their own session.
+    const own = await api(`/stations/${stId}/sessions/active`, { headers: H2 });
+    assert.ok(
+      own.j.sessions.some((x) => x.session_id === sess.session_id),
+      'owner must see their session'
+    );
+    // Connector active probe: peer gets a minimized payload (no user_id / id_tag).
+    const probe = await api(`/sessions/active/${global.__ownRef}`, { headers: H3 });
+    assert.equal(probe.status, 200);
+    assert.ok(probe.j.session, 'presence (a session exists) must remain visible');
+    assert.equal(probe.j.session.user_id, undefined, 'peer must not see the driver user_id');
+    assert.equal(probe.j.session.id_tag, undefined, 'peer must not see the idTag');
+    assert.equal(probe.j.session.session_id, sess.session_id);
+    // Owner keeps the full row.
+    const mine = await api(`/sessions/active/${global.__ownRef}`, { headers: H2 });
+    assert.equal(mine.j.session.user_id, st.j.session.user_id, 'owner keeps the full row');
+    await api(`/sessions/${sess.session_id}/remote-stop`, { method: 'POST', headers: H2 });
+  });
+  await t('BUG-032: wallet topup rejects non-numeric/negative/over-cap amounts', async () => {
+    const bad = await api('/me/wallet/topup', {
+      method: 'POST',
+      headers: global.__H2,
+      body: JSON.stringify({ amount: 'lots' }),
+    });
+    assert.equal(bad.status, 422);
+    assert.equal(bad.j.error.code, 'INVALID_AMOUNT');
+    const neg = await api('/me/wallet/topup', {
+      method: 'POST',
+      headers: global.__H2,
+      body: JSON.stringify({ amount: -5 }),
+    });
+    assert.equal(neg.status, 422);
+    const cap = await api('/me/wallet/topup', {
+      method: 'POST',
+      headers: global.__H2,
+      body: JSON.stringify({ amount: 20000 }),
+    });
+    assert.equal(cap.status, 422);
+    const ok = await api('/me/wallet/topup', {
+      method: 'POST',
+      headers: global.__H2,
+      body: JSON.stringify({ amount: 100 }),
+    });
+    assert.equal(ok.status, 200);
+  });
+  await t('BUG-033: admin user creation validates role/email/password/name', async () => {
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+    });
+    const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
+    const badRole = await api('/admin/users', {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({ email: `x${Date.now()}@volthub.in`, role: 'SUPERADMIN' }),
+    });
+    assert.equal(badRole.status, 422);
+    assert.equal(badRole.j.error.code, 'INVALID_ROLE');
+    const badEmail = await api('/admin/users', {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({ email: 'nope', role: 'OPERATOR' }),
+    });
+    assert.equal(badEmail.status, 422);
+    assert.equal(badEmail.j.error.code, 'INVALID_EMAIL');
+    const badPw = await api('/admin/users', {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({ email: `y${Date.now()}@volthub.in`, role: 'OPERATOR', password: 'short' }),
+    });
+    assert.equal(badPw.status, 422);
+    assert.equal(badPw.j.error.code, 'WEAK_PASSWORD');
+  });
+  await t('BUG-034: station status patch is constrained to ACTIVE/INACTIVE', async () => {
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+    });
+    const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
+    const bad = await api(`/admin/stations/${global.__stId}`, {
+      method: 'PATCH',
+      headers: AH,
+      body: JSON.stringify({ status: 'PAUSED' }),
+    });
+    assert.equal(bad.status, 422);
+    assert.equal(bad.j.error.code, 'INVALID_STATUS');
+    const off = await api(`/admin/stations/${global.__stId}`, {
+      method: 'PATCH',
+      headers: AH,
+      body: JSON.stringify({ status: 'INACTIVE' }),
+    });
+    assert.equal(off.status, 200);
+    const back = await api(`/admin/stations/${global.__stId}`, {
+      method: 'PATCH',
+      headers: AH,
+      body: JSON.stringify({ status: 'ACTIVE' }),
+    });
+    assert.equal(back.status, 200);
+    assert.equal(back.j.station.status, 'ACTIVE');
+  });
+  await t('BUG-035: logout with an unknown token stays 200 (no oracle for token validity)', async () => {
+    const lo = await api('/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ refreshToken: 'not-a-real-token' }),
+    });
+    assert.equal(lo.status, 200);
+    assert.equal(lo.j.ok, true);
+  });
+  await t('PERF-002: register works when createUser is promise-shaped (durable-engine parity)', async () => {
+    // The Oracle mirror wrapper makes store.createUser promise-shaped even though the
+    // local one used to be sync. This pins the route to await it: without the await,
+    // the durable register published pub(Promise) — a garbage user + sub:undefined JWT.
+    const orig = store.createUser.bind(store);
+    store.createUser = async (args) => {
+      await new Promise((r) => setTimeout(r, 5)); // simulate any async backend
+      return orig(args);
+    };
+    try {
+      const r = await api('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: `promiseshape${Date.now()}@example.in`,
+          password: 'Driver@123',
+          full_name: 'Promise Shape',
+        }),
+      });
+      assert.equal(r.status, 201);
+      assert.equal(r.j.user.role, 'DRIVER', 'register must publish the REAL user, not a promise');
+      assert.ok(r.j.user.user_id >= 1, 'user_id must be present');
+      assert.ok(String(r.j.accessToken).split('.').length === 3, 'a usable access token must be issued');
+    } finally {
+      store.createUser = orig;
+    }
+  });
+  await t('BUG-043: fromDriver restores canonical store codes from ORA- messages', async () => {
+    // The Oracle packages raise RAISE_APPLICATION_ERROR numbers; callers and tests key
+    // on the canonical names ('OVERLAP', 'TICK_REJECTED', …) that the local store throws.
+    // Before BUG-043, fromDriver left e.code as 'ORA_20503' — the durable engine and the
+    // local profile disagreed on the error contract (routes mapped 409 on num, but route
+    // error responses and client checks matched on code).
+    const { fromDriver } = require('../src/errors');
+    const overlap = fromDriver(new Error('ORA-20503: overlapping reservation window'));
+    assert.equal(overlap.code, 'OVERLAP', 'ORA-20503 must restore the canonical OVERLAP code');
+    assert.equal(overlap.num, -20503);
+    assert.equal(overlap.status, 409, 'overlap stays a 409 conflict');
+    const funds = fromDriver(new Error('ORA-20705: insufficient funds'));
+    assert.equal(funds.code, 'INSUFFICIENT_FUNDS', 'ORA-20705 must restore INSUFFICIENT_FUNDS');
+    assert.equal(funds.status, 402, 'insufficient funds stays a 402');
+    const guard = fromDriver(new Error('ORA-20801: connector state guard'));
+    assert.equal(guard.code, 'CONNECTOR_GUARD');
+    // Unknown numbers keep the ORA_ fallback (never crash, never invent a name).
+    const unknown = fromDriver(new Error('ORA-99999: mystery'));
+    assert.equal(unknown.code, 'ORA_99999');
+    assert.equal(unknown.status, 500);
+    // Already-normalized errors pass through untouched (status filled, code preserved).
+    const norm = fromDriver({ num: -20503, code: 'OVERLAP' });
+    assert.equal(norm.code, 'OVERLAP');
+    assert.equal(norm.status, 409);
+  });
+
+  await t('BUG-044: listen defers to the store-upgrade promise but still binds + fires the callback', async () => {
+    // Before BUG-044 the Oracle upgrade ran while the socket was ALREADY accepting
+    // (ghost local-only rows in the hydration window; STORE=oracle tests raced the
+    // adapter attach). The listen wrapper must: return the server (chainable), fire
+    // the bind callback, and — on the no-Oracle path — bind without hanging. This
+    // pins the wrapper contract; the durable ordering itself is exercised by the
+    // STORE=oracle suite against a live Oracle. We re-bind after a full close:
+    // close() alone waits on the suite's keep-alive sockets, so drop them first.
+    server.closeAllConnections && server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    const ret = await new Promise((resolve, reject) => {
+      const t0 = setTimeout(() => reject(new Error('listen never fired the bind callback')), 8000);
+      const s = server.listen(4108, () => {
+        clearTimeout(t0);
+        resolve(s);
+      });
+    });
+    assert.equal(ret, server, 'listen must return the server object (chainable)');
+    await new Promise((r) => server.close(r));
+  });
+
   console.log(`\nAPI tests: ${pass} passed`);
   server.close();
   process.exit(0);

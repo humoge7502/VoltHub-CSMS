@@ -109,11 +109,24 @@ function localChecks(store) {
 async function runOracleChecks() {
   const sqlPath = path.join(__dirname, '..', '..', 'db', 'oracle', 'invariants.sql');
   const sql = fs.readFileSync(sqlPath, 'utf8');
+  // Strip full-line comments BEFORE splitting — the header comment carries a ';' inside
+  // prose, and a naive split turned it into a garbage statement (ORA-00900), which made
+  // the oracle gate silently fall back to local checks instead of running the SQL.
   const stmts = sql
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('--'))
+    .join('\n')
     .split(';')
     .map((s) => s.trim())
-    .filter((s) => s && !s.startsWith('--'));
-  const oracledb = require('../../apps/api/node_modules/oracledb');
+    .filter(Boolean);
+  // Hoisted installs resolve from the workspace root; CI installs oracledb into
+  // apps/api/node_modules — try both so the oracle gate runs everywhere.
+  let oracledb;
+  try {
+    oracledb = require('oracledb');
+  } catch {
+    oracledb = require('../../apps/api/node_modules/oracledb');
+  }
   const pool = await oracledb.createPool({
     user: process.env.ORACLE_USER || 'volthub',
     password: process.env.ORACLE_PASSWORD || 'volthub_dev_pwd',

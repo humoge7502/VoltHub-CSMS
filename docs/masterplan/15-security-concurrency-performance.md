@@ -8,7 +8,7 @@
 
 ### 30.1 Authentication
 
-- **Password hashing:** Argon2id (via `argon2` npm), memory 19 MiB, iterations 2, parallelism 1 — OWASP-recommended baseline; hashes stored as the encoded PHC string in `app_user.password_hash` (VARCHAR2(97)). Login re-derives and compares with constant-time verification. Password policy: 12+ chars, checked with a blocklist, never length-capped.
+- **Password hashing:** Argon2id (via `@node-rs/argon2`), memory 19 MiB, iterations 2, parallelism 1 — OWASP-recommended baseline; hashes stored as the encoded PHC string in `app_user.password_hash` (VARCHAR2(512)). Login re-derives and compares with constant-time verification; legacy `$scrypt$…` rows still verify (no-reset migration). Password policy: 12+ chars, checked with a blocklist, never length-capped.
 - **Tokens:** 15-minute access JWT (HS256, `sub`, `role`, `stationScope` claims) + 30-day refresh token, _stored hashed (SHA-256) in a `refresh_token` table with device metadata; rotation on every refresh; reuse of a rotated token revokes the family_ (the standard theft-response). Logout revokes server-side.
 - **Why not cookie sessions:** stateless API suits the demo and shows token lifecycle mastery; cookies remain a documented alternative for browser-only systems. CSRF risk is nil while we are header-bearer (no cookies); if cookies are ever adopted, SameSite=Strict + CSRF token notes are pre-written in the security doc.
 

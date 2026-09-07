@@ -1,5 +1,6 @@
 import './globals.css';
 import Link from 'next/link';
+import { Nav } from './nav';
 
 export const metadata = {
   title: 'VoltHub CSMS',
@@ -18,16 +19,7 @@ export default function RootLayout({ children }) {
           <span className="brand">
             VOLT<b>HUB</b>
           </span>
-          <nav className="nav">
-            <Link href="/discover">Discover</Link>
-            <Link href="/reservations">Reservations</Link>
-            <Link href="/history">History</Link>
-            <Link href="/invoices">Wallet</Link>
-            <Link href="/notifications">Alerts</Link>
-            <Link href="/dashboard">Operator</Link>
-            <Link href="/telemetry">Telemetry</Link>
-            <Link href="/admin">Admin</Link>
-          </nav>
+          <Nav />
           <span style={{ marginLeft: 'auto' }} className="micro">
             <Link href="/login">login</Link> · <Link href="/profile">profile</Link>
           </span>

@@ -4,8 +4,184 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-07
+
+### Added
+
+- **AI advisory platform (`apps/ai`, ADR-0008) on the 8× A100 host.** A FastAPI
+  sidecar with a GPU-batched fleet demand simulator (15× vs CPU), a trained
+  per-station demand forecaster evaluated against seasonal-naive + ridge baselines
+  on a held-out tail (MLP 56.4 < ridge 63.1 < naive 73.8 MAE; the first honest run
+  shipped `beats_naive: false` before a target-normalization fix), a deterministic
+  smart-charging LP (measured: stays on CPU at CSMS scale), and a measured GPU
+  allocator (least-loaded pick + file-lock quota + utilization receipts; no K8s by
+  design). API surface: `/ai/forecast`, `/ai/anomalies`, `/ai/optimize` — RBAC +
+  operator station scope enforced BEFORE the sidecar, `advisory: true` on every
+  response, audit-logged, `503 AI_UNAVAILABLE` degradation (6 JS contract tests +
+  8 pytest; GPU smoke opt-in). Docs: `docs/ai-platform.md`.
+
 ### Fixed
 
+- **BUG-039 (B2G-013b, authz): starting WITHOUT reservationId hijacked RESERVED
+  connectors.** `startSession` allowed `RESERVED` with no reservation id — omitting
+  the field converted another driver's window (OCPP `StartTransaction` and REST
+  `/sessions/start` both). Rule now: a RESERVED connector converts only for the
+  owner of a BOOKED window on it (explicit id or owner-adoption for the OCPP idTag
+  flow); everyone else gets 409 `RESERVATION_MISMATCH` and the window is untouched.
+- **BUG-040 (robustness): an oversized OCPP frame crashed the whole API.** The
+  gateway had no socket `error` handler; a >maxPayload frame emitted an unhandled
+  `error` event and took the process down. Frames are now capped at 256 KB (ws
+  default was 100 MiB ⇒ ~1 GB/s parse load per malicious CP) and socket errors
+  clean up via the close path. Regression: `gateway-close.js` t4.
+- **BUG-041 (durable engine, latent P1): register published `pub(Promise)` under
+  `STORE=oracle`.** `routes.js` never awaited `store.createUser`, whose Oracle
+  mirror wrapper (BUG-038) is promise-shaped — the durable register response was a
+  garbage user + a `sub: undefined` JWT. All `createUser` call sites now await;
+  regression test 27 pins promise-shape parity.
+- **GAP-002 (provisioning): `POST /admin/charge-points` created NO connector.** A
+  standalone-provisioned CP could never charge (reservations 404'd "unknown
+  connector"), diverging from `provisionStation`'s default. Same default now: one
+  TYPE2/22 kW connector unless `connectors[]` is given.
+- **BUG-043 (contract parity): the Oracle packages raised `ORA_20503`-style codes
+  while the local store throws `OVERLAP`/`TICK_REJECTED`/… — callers, routes and
+  tests key on the canonical names, so the durable engine and the local profile
+  disagreed on the error contract.** `fromDriver` now restores the canonical code
+  from the package number via an explicit `ORA_CODE_BY_NUM` table (mirror of the
+  store's own ORA table; both keyed to the `RAISE_APPLICATION_ERROR` numbers in
+  V003, with a comment demanding they stay in sync). Unknown numbers keep the
+  `ORA_XXXXX` fallback; already-normalized errors pass through untouched.
+  Regression test in `apps/api/test/run.js`.
+- **BUG-044 (boot race, P1): the Oracle upgrade ran while the socket was ALREADY
+  accepting.** Requests in the hydration window wrote local-only ghost rows
+  (register → user missing in Oracle, invoice → `billing_pkg` later 500'd) and the
+  STORE=oracle CI step attached the adapter MID-SUITE at a nondeterministic test
+  boundary. `server.listen` now awaits the store upgrade (attached or
+  local-fallback) before binding the port — the durable engine is armed before the
+  first request can arrive, in tests and in compose. Regression test in
+  `apps/api/test/run.js`; the ordering itself is exercised by the STORE=oracle
+  suite against a live Oracle.
+- **BUG-045 (durable engine, exposed by BUG-044): session STARTS were local-only.**
+  REST `/sessions/start` and OCPP `StartTransaction` never reached Oracle — the
+  first wrapped call on a fresh session 500'd `ORA-01403` (no data found).
+  `db/oracle.js` now wraps `startSession` with `charge_session_pkg.start_session`
+  (local-first validation incl. B2G-013b owner-adoption; the package only sees
+  validated starts) and remaps the read-cache to the durable id when the counters
+  diverge (a failed mirror consumes an Oracle IDENTITY value — the remap makes it
+  harmless). Red→green against a live Oracle.
+- **BUG-046 (durable engine, exposed by BUG-044): the demo pre-seed poisoned the
+  Oracle-hydrated read-cache.** `seedStore` ran before the upgrade and `hydrate()`
+  is additive, so 60 ghost demo sessions + their meter readings survived — every
+  real tick on a fresh session read `{deduped:true}` and never flipped
+  PREPARING→CHARGING. With `ORACLE_HOST` set the store now starts empty, hydrates
+  to exactly what Oracle owns, and seeds only when the DB is genuinely empty (the
+  rule `getStore` already documented).
+- **BUG-047 (durable engine, exposed by BUG-044): admin hardware writes were
+  local-only.** `POST /admin/stations`, `POST /admin/charge-points` and
+  `PATCH /admin/stations/:id` never reached Oracle — the first reservation on a
+  provisioned connector 500'd `ORA-01403` (no connector row). All three are now
+  store methods mirrored with explicit local ids (BUG-038 pattern); the routes
+  await them (BUG-041-class promise-shape) and the mirror preserves the local
+  return shape. `station.address_line` now defaults to a non-empty sentinel
+  (`''` is NULL in Oracle, violating NOT NULL).
+- **Seed + invariants-runner honesty fixes.** The Oracle seed funded two wallets
+  with no `wallet_ledger` rows (INV-2 failed on a fresh DB) — ledger rows added.
+  `test/sql/run-invariants.js` split its SQL on ALL `;` — the header comment
+  carries one, so the oracle gate silently fell back to local checks on every run;
+  it now strips full-line comments first and resolves `oracledb` from the hoisted
+  root or `apps/api/node_modules`. The real SQL runs and gates CI.
+
+### Changed
+
+- **PERF-002: Argon2id moved off the event loop for HTTP auth.** Login verifies and
+  register hashes via the sidecar's async (thread-pool) API; the sync forms remain
+  for seeds/store-internal use. Motivation: the 100-charger connect-storm soak
+  showed synchronous ~29 ms KDF burns freezing OCPP frame handling.
+- **PERF-004: METER_REGRESSION check is O(1) per tick.** `recordTick` scanned ALL
+  readings per tick (quadratic across a concurrent fleet); a per-session max-meter
+  index seeded lazily from hydrated rows replaces it. Measured: ingest 21,739 →
+  **42,553 ticks/s** on the same bench.
+- **PROTO-002/003 (OCPP correctness):** the 10 msg/s rate-limit CALLERROR now
+  carries the offending message's uid (was `'0'`), and `StopTransaction` on a
+  never-charged (PREPARING) session ends `CANCELLED` with a normal CALLRESULT
+  (was: `InternalError` from an ILLEGAL_TRANSITION). Regression: `gateway-close.js`
+  t5/t6.
+- **Simulator fleet mode:** `--provision` builds N real charge points via the admin
+  API (a burst of N must mean N connectors — the old flow mapped N flows onto 16
+  seeded connectors and the one-socket-per-CP guard rightly killed duplicates), and
+  the sim's OCPP tag is the sim driver's own `TAG-<uid>` (hardcoded `TAG-1` was
+  user 1). `--ramp-ms` staggers cold connects. Receipt: **100/100 provisioned
+  fleet, 0 timeouts, 0 errors** (was 7+ timeouts at 100 simultaneous).- **RESIL chaos tests (relay):** API-down accumulate/backoff, ack-failure replay
+  dedupe (crash-after-append never duplicates), and recovery drain are pinned by
+  three new worker tests using injected failure seams (`relayOnce({fetchImpl,
+outFile})`); the real mirror is never touched by tests.
+- **Deps: `pg` promoted to a direct dependency of `@volthub/api`** (was optional /
+  transitive). The worker's Timescale relay (`relay-timescale.js`) loads `pg` and
+  ships in the api image (`apps/api/Dockerfile`), so `npm ci` must install it — the
+  compose worker failed on a missing `pg` after a clean `npm ci`.
+
+- **SEC-013: Argon2id password hashing implemented (the documented production target).**
+  `hashPassword` now emits standard Argon2id PHC strings (m=19456 KiB, t=2, p=1 — the
+  OWASP-recommended baseline) via `@node-rs/argon2` (prebuilt binaries, no node-gyp,
+  Node ≥10 so the 20/22 CI matrix stays honest). `verifyPassword` accepts both the new
+  format and the legacy `$scrypt$…` shape, so hydrated durable rows and old seeds keep
+  logging in — no data reset. Malformed/garbage stored hashes fail closed without throwing.
+  The Oracle seed's demo hashes were regenerated as Argon2id; the SEC-011 dummy pad uses
+  the same parameters, so unknown-email timing parity holds (re-measured ≈20 ms both paths).
+  Regression-gated by `TEST-SEC-ARGON2-1` (16 security tests, all green).
+
+### Fixed
+
+- **BUG-031 (authz): operator cancel + remote-start ignored station scope.**
+  `POST /reservations/:id/cancel` accepted any operator for any booking, and
+  `POST /sessions/remote-start` gated on role only — an operator assigned to station A
+  could cancel bookings and drive chargers on station B. Both now enforce the same
+  `stationScope` contract as `PATCH /sessions/:id/state` and `requireOwned` (scope
+  checked in the route, re-asserted in `cancelReservation` for direct store callers).
+  Regression tests 20/21 assert 403 `OUT_OF_SCOPE` out of scope and success/`CP_OFFLINE`
+  in scope.
+- **BUG-032 (input): `/me/wallet/topup` crashed on non-numeric bodies.**
+  `Number(req.body.amount)` on `"lots"`/`undefined` is `NaN`, which slipped past the
+  store's `amount > 0` guard as a 500. The route now returns 422 `INVALID_AMOUNT` for
+  non-finite/non-positive amounts (per-transaction cap unchanged, still enforced in the
+  store). Regression test 23.
+- **BUG-033 (input): admin user + charge-point creation accepted garbage.**
+  `POST /admin/users` took any `role` string (Oracle CHECK allows DRIVER/OPERATOR/ADMIN)
+  and any email; `POST /admin/charge-points` took any `ocpp_identity` (which is embedded
+  in the gateway's `/ocpp/:identity` URL routing) and any `auth_secret`. All four fields
+  now validate and fail as 422 with the same codes `@volthub/shared` uses. Note: this
+  also makes `full_name` required on admin user creation, matching Oracle's NOT NULL.
+  Regression tests 24 + provision-flow assertions.
+- **BUG-034 (parity): `PATCH /admin/stations/:id` accepted any status string.**
+  Oracle's `station.status` is CHECK-constrained to ACTIVE/INACTIVE and the web console
+  flips exactly those two; the local store accepted anything. The route now mirrors the
+  schema (422 `INVALID_STATUS` otherwise). Regression test 25.
+- **BUG-035 (info-leak): logout revealed token validity.**
+  `POST /auth/logout` answered 200 `{ok:true}` for a valid token (revoking the family)
+  but 401 `BAD_REFRESH` for an unknown one — an oracle for which refresh tokens exist.
+  Logout is now uniformly 200 `{ok:true}` regardless of token validity (idempotent,
+  uninformative); the security suite gained TEST-SEC-LOGOUT-1.
+- **BUG-038 (coherence): the Oracle adapter mirrored only 6 of the money-path writes.**
+  `db/oracle.js` wrapped `createReservation`/`transition`/`recordTick`/`billSession`/
+  `payInvoice`/`expireStale` — but NOT `createUser`, `topup` or `cancelReservation`. A user
+  who registered after boot existed only in the local Map, so their first reservation hit
+  Oracle's FK (`reservation.user_id → app_user`) and 500'd; wallet top-ups never reached
+  Oracle (so `billing_pkg.pay_invoice` would later 402 on an empty durable balance); a
+  cancelled booking resurrected as BOOKED after restart+rehydrate. All three writes are
+  now write-through with explicit local ids (V001 uses IDENTITY BY DEFAULT ON NULL so
+  mirrored rows carry the local id) and undo-on-failure — a failed mirror leaves no ghost
+  identity, balance or booking. The compose demo path (register → reserve) and CI's
+  STORE=oracle step now exercise this directly. Exposed by new regression test 20.
+- **BUG-036 (drift): the request throttle kept its own copy of the dev JWT secret.**
+  `middleware/security.js` hardcoded `'dev-only-32-byte-secret-0123456789'` as the
+  verify fallback instead of importing `secret()` from `middleware/auth.js` — a future
+  change to the dev default would silently desync the two verifiers. Now imports the
+  single source of truth.
+- **BUG-037 (data-minimization): station active-session feeds over-shared.**
+  `GET /stations/:id/sessions/active` returned every active session (with `user_id` and
+  `id_tag`) to any authenticated caller, and `GET /sessions/active/:ref` did the same for
+  a single connector — despite docs saying "driver sees own scope". Drivers now see only
+  their own sessions in the station feed; the connector probe returns a minimized payload
+  (state + timing only) to non-owners; operators are station-scoped. Regression test 22.
 - **BUG-030 (authz): station analytics ignored operator station scope.**
   `GET /stations/:id/analytics` was `roles('OPERATOR','ADMIN')` only — an operator
   assigned to station A could read station B's revenue, energy and fault counts, while

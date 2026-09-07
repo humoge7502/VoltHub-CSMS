@@ -422,8 +422,111 @@ function wrapWithOracle(local, pool) {
 
   // Keep references: override methods on the same object routes already hold.
   const origCreateReservation = local.createReservation.bind(local);
+  const origCreateUser = local.createUser.bind(local);
+  const origTopup = local.topup.bind(local);
 
   local._oracle = { pool, mode: 'oracle', hydratedAt: new Date().toISOString() };
+
+  // BUG-038: single-connection helper for multi-statement write-through mirrors
+  // (user + wallet rows must commit atomically). connExec targets the connection
+  // leased by the enclosing withConnSync call.
+  // BUG-042: mirrors are SERIALIZED. Two overlapping write-throughs (e.g. register's
+  // welcome top-up racing the next request's reservation mirror) interleaved on the
+  // single mirrorConn — connExec/commit landed on the wrong connection and the
+  // reservation 500'd. A promise-chain queue gives each mirror exclusive access.
+  let mirrorConn = null;
+  let mirrorChain = Promise.resolve();
+  const withConnSync = (fn) => {
+    const run = mirrorChain.then(async () => {
+      const c = await pool.getConnection();
+      mirrorConn = c;
+      try {
+        return await fn();
+      } finally {
+        mirrorConn = null;
+        try {
+          await c.close();
+        } catch {}
+      }
+    });
+    // Keep the chain alive regardless of individual mirror failures.
+    mirrorChain = run.then(
+      () => {},
+      () => {}
+    );
+    return run;
+  };
+  const connExec = (sql, binds) => {
+    if (!mirrorConn) throw new Error('connExec called outside withConnSync');
+    return mirrorConn.execute(sql, binds || {});
+  };
+
+  // BUG-038: identity + wallet writes are write-through too. Before this, a user who
+  // registered AFTER boot existed only in the local Map — their first reservation hit
+  // Oracle's FK (reservation.user_id -> app_user) and 500'd. The compose demo path
+  // (register -> reserve) was broken against the durable engine; CI's STORE=oracle step
+  // only passed because the adapter attached after the old suites finished.
+  // Id authority: the LOCAL store assigns ids (JWT sub, wallet ledger seq, route bindings
+  // all use them); Oracle mirrors with EXPLICIT ids (V001 uses IDENTITY BY DEFAULT ON NULL
+  // precisely so mirrored rows can carry the local id). On mirror failure the local write
+  // is undone — the caller sees the Oracle error, never a silent divergence.
+  // PERF-002: origCreateUser is async now (off-loop Argon2id) — the wrapper awaits it
+  // and stays promise-shaped; routes await the whole chain.
+  local.createUser = async (args) => {
+    const u = await origCreateUser(args);
+    const walletCreated = (args.role || 'DRIVER') === 'DRIVER';
+    return withConnSync(async () => {
+      await connExec(
+        `INSERT INTO app_user (user_id, email, password_hash, full_name, phone, role, status)
+         VALUES (:id, :email, :hash, :name, :phone, :role, 'ACTIVE')`,
+        { id: u.user_id, email: u.email, hash: u.password_hash, name: u.full_name, phone: u.phone, role: u.role }
+      );
+      if (local.wallets.has(u.user_id)) {
+        await connExec('INSERT INTO wallet_account (user_id, balance) VALUES (:id, 0)', { id: u.user_id });
+      }
+      await mirrorConn.commit();
+      return u;
+    }).catch((e) => {
+      // Undo the local write so a failed registration leaves no ghost identity.
+      local.users.delete(u.user_id);
+      if (walletCreated) local.wallets.delete(u.user_id);
+      local.audit = local.audit.filter((a) => !(a.entity_name === 'APP_USER' && a.entity_id === String(u.user_id)));
+      throw fromDriver(e);
+    });
+  };
+
+  local.topup = (uid, amount) => {
+    const wBefore = local.wallets.get(Number(uid));
+    const preBalance = wBefore ? wBefore.balance : 0;
+    const ledgerBefore = local.ledgers.length;
+    const w = origTopup(uid, amount);
+    const entry = local.ledgers[local.ledgers.length - 1];
+    return withConnSync(async () => {
+      await connExec(
+        `INSERT INTO wallet_ledger (user_id, seq_no, kind, amount, balance_after, note)
+         VALUES (:u, :seq, 'TOPUP', :amt, :bal, 'top-up')`,
+        { u: Number(uid), seq: entry.seq_no, amt: amount, bal: entry.balance_after }
+      );
+      await connExec('UPDATE wallet_account SET balance = :bal, updated_at = SYSTIMESTAMP WHERE user_id = :u', {
+        bal: entry.balance_after,
+        u: Number(uid),
+      });
+      await mirrorConn.commit();
+      return w;
+    }).catch((e) => {
+      // Undo: restore balance, drop the ledger row, filter the audit entry.
+      if (wBefore) {
+        wBefore.balance = preBalance;
+        wBefore.updated_at = new Date().toISOString();
+        local.wallets.set(Number(uid), wBefore);
+      } else local.wallets.delete(Number(uid));
+      local.ledgers.length = ledgerBefore;
+      local.audit = local.audit.filter(
+        (a) => !(a.entity_name === 'WALLET' && a.entity_id === String(uid) && a.action === 'TOPUP')
+      );
+      throw fromDriver(e);
+    });
+  };
 
   local.createReservation = async (uid, vehicleId, cpId, connNo, startAt, endAt) => {
     try {
@@ -467,6 +570,246 @@ function wrapWithOracle(local, pool) {
         };
       }
     } catch (e) {
+      throw fromDriver(e);
+    }
+  };
+
+  // BUG-038 (part 2): cancels must reach Oracle too, else a rehydrate resurrects a
+  // cancelled booking as BOOKED. Local cancel already enforces role scope + status;
+  // mirror it to reservation_pkg.cancel_reservation first, undo local on mirror failure.
+  const origCancelReservation = local.cancelReservation.bind(local);
+  local.cancelReservation = async (rid, actor, role, scopeStations) => {
+    try {
+      await withConn(async (conn) => {
+        await conn.execute('BEGIN reservation_pkg.cancel_reservation(:p_res, :p_actor); END;', {
+          p_res: Number(rid),
+          p_actor: actor ?? null,
+        });
+        await conn.commit();
+      });
+    } catch (e) {
+      throw fromDriver(e);
+    }
+    try {
+      return await origCancelReservation(rid, actor, role, scopeStations);
+    } catch (e) {
+      // Oracle won but local disagreed (e.g. clock-skewed status): trust Oracle.
+      if (e && e.code === 'CANCEL_CONFLICT') {
+        const r = local.reservations.get(Number(rid));
+        if (r) r.status = 'CANCELLED';
+        return r;
+      }
+      throw e;
+    }
+  };
+
+  // BUG-045: session STARTS are write-through too. The REST /sessions/start and OCPP
+  // StartTransaction paths ran the local store only — the durable engine never saw the
+  // session, so the first wrapped call (recordTick → charge_session_pkg.record_meter_tick)
+  // 500'd with ORA-01403 no data found. BUG-044's timing fix (listen waits for the
+  // upgrade) finally made the STORE=oracle suites attach the adapter BEFORE tests ran and
+  // exposed it — exactly the class of gap BUG-038/041 documented.
+  // Local-first on purpose: the local store owns validation including B2G-013b
+  // owner-adoption (the package only enforces the explicit-reservationId form); the
+  // package only ever sees a validated start. The package assigns the durable id; when it
+  // differs from the local seq id the read-cache is remapped so every subsequent wrapped
+  // call (transition/recordTick/bill) keys on the SAME row. Hydrate keeps the two
+  // counters in lockstep, but a failed mirror consumes an Oracle IDENTITY value while the
+  // local seq id was already handed out — the remap makes that divergence harmless.
+  const origStartSession = local.startSession.bind(local);
+  local.startSession = async (args) => {
+    const sess = await origStartSession(args);
+    const localSid = sess.session_id;
+    const cBefore = local.connectors.get(sess.connector_ref);
+    const cStatusBefore = cBefore ? cBefore.status : null;
+    const rBefore = sess.reservation_id ? local.reservations.get(Number(sess.reservation_id)) : null;
+    const rStatusBefore = rBefore ? rBefore.status : null;
+    const stateEventsLen = local.stateEvents.length;
+    const auditLen = local.audit.length;
+    const outboxLen = local.outbox.length;
+    try {
+      const oracleSid = await withConn(async (conn) => {
+        const r = await conn.execute(
+          'BEGIN charge_session_pkg.start_session(:p_user, :p_vehicle, :p_cp, :p_conn, :p_plan, :p_res, :p_idtag, :p_sid); END;',
+          {
+            p_user: sess.user_id,
+            p_vehicle: sess.vehicle_id,
+            p_cp: sess.cp_id,
+            p_conn: sess.connector_no,
+            p_plan: sess.tariff_plan_id,
+            p_res: sess.reservation_id ? Number(sess.reservation_id) : null,
+            p_idtag: sess.id_tag,
+            p_sid: BIND_OUT_NUM,
+          }
+        );
+        await conn.commit();
+        return r.outBinds.p_sid;
+      });
+      if (Number(oracleSid) !== localSid) {
+        // Remap the local read-cache to the durable id (wrapped calls key on it).
+        const remapped = { ...sess, session_id: Number(oracleSid) };
+        local.sessions.delete(localSid);
+        local.sessions.set(Number(oracleSid), remapped);
+        for (const ev of local.stateEvents) if (ev.session_id === localSid) ev.session_id = Number(oracleSid);
+        for (const a of local.audit)
+          if (a.entity_name === 'CHARGING_SESSION' && a.entity_id === String(localSid)) a.entity_id = String(oracleSid);
+        for (const e of local.outbox)
+          if (e.payload && e.payload.session_id === localSid) e.payload.session_id = Number(oracleSid);
+        return remapped;
+      }
+      return sess;
+    } catch (e) {
+      // Undo the local write so a failed durable start leaves no ghost session.
+      local.sessions.delete(localSid);
+      if (cBefore) {
+        cBefore.status = cStatusBefore;
+        cBefore.last_state_change_at = new Date().toISOString();
+      }
+      if (rBefore && rStatusBefore) rBefore.status = rStatusBefore;
+      local.stateEvents.length = stateEventsLen;
+      local.audit.length = auditLen;
+      local.outbox.length = outboxLen;
+      throw fromDriver(e);
+    }
+  };
+
+  // BUG-047: admin hardware writes are write-through too. Before this, a station/CP
+  // provisioned via POST /admin/stations, POST /admin/charge-points, or PATCH
+  // /admin/stations/:id existed only in the read-cache — the durable engine never saw
+  // the rows, so the first reservation/session on a provisioned connector 500'd with
+  // ORA-01403 (SELECT status FROM connector found nothing). Mirrored with EXPLICIT
+  // local ids (the createUser pattern); connector INSERTs are new rows, so the
+  // connector-state guard trigger (BEFORE UPDATE OF status) does not fire. Undo on
+  // mirror failure leaves no ghost station/CP/connector in the cache.
+  const origProvisionStation = local.provisionStation.bind(local);
+  local.provisionStation = async (adminId, b) => {
+    const cpsBefore = new Set([...local.cps.keys()]);
+    const connsBefore = new Set([...local.connectors.keys()]);
+    const amenitiesLen = local.amenities.length;
+    const auditLen = local.audit.length;
+    const res = origProvisionStation(adminId, b);
+    const st = res.station;
+    const newCps = [...local.cps.values()].filter((c) => !cpsBefore.has(c.cp_id));
+    const newConns = [...local.connectors.values()].filter((c) => !connsBefore.has(`${c.cp_id}:${c.connector_no}`));
+    try {
+      await withConnSync(async () => {
+        await connExec(
+          `INSERT INTO station (station_id, name, latitude, longitude, address_line, city, state, pincode, status, operator_id)
+           VALUES (:id, :name, :lat, :lng, :addr, :city, :state, :pin, 'ACTIVE', :op)`,
+          {
+            id: st.station_id,
+            name: st.name,
+            lat: st.latitude,
+            lng: st.longitude,
+            addr: st.address_line,
+            city: st.city,
+            state: st.state,
+            pin: st.pincode,
+            op: st.operator_id,
+          }
+        );
+        for (const a of local.amenities.filter((x) => x.station_id === st.station_id)) {
+          await connExec('INSERT INTO station_amenity (station_id, amenity) VALUES (:s, :a)', {
+            s: st.station_id,
+            a: a.amenity,
+          });
+        }
+        for (const cp of newCps) {
+          await connExec(
+            `INSERT INTO charge_point (cp_id, station_id, ocpp_identity, vendor, model, firmware_version, status, auth_secret)
+             VALUES (:id, :st, :oid, :v, :m, :fv, 'OFFLINE', :sec)`,
+            {
+              id: cp.cp_id,
+              st: cp.station_id,
+              oid: cp.ocpp_identity,
+              v: cp.vendor,
+              m: cp.model,
+              fv: cp.firmware_version,
+              sec: cp.auth_secret,
+            }
+          );
+        }
+        for (const cn of newConns) {
+          await connExec(
+            `INSERT INTO connector (cp_id, connector_no, standard_id, max_power_kw, status)
+             VALUES (:cp, :no, :std, :kw, 'AVAILABLE')`,
+            { cp: cn.cp_id, no: cn.connector_no, std: cn.standard_id, kw: cn.max_power_kw }
+          );
+        }
+        await mirrorConn.commit();
+      });
+      return res;
+    } catch (e) {
+      local.stations.delete(st.station_id);
+      for (const cp of newCps) {
+        local.cps.delete(cp.cp_id);
+        local.cpsByOcpp.delete(cp.ocpp_identity);
+      }
+      for (const cn of newConns) local.connectors.delete(`${cn.cp_id}:${cn.connector_no}`);
+      local.amenities.length = amenitiesLen;
+      local.audit.length = auditLen;
+      throw fromDriver(e);
+    }
+  };
+
+  const origProvisionChargePoint = local.provisionChargePoint.bind(local);
+  local.provisionChargePoint = async (stationId, b) => {
+    const connsBefore = new Set([...local.connectors.keys()]);
+    const cp = origProvisionChargePoint(stationId, b);
+    const newConns = [...local.connectors.values()].filter((c) => !connsBefore.has(`${c.cp_id}:${c.connector_no}`));
+    try {
+      await withConnSync(async () => {
+        await connExec(
+          `INSERT INTO charge_point (cp_id, station_id, ocpp_identity, vendor, model, firmware_version, status, auth_secret)
+           VALUES (:id, :st, :oid, :v, :m, :fv, 'OFFLINE', :sec)`,
+          {
+            id: cp.cp_id,
+            st: cp.station_id,
+            oid: cp.ocpp_identity,
+            v: cp.vendor,
+            m: cp.model,
+            fv: cp.firmware_version,
+            sec: cp.auth_secret,
+          }
+        );
+        for (const cn of newConns) {
+          await connExec(
+            `INSERT INTO connector (cp_id, connector_no, standard_id, max_power_kw, status)
+             VALUES (:cp, :no, :std, :kw, 'AVAILABLE')`,
+            { cp: cn.cp_id, no: cn.connector_no, std: cn.standard_id, kw: cn.max_power_kw }
+          );
+        }
+        await mirrorConn.commit();
+      });
+      return cp;
+    } catch (e) {
+      local.cps.delete(cp.cp_id);
+      local.cpsByOcpp.delete(cp.ocpp_identity);
+      for (const cn of newConns) local.connectors.delete(`${cn.cp_id}:${cn.connector_no}`);
+      throw fromDriver(e);
+    }
+  };
+
+  const origUpdateStation = local.updateStation.bind(local);
+  local.updateStation = async (id, fields) => {
+    const { station: st, prev } = origUpdateStation(id, fields);
+    try {
+      await withConnSync(async () => {
+        await connExec(`UPDATE station SET status = :status, operator_id = :op, name = :name WHERE station_id = :id`, {
+          status: st.status,
+          op: st.operator_id,
+          name: st.name,
+          id: st.station_id,
+        });
+        await mirrorConn.commit();
+      });
+      // Preserve the local method's return shape ({ station, prev }) — callers
+      // destructure { station } (BUG-047; same class as BUG-041 promise-shape).
+      return { station: st, prev };
+    } catch (e) {
+      st.status = prev.status;
+      st.operator_id = prev.operator_id;
+      st.name = prev.name;
       throw fromDriver(e);
     }
   };

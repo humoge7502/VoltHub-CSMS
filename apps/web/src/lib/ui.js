@@ -88,7 +88,7 @@ export function Toasts() {
       {items.map((t) => (
         <div
           key={t.id}
-          className="card"
+          className="card toast"
           style={{ borderColor: t.kind === 'err' ? 'var(--bad)' : 'var(--hair2)', maxWidth: 320 }}
         >
           <span className={t.kind === 'err' ? 'err' : 'okmsg'}>{t.msg}</span>

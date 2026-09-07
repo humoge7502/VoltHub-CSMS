@@ -9,3 +9,11 @@ data/
 *.log
 .DS_Store
 coverage/
+
+# AI platform: regenerable artifacts only (metrics.json + benchmarks.json receipts are committed)
+apps/ai/reports/model.pt
+apps/ai/reports/gpu-util.jsonl
+apps/ai/reports/gpu-locks/
+apps/ai/.venv/
+__pycache__/
+.pytest_cache/

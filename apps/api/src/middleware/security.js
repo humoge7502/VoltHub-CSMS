@@ -4,6 +4,10 @@
 // SEC-009: minimal CSP (no inline-script reliance in API; web layer adds its own).
 'use strict';
 const jwt = require('jsonwebtoken');
+// BUG-036: import the auth module's secret() instead of re-hardcoding the dev
+// default — the throttle previously kept its own copy of the literal, so a future
+// change to the dev secret would silently desync the two verifiers.
+const { secret: jwtSecret } = require('./auth');
 
 function securityHeaders(req, res, next) {
   res.setHeader('x-content-type-options', 'nosniff');
@@ -69,7 +73,7 @@ function throttle(req, res, next) {
   const h = req.headers.authorization || '';
   if (h.startsWith('Bearer ')) {
     try {
-      const p = jwt.verify(h.slice(7), process.env.JWT_SECRET || 'dev-only-32-byte-secret-0123456789', {
+      const p = jwt.verify(h.slice(7), jwtSecret(), {
         algorithms: ['HS256'],
       });
       role = p.role || 'DRIVER';

@@ -1,0 +1,37 @@
+{
+  "trained_at": "2026-09-07T19:11:17.883326+00:00",
+  "device": "cuda",
+  "data": {
+    "n_stations": 24,
+    "days": 28,
+    "vehicles": 2000,
+    "seed": 7,
+    "device": "cuda",
+    "total_sessions": 102700,
+    "total_kwh": 2724554.0
+  },
+  "split": {
+    "train_rows": 8064,
+    "test_rows": 3456,
+    "test_last_days": 7
+  },
+  "models": {
+    "seasonal_naive_168h": {
+      "mae": 73.81977844238281,
+      "rmse": 100.47119140625,
+      "n": 82944
+    },
+    "ridge": {
+      "mae": 63.11366653442383,
+      "rmse": 86.62718963623047,
+      "n": 82944
+    },
+    "mlp_128x64": {
+      "mae": 56.40703201293945,
+      "rmse": 77.12907409667969,
+      "n": 82944
+    }
+  },
+  "train_seconds": 3.86,
+  "beats_naive": true
+}

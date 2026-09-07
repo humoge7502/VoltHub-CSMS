@@ -5,6 +5,7 @@
 'use strict';
 const crypto = require('crypto');
 const { legalTransition } = require('@volthub/shared');
+const argon2 = require('@node-rs/argon2');
 
 function err(code, message, status) {
   const e = new Error(message);
@@ -53,21 +54,63 @@ class Mutex {
   }
 }
 
+// Password KDF policy (SECURITY.md / masterplan §15): Argon2id, 19 MiB, t=2,
+// p=1 — the OWASP-recommended baseline. New hashes are the standard PHC string
+// (`$argon2id$v=19$m=19456,t=2,p=1$…`); verifyPassword still accepts the legacy
+// `$scrypt$…` shape so hydrated durable rows (and old seeds) keep logging in.
+const ARGON2_POLICY = { memoryCost: 19456, timeCost: 2, parallelism: 1 };
+
 function hashPassword(pw) {
-  // Prod: Argon2id (19MiB,2,1) PHC in app_user.password_hash. Local: scrypt PHC-shaped.
-  const salt = crypto.randomBytes(16).toString('hex');
-  const h = crypto.scryptSync(pw, salt, 32).toString('hex');
-  return `$scrypt$${salt}$${h}`;
+  return argon2.hashSync(String(pw), ARGON2_POLICY);
 }
-function verifyPassword(pw, stored) {
-  if (!stored.startsWith('$scrypt$')) return false;
+
+// Legacy local-profile hasher (kept for verify-backward-compat only).
+function scryptHashSync(pw, salt) {
+  return crypto.scryptSync(pw, salt, 32).toString('hex');
+}
+function verifyScrypt(pw, stored) {
   const [, , salt, h] = stored.split('$');
   // Length-safe: timingSafeEqual needs equal-length buffers. A malformed/short
   // stored hash (e.g. an old '$scrypt$demo$<user>' placeholder) must read as
   // invalid, never throw ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH on login.
-  const got = crypto.scryptSync(String(pw), salt, 32).toString('hex');
+  const got = scryptHashSync(String(pw), salt);
   if (!h || got.length !== h.length) return false;
   return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(h));
+}
+
+function verifyPassword(pw, stored) {
+  if (typeof stored !== 'string') return false;
+  if (stored.startsWith('$argon2')) {
+    // Argon2 PHC verify — malformed strings must read as invalid, never throw.
+    try {
+      return argon2.verifySync(stored, String(pw));
+    } catch {
+      return false;
+    }
+  }
+  if (stored.startsWith('$scrypt$')) return verifyScrypt(pw, stored);
+  return false;
+}
+
+// PERF-002 (mission soak receipt): the SYNC verify burns ~29 ms ON the event loop —
+// a login storm freezes OCPP frame handling (100-charger burst => BootNotification
+// timeouts). The async variants run the same KDF on the sidecar's thread pool and
+// are the hot-path (HTTP login/register) entry points; the sync forms remain for
+// seed/store-internal use only.
+async function verifyPasswordAsync(pw, stored) {
+  if (typeof stored !== 'string') return false;
+  if (stored.startsWith('$argon2')) {
+    try {
+      return await argon2.verify(stored, String(pw));
+    } catch {
+      return false;
+    }
+  }
+  if (stored.startsWith('$scrypt$')) return verifyScrypt(pw, stored);
+  return false;
+}
+async function hashPasswordAsync(pw) {
+  return argon2.hash(String(pw), ARGON2_POLICY);
 }
 
 function createStore() {
@@ -134,6 +177,11 @@ function createStore() {
   };
   // Per-session reading-seq index: O(1) dedupe instead of O(n) scan (perf §11.1 item 2).
   s._seqSeen = new Map(); // session_id -> Set(seq_no)
+  // PERF-004: per-session max meter for the METER_REGRESSION check. The old per-tick
+  // `readings.filter(...).reduce(...)` is O(total readings) per tick — quadratic across
+  // a concurrent fleet (50-charger burst receipt: BootNotification timeouts from loop
+  // saturation). Seeded lazily from readings for hydrated sessions, O(1) afterwards.
+  s._maxMeter = new Map(); // session_id -> max meter_kwh
 
   // ---- lookups ----
   s.standards = [
@@ -186,13 +234,16 @@ function createStore() {
   };
 
   // ---- users/wallet ----
-  s.createUser = ({ email, password, full_name, role = 'DRIVER', phone }) => {
+  // PERF-002: async so Argon2id runs on the sidecar's thread pool — a registration
+  // storm must not block the event loop (same receipt as the login path). Await at
+  // the route layer; the Oracle mirror wrapper is already promise-shaped.
+  s.createUser = async ({ email, password, full_name, role = 'DRIVER', phone }) => {
     for (const u of s.users.values()) if (u.email === email) throw err('DUPLICATE_EMAIL', 'email taken', 409);
     const user_id = ++s.seq.user;
     const u = {
       user_id,
       email,
-      password_hash: hashPassword(password),
+      password_hash: await hashPasswordAsync(password),
       full_name,
       phone: phone || null,
       role,
@@ -303,11 +354,18 @@ function createStore() {
       return r;
     });
   };
-  s.cancelReservation = async (rid, actor, role, _scopeStations) => {
+  s.cancelReservation = async (rid, actor, role, scopeStations) => {
     return s.mutex.run('res:' + rid, async () => {
       const r = s.reservations.get(Number(rid));
       if (!r) throw err('NOT_FOUND', 'reservation not found', 404);
       if (role === 'DRIVER' && r.user_id !== actor) throw err('FORBIDDEN', 'not your booking', 403);
+      // BUG-031: operator station scope — cancelling is a station mutation, so the
+      // caller's assigned stations bound which bookings they may cancel (mirrors
+      // PATCH /sessions/:id/state + requireOwned). ADMIN/DRIVER unaffected.
+      if (role === 'OPERATOR' && Array.isArray(scopeStations)) {
+        const stationId = s.cps.get(Number(String(r.connector_ref).split(':')[0]))?.station_id;
+        if (stationId && !scopeStations.includes(stationId)) throw err('OUT_OF_SCOPE', 'station not assigned', 403);
+      }
       if (r.status !== 'BOOKED') {
         const e = new Error('CANCEL_CONFLICT');
         e.num = ORA.CANCEL_CONFLICT;
@@ -365,6 +423,25 @@ function createStore() {
           e.status = 409;
           throw e;
         }
+      } else if (c.status === 'RESERVED') {
+        // B2G-013b (mission audit): a RESERVED connector without an explicit reservationId
+        // previously converted for ANY caller — omitting the id was enough to hijack another
+        // driver's window (OCPP StartTransaction and REST /sessions/start both hit this).
+        // Rule: the caller may only adopt a BOOKED window on this connector that they own;
+        // otherwise the start is a 409 RESERVATION_MISMATCH and the window stays untouched.
+        const mine = [...s.reservations.values()].find(
+          (r) => r.connector_ref === key && r.status === 'BOOKED' && r.user_id === uid
+        );
+        if (!mine) {
+          const e = new Error(
+            'RESERVATION_MISMATCH: connector is RESERVED — pass the reservationId that owns this window'
+          );
+          e.num = ORA.RESERVATION_MISMATCH;
+          e.code = 'RESERVATION_MISMATCH';
+          e.status = 409;
+          throw e;
+        }
+        reservationId = mine.reservation_id;
       }
       const session_id = ++s.seq.sess;
       const sess = {
@@ -455,9 +532,11 @@ function createStore() {
         s._seqSeen.set(Number(sid), seen);
       }
       if (seen.has(seq)) return { deduped: true }; // idempotent replay
-      const last = s.readings
-        .filter((r) => r.session_id === Number(sid))
-        .reduce((m, r) => Math.max(m, r.meter_kwh), -1);
+      let last = s._maxMeter.get(Number(sid));
+      if (last === undefined) {
+        last = s.readings.filter((r) => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), -1);
+        s._maxMeter.set(Number(sid), last);
+      }
       if (kwh < last - 0.001) {
         const e = new Error('METER_REGRESSION');
         e.num = ORA.METER_REGRESSION;
@@ -477,6 +556,7 @@ function createStore() {
         source: 'OCPP',
       });
       seen.add(seq);
+      if (kwh > last) s._maxMeter.set(Number(sid), kwh);
       if (sess.state === 'PREPARING' && seq >= 1) sess.state = 'CHARGING';
       s.emitOutbox('METER_TICK', `tick:${sid}:${seq}`, {
         session_id: Number(sid),
@@ -501,7 +581,9 @@ function createStore() {
   s.stopSession = async (sid, reason) => {
     const sess = s.sessions.get(Number(sid));
     if (!sess) throw err('NOT_FOUND', 'session not found', 404);
-    const peak = s.readings.filter((r) => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), 0);
+    const peak = s._maxMeter.has(Number(sid))
+      ? Math.max(s._maxMeter.get(Number(sid)), 0)
+      : s.readings.filter((r) => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), 0);
     sess.end_meter_kwh = peak;
     // CHARGING->COMPLETED directly, or via SUSPENDED
     if (sess.state === 'SUSPENDED' || sess.state === 'CHARGING' || sess.state === 'PREPARING') {
@@ -705,7 +787,9 @@ function createStore() {
       name: b.name,
       latitude: Number(b.latitude),
       longitude: Number(b.longitude),
-      address_line: b.address_line || '',
+      // Oracle station.address_line is NOT NULL and treats '' as NULL — mirror the
+      // city/state defaults with a non-empty sentinel (BUG-047 mirror parity).
+      address_line: b.address_line || 'N/A',
       city: b.city || 'Chennai',
       state: b.state || 'Tamil Nadu',
       pincode: b.pincode || null,
@@ -752,12 +836,87 @@ function createStore() {
     s.auditLog(adminId, 'STATION', station_id, 'CREATE', null, { name: st.name });
     return { station: st, provisioned };
   };
+  // BUG-047: standalone CP provisioning extracted from the route into a store method so
+  // the Oracle adapter can mirror it (one-port contract, same as provisionStation).
+  // HTTP-layer validation (BUG-033: ocpp_identity/auth_secret shape) stays in the route;
+  // this method owns the mutation. Mirrors provisionStation's defaults: one TYPE2/22 kW
+  // connector unless `connectors[]` is given (GAP-002), status OFFLINE until first socket.
+  s.provisionChargePoint = (stationId, b) => {
+    const sid = Number(stationId);
+    if (!s.stations.get(sid)) {
+      const e = new Error('station');
+      e.code = 'NOT_FOUND';
+      e.status = 404;
+      throw e;
+    }
+    const n = [...s.cps.values()].filter((c) => c.station_id === sid).length + 1;
+    const ocpp_identity = b.ocpp_identity || `VH-${sid}-CP${n}`;
+    if (s.cpsByOcpp.has(ocpp_identity)) {
+      const e = new Error(ocpp_identity);
+      e.code = 'DUPLICATE_OCPP_ID';
+      e.status = 409;
+      throw e;
+    }
+    const cp_id = ++s.seq.cp;
+    const cp = {
+      cp_id,
+      station_id: sid,
+      ocpp_identity,
+      auth_secret: b.auth_secret || crypto.randomBytes(18).toString('hex'),
+      vendor: b.vendor || 'VoltHub',
+      model: b.model || 'VH-DC60',
+      firmware_version: '1.6.5',
+      status: 'OFFLINE',
+      last_boot_at: null,
+      last_seen_at: null,
+    };
+    s.cps.set(cp_id, cp);
+    s.cpsByOcpp.set(ocpp_identity, cp_id);
+    (b.connectors || [{ standard: 'TYPE2', max_power_kw: 22 }]).forEach((c, k) => {
+      const stdRow = s.standards.find((t) => t.code === c.standard) || s.standards[0];
+      s.connectors.set(`${cp_id}:${k + 1}`, {
+        cp_id,
+        connector_no: k + 1,
+        standard_id: stdRow.standard_id,
+        max_power_kw: Number(c.max_power_kw || 22),
+        status: 'AVAILABLE',
+        last_state_change_at: new Date().toISOString(),
+      });
+    });
+    return cp;
+  };
+  // BUG-047: station metadata updates (PATCH /admin/stations/:id) extracted into a store
+  // method so the adapter can mirror them. Returns { station, prev } — prev is the undo
+  // snapshot for the mirror. Route keeps HTTP validation (BUG-034 status allow-list).
+  s.updateStation = (id, fields) => {
+    const st = s.stations.get(Number(id));
+    if (!st) {
+      const e = new Error('station');
+      e.code = 'NOT_FOUND';
+      e.status = 404;
+      throw e;
+    }
+    const prev = { status: st.status, operator_id: st.operator_id, name: st.name };
+    if (fields.status) st.status = fields.status;
+    if (fields.operator_id !== undefined) st.operator_id = fields.operator_id;
+    if (fields.name) st.name = fields.name;
+    return { station: st, prev };
+  };
   return s;
 }
 
-// SEC-011: fixed dummy hash so unknown-email logins burn the same scrypt cost as
-// real ones (defeats user enumeration by response timing). The salt is fixed, so
-// the cost is identical to a real verify; this value never authenticates anyone.
+// SEC-011: fixed dummy hash so unknown-email logins burn the same Argon2id cost
+// as real ones (defeats user enumeration by response timing). Same parameters as
+// ARGON2_POLICY, so the unknown path costs exactly what a real verify costs;
+// this value never authenticates anyone.
 const DUMMY_PASSWORD_HASH = hashPassword('sec-011-timing-pad-v1:not-a-real-user');
 
-module.exports = { createStore, hashPassword, verifyPassword, DUMMY_PASSWORD_HASH, ORA };
+module.exports = {
+  createStore,
+  hashPassword,
+  hashPasswordAsync,
+  verifyPassword,
+  verifyPasswordAsync,
+  DUMMY_PASSWORD_HASH,
+  ORA,
+};

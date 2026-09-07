@@ -3,6 +3,7 @@
 // TEST-OCPP-AUTH: Authorize("X") => Invalid; TAG-<seeded> => Accepted.
 // TEST-REFRESH-FAMILY: reuse of revoked refresh burns the family.
 // TEST-SEC-COOKIE: httpOnly refresh cookie set/rotate/revoke + graceful logout (SEC-012).
+// TEST-SEC-ARGON2-1: Argon2id PHC hashes + legacy scrypt verify fallback (SEC-013).
 // Run: node apps/api/test/security.js (RATE_LIMIT_OFF=1).
 'use strict';
 process.env.RATE_LIMIT_OFF = '1';
@@ -210,6 +211,61 @@ async function main() {
     assert.equal(own.status, 201);
   });
 
+  await t('B2G-013b: starting WITHOUT reservationId on a RESERVED connector is hijack-proof', async () => {
+    const { j: disc } = await api('/stations');
+    const c = disc.stations[2].connectors.find((x) => x.status === 'AVAILABLE');
+    assert.ok(c, 'need AVAILABLE connector for no-id hijack probe');
+    const [cp, no] = c.connector_ref.split(':').map(Number);
+    const s = new Date(Date.now() + 20 * 60000).toISOString(),
+      e = new Date(Date.now() + 60 * 60000).toISOString();
+    const r1 = await api('/reservations', {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ cpId: cp, connectorNo: no, startAt: s, endAt: e }),
+    });
+    assert.equal(r1.status, 201);
+    const reg3 = await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `noid${Date.now()}@example.in`,
+        password: 'Driver@123',
+        full_name: 'No Id Hijacker',
+      }),
+    });
+    const H3 = { Authorization: `Bearer ${reg3.j.accessToken}` };
+    // hijacker omits reservationId entirely — must NOT be able to convert the victim's window
+    const hij2 = await api('/sessions/start', {
+      method: 'POST',
+      headers: H3,
+      body: JSON.stringify({ cpId: cp, connectorNo: no }),
+    });
+    assert.equal(hij2.status, 409, `no-id hijack must be 409, got ${hij2.status}`);
+    assert.match(hij2.j.error.code, /RESERVATION_MISMATCH/);
+    // the reservation must be untouched
+    assert.equal(
+      store.reservations.get(r1.j.reservation.reservation_id).status,
+      'BOOKED',
+      'victim reservation must stay BOOKED'
+    );
+    // the OWNER may still start without passing reservationId (OCPP idTag parity) — it adopts their booking
+    const own2 = await api('/sessions/start', {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ cpId: cp, connectorNo: no }),
+    });
+    assert.equal(own2.status, 201, `owner no-id start must adopt their booking, got ${own2.status}`);
+    assert.equal(
+      own2.j.session.reservation_id,
+      r1.j.reservation.reservation_id,
+      'session must reference the owner reservation'
+    );
+    assert.equal(
+      store.reservations.get(r1.j.reservation.reservation_id).status,
+      'CONVERTED',
+      'reservation must be CONVERTED after adoption'
+    );
+  });
+
   await t('SEC-010: responses carry no x-powered-by framework fingerprint', async () => {
     const r = await fetch(B + '/stations', { headers: H });
     assert.equal(r.status, 200);
@@ -223,7 +279,7 @@ async function main() {
     assert.equal(r2.headers.get('x-powered-by'), null);
   });
 
-  await t('SEC-011: unknown-email login burns scrypt — timing parity, both 401', async () => {
+  await t('SEC-011: unknown-email login burns Argon2id — timing parity, both 401', async () => {
     const attempt = async (body) => {
       const t0 = Date.now();
       const r = await api('/auth/login', { method: 'POST', body: JSON.stringify(body) });
@@ -243,8 +299,10 @@ async function main() {
     assert.equal(b.status, 401);
     assert.equal(a.code, 'BAD_CREDENTIALS');
     assert.equal(b.code, 'BAD_CREDENTIALS', 'unknown email must read as bad credentials, not user-missing');
-    // The unknown path must actually run the scrypt pad (not return instantly).
-    assert.ok(med(unknown) >= 15, `unknown-email path too fast (${med(unknown)}ms) — pad not running`);
+    // The unknown path must actually run the Argon2id pad (not return instantly).
+    // Hardware-independent floor: a real 19 MiB Argon2id verify is ≥5 ms everywhere
+    // (CI runners measured 11 ms; this host 26 ms); an instant reject is <1 ms.
+    assert.ok(med(unknown) >= 5, `unknown-email path too fast (${med(unknown)}ms) — pad not running`);
     // And it must sit inside the same band as a real (wrong-password) verify.
     assert.ok(
       Math.abs(med(known) - med(unknown)) < 120,
@@ -327,6 +385,39 @@ async function main() {
     assert.ok(windows.has('ip:198.18.0.1'), 'mixed-age window bucket must be trimmed, not deleted');
     assert.ok(!loginWindows.has('login:198.18.1.2'), 'fully-stale LOGIN bucket must also be deleted');
     assert.ok(loginWindows.has('login:198.18.1.1'), 'mixed-age LOGIN bucket must be trimmed, not deleted');
+  });
+
+  await t(
+    'TEST-SEC-ARGON2-1: new hashes are Argon2id PHC; legacy scrypt still verifies; garbage fails closed',
+    async () => {
+      const { hashPassword, verifyPassword } = require('../src/db/store');
+      // (a) fresh hashes carry the documented policy (Argon2id v=19 m=19456 t=2 p=1).
+      const h = hashPassword('Some-Strong-Pw-123');
+      assert.ok(h.startsWith('$argon2id$v=19$m=19456,t=2,p=1$'), `not Argon2id PHC: ${h.slice(0, 30)}`);
+      assert.equal(verifyPassword('Some-Strong-Pw-123', h), true);
+      assert.equal(verifyPassword('wrong', h), false);
+      // (b) legacy '$scrypt$...' rows (old seeds / pre-Argon2 durable rows) keep logging in.
+      const legacy =
+        '$scrypt$0123456789abcdef0123456789abcdef$f4cd3950d9a994b243d9a5d2167caae60674cea905c20600cfda28c48fa18254';
+      assert.equal(verifyPassword('Admin@123', legacy), true, 'legacy scrypt verify must keep working');
+      assert.equal(verifyPassword('wrong', legacy), false);
+      // (c) fail closed: malformed/garbage/non-string stored hashes never throw, never verify.
+      assert.equal(verifyPassword('x', 'not-a-hash'), false);
+      assert.equal(verifyPassword('x', null), false);
+      assert.equal(verifyPassword('x', '$argon2id$v=19$m=1,t=1,p=1$bad$bad'), false);
+    }
+  );
+
+  await t('TEST-SEC-LOGOUT-1: logout with an unknown refresh token leaks nothing (BUG-035)', async () => {
+    const lo = await fetch(B + '/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken: 'deadbeef'.repeat(8) }),
+    });
+    assert.equal(lo.status, 200, 'logout must answer 200 even for an unknown token');
+    const j = await lo.json();
+    assert.equal(j.ok, true);
+    assert.equal(j.error, undefined, 'logout must never reveal token validity');
   });
 
   console.log(`\nSecurity tests: ${pass} passed`);

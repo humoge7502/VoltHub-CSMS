@@ -118,19 +118,26 @@ function mountOcpp(wss, store, log) {
     log.info({ identity }, 'ocpp connected');
 
     ws.on('message', async (raw) => {
-      // rate limit 10/s per CP
+      // The rate limit counts RAW frames (a malformed-frame flood must not bypass
+      // the limiter by being unparseable), but the violation CALLERROR carries the
+      // offending message's uid whenever the frame parses (PROTO-002: answering
+      // uid '0' to a parsed CALL is not a valid OCPP reply).
       const now = Date.now();
       const arr = (lastMsg.get(identity) || []).filter((t) => now - t < 1000);
       arr.push(now);
       lastMsg.set(identity, arr);
-      if (arr.length > 10) {
-        ws.send(callError('0', 'FormationViolation', 'rate limit 10 msg/s per charge point'));
-        return;
-      }
-      let msg;
+      const overLimit = arr.length > 10;
+      let msg = null;
       try {
         msg = parse(raw);
       } catch {
+        msg = null;
+      }
+      if (overLimit) {
+        ws.send(callError(msg ? msg.uid : '0', 'FormationViolation', 'rate limit 10 msg/s per charge point'));
+        return;
+      }
+      if (!msg) {
         ws.send(callError('0', 'FormationViolation'));
         return;
       }
@@ -209,15 +216,26 @@ function mountOcpp(wss, store, log) {
               break;
             }
             const uid = Number(tagUid[1]);
-            const sess = await store.startSession({
-              uid,
-              vehicleId: null,
-              cpId,
-              connNo: p.connectorId,
-              planId: store.defaultPlanId ? store.defaultPlanId() : 2,
-              reservationId: null,
-              idTag: p.idTag,
-            });
+            const sess = await store
+              .startSession({
+                uid,
+                vehicleId: null,
+                cpId,
+                connNo: p.connectorId,
+                planId: store.defaultPlanId ? store.defaultPlanId() : 2,
+                reservationId: null,
+                idTag: p.idTag,
+              })
+              .catch((e) => {
+                // B2G-013b: a foreign idTag on a RESERVED connector must read as Invalid
+                // (Authorize/Start semantics), not a CSMS InternalError.
+                if (e && e.code === 'RESERVATION_MISMATCH') {
+                  ws.send(result(msg.uid, { transactionId: 0, idTagInfo: { status: 'Invalid' } }));
+                  return null;
+                }
+                throw e;
+              });
+            if (!sess) break;
             seqByTx.set(sess.session_id, 0);
             ws.send(result(msg.uid, { transactionId: sess.session_id, idTagInfo: { status: 'Accepted' } }));
             break;
@@ -265,7 +283,11 @@ function mountOcpp(wss, store, log) {
                 const stopKwh = Number(p.meterStop);
                 sess.end_meter_kwh = Number.isFinite(stopKwh) ? stopKwh / 1000 : sess.end_meter_kwh;
                 seqByTx.delete(Number(p.transactionId));
-                await store.transition(p.transactionId, 'COMPLETED', 'OCPP_STOP');
+                // PROTO-003: a CP may stop a transaction that never delivered a tick
+                // (plug-in then stop). PREPARING ends as CANCELLED — not an
+                // ILLEGAL_TRANSITION InternalError.
+                const to = sess.state === 'PREPARING' ? 'CANCELLED' : 'COMPLETED';
+                await store.transition(p.transactionId, to, 'OCPP_STOP');
               }
             }
             ws.send(result(msg.uid, { idTagInfo: { status: 'Accepted' } }));
@@ -277,6 +299,12 @@ function mountOcpp(wss, store, log) {
       } catch (e) {
         ws.send(callError(msg.uid, 'InternalError', e.message));
       }
+    });
+    ws.on('error', (err) => {
+      // HARD-001: oversized frames (maxPayload 1009) and socket faults emit 'error'
+      // before 'close'. Without this handler an unhandled 'error' would crash the
+      // whole API process on one bad charge point. Cleanup is the close handler's job.
+      log.warn({ identity, err: err.message }, 'ocpp socket error');
     });
     ws.on('close', () => {
       // BUG-021: only the socket that OWNS the registry slot may deregister it.

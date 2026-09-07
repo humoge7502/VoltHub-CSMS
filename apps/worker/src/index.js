@@ -11,23 +11,24 @@ const API = process.env.API_BASE || 'http://localhost:4000/api/v1';
 const TOKEN = process.env.INTERNAL_TOKEN || 'dev-internal';
 const OUT = path.join(__dirname, '..', '..', '..', 'data', 'timescale-mirror.jsonl');
 
-// BUG-015 fix: dedupe set lives in memory (seeded once), not rebuilt by re-reading
-// the whole JSONL mirror every 2 s (was O(total ticks) per poll).
-let seenCache = null;
-function loadSeen() {
-  if (seenCache) return seenCache;
-  seenCache = new Set();
+// BUG-015 fix: dedupe set lives in memory (seeded once per mirror file), not rebuilt by
+// re-reading the whole JSONL mirror every 2 s (was O(total ticks) per poll).
+const seenCache = new Map(); // mirror file -> Set(dedupe_key)
+function loadSeen(file = OUT) {
+  if (seenCache.has(file)) return seenCache.get(file);
+  const set = new Set();
   try {
-    fs.readFileSync(OUT, 'utf8')
+    fs.readFileSync(file, 'utf8')
       .split('\n')
       .filter(Boolean)
       .forEach((l) => {
         try {
-          seenCache.add(JSON.parse(l).dedupe_key);
+          set.add(JSON.parse(l).dedupe_key);
         } catch {}
       });
   } catch {}
-  return seenCache;
+  seenCache.set(file, set);
+  return set;
 }
 
 // BUG-022: every worker HTTP call is bounded — a hung API must not freeze the
@@ -37,30 +38,34 @@ function apiFetch(url, opts = {}) {
   return fetch(url, { ...opts, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
 }
 
-async function relayOnce() {
+// opts.fetchImpl / opts.outFile are test seams (RESIL: chaos tests inject failures
+// and a temp mirror file without touching the real data/ path or global fetch).
+async function relayOnce(opts = {}) {
+  const doFetch = opts.fetchImpl || apiFetch;
+  const outFile = opts.outFile || OUT;
   // Prod path (TS_HOST set): batched COPY into hypertables; ack only after COMMIT.
   if (process.env.TS_HOST) {
     const { relayToTimescale, syncStationMap } = require('./relay-timescale');
     // Masterplan §26.5: keep Timescale station_map in step with Oracle-owned station
     // metadata (cheap full upsert; powers v_tick_*_enriched + Grafana). Failures log
     // and back off with the loop — they must not stall event relay.
-    await syncStationMap(API, TOKEN).catch((e) => {
+    await syncStationMap(API, TOKEN, doFetch).catch((e) => {
       console.error('[worker] station-map sync:', e.message);
     });
-    return relayToTimescale(API, TOKEN);
+    return relayToTimescale(API, TOKEN, doFetch);
   }
-  const r = await apiFetch(`${API}/internal/outbox`, { headers: { 'x-internal': TOKEN } });
+  const r = await doFetch(`${API}/internal/outbox`, { headers: { 'x-internal': TOKEN } });
   if (!r.ok) throw new Error(`outbox poll ${r.status}`);
   const { events } = await r.json();
   if (!events.length) return { relayed: 0 };
   // prod: INSERT into meter_tick / connector_state_event with ON CONFLICT DO NOTHING (relay-timescale.js).
   // local: append to mirror file (idempotent on dedupe_key).
-  const seen = loadSeen();
+  const seen = loadSeen(outFile);
   const fresh = events.filter((e) => !seen.has(e.dedupe_key));
   if (fresh.length) {
-    fs.mkdirSync(path.dirname(OUT), { recursive: true });
+    fs.mkdirSync(path.dirname(outFile), { recursive: true });
     fs.appendFileSync(
-      OUT,
+      outFile,
       fresh
         .map((e) =>
           JSON.stringify({
@@ -74,7 +79,7 @@ async function relayOnce() {
     );
     fresh.forEach((e) => seen.add(e.dedupe_key));
   }
-  const ack = await apiFetch(`${API}/internal/outbox/ack`, {
+  const ack = await doFetch(`${API}/internal/outbox/ack`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-internal': TOKEN },
     body: JSON.stringify({ ids: events.map((e) => e.event_id) }),
@@ -127,6 +132,6 @@ module.exports = {
   sweepOnce,
   _loadSeen: loadSeen,
   _resetSeen: () => {
-    seenCache = null;
+    seenCache.clear();
   },
 };

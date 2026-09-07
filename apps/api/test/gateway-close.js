@@ -212,7 +212,91 @@ async function main() {
     console.log('  close 3 - CSMS restart recovers the tick cursor; no meter data swallowed');
     ws4.close();
 
-    console.log('\nOCPP gateway-close tests: 3 passed');
+    // --- t4 (HARD-001): oversized frames must be rejected at the socket, not parsed ---
+    // ws's default maxPayload is 100 MiB; the OCPP rate limit is 10 msg/s, so a malicious
+    // CP could otherwise push ~1 GB/s of parse load per connection. OCPP 1.6 messages are
+    // tiny (<64 KB) — the gateway now caps frames at 256 KB and terminates on violation.
+    const wsBig = await connect();
+    wsBig.on('error', () => {}); // abnormal termination (1009) surfaces as a client 'error' first
+    const bigClosed = new Promise((res) => wsBig.on('close', (code) => res(code)));
+    await sleep(150);
+    wsBig.send(JSON.stringify([2, 'big-1', 'Heartbeat', { pad: 'x'.repeat(300 * 1024) }]));
+    const closeCode = await Promise.race([bigClosed, sleep(2500).then(() => null)]);
+    assert.strictEqual(closeCode, 1009, `oversized frame must close 1009, got ${closeCode}`);
+    await sleep(300); // server-side error→close→cleanup settles after the client sees 1009
+    assert.strictEqual(registry.get(identity), undefined, 'oversized-frame socket must be deregistered');
+    assert.strictEqual(cp.status, 'OFFLINE', 'oversized-frame close must mark the CP OFFLINE');
+    console.log('  close 4 - oversized frame (>256KB) terminates the socket with 1009');
+
+    // --- t5 (PROTO-002): the 11 msg/s violation answers with the OFFENDING message's uid ---
+    const ws5 = await connect();
+    await sleep(150);
+    const replies = [];
+    ws5.on('message', (raw) => {
+      try {
+        replies.push(JSON.parse(String(raw)));
+      } catch {}
+    });
+    const uids = Array.from({ length: 12 }, (_, i) => `rl-${i}`);
+    for (const uid of uids) ws5.send(JSON.stringify([2, uid, 'Heartbeat', {}]));
+    await sleep(600);
+    const violation = replies.find((m) => Array.isArray(m) && m[0] === 4);
+    assert.ok(violation, 'the >10 msg/s call must get a CALLERROR');
+    assert.strictEqual(violation[2], 'FormationViolation');
+    assert.ok(
+      uids.includes(violation[1]),
+      `CALLERROR must carry the offending uid (got '${violation[1]}') — '0' is not a valid answer to a parsed CALL`
+    );
+    console.log('  close 5 - rate-limit CALLERROR carries the offending message uid');
+    ws5.close();
+    await sleep(300);
+
+    // --- t6 (PROTO-003): StopTransaction on a never-charged (PREPARING) session is graceful ---
+    // A CP that plugs in and stops without a single MeterValues previously drove the gateway
+    // into ILLEGAL_TRANSITION → CALLERROR InternalError. The spec-shaped answer is a normal
+    // CALLRESULT and the session ends CANCELLED.
+    const ws6 = await connect();
+    await sleep(1100); // the t5 heartbeat burst must age out of the 10 msg/s window first
+    // t3 left sid3 open (connector OCCUPIED) — close it so the OCPP start below is bookable.
+    const t3stop = await api(`/sessions/${sid3}/remote-stop`, { method: 'POST', headers: H });
+    assert.equal(t3stop.status, 200, 't3 session remote-stop must be 200');
+    await sleep(200);
+    const stopReplies = [];
+    ws6.on('message', (raw) => {
+      try {
+        stopReplies.push(JSON.parse(String(raw)));
+      } catch {}
+    });
+    ws6.send(
+      JSON.stringify([
+        2,
+        'st-1',
+        'StartTransaction',
+        { connectorId: connNo, idTag: `TAG-${reg.j.user.user_id}`, meterStart: 0, timestamp: new Date().toISOString() },
+      ])
+    );
+    await sleep(200);
+    const stReply = stopReplies.find((m) => Array.isArray(m) && m[0] === 3 && m[1] === 'st-1');
+    assert.ok(stReply, 'StartTransaction must get a CALLRESULT');
+    assert.strictEqual(stReply[2].idTagInfo.status, 'Accepted', 'known tag must be Accepted');
+    const newSid = stReply[2].transactionId;
+    assert.strictEqual(store.sessions.get(newSid).state, 'PREPARING');
+    ws6.send(
+      JSON.stringify([
+        2,
+        'stop-1',
+        'StopTransaction',
+        { transactionId: newSid, meterStop: 0, timestamp: new Date().toISOString() },
+      ])
+    );
+    await sleep(200);
+    const stopReply = stopReplies.find((m) => Array.isArray(m) && m[0] === 3 && m[1] === 'stop-1');
+    assert.ok(stopReply, 'StopTransaction must get a CALLRESULT (was: InternalError ILLEGAL_TRANSITION)');
+    assert.strictEqual(store.sessions.get(newSid).state, 'CANCELLED', 'never-charged session must end CANCELLED');
+    console.log('  close 6 - StopTransaction on PREPARING ends CANCELLED with a normal CALLRESULT');
+    ws6.close();
+
+    console.log('\nOCPP gateway-close tests: 6 passed');
   } finally {
     server.close();
   }

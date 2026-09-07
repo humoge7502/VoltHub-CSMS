@@ -1,7 +1,6 @@
 // Extended modules: tariffs-public, reviews-read, notifications, vehicle-default,
 // operator session control, admin station hardware CRUD. Mounted at /api/v1.
 'use strict';
-const crypto = require('crypto');
 const express = require('express');
 const spec = require('./docs');
 const { authRequired, roles } = require('./middleware/auth');
@@ -56,6 +55,9 @@ module.exports = function extended(store) {
   );
 
   // active sessions per station (O1 active table) — SEC-001: auth required (per-driver presence data).
+  // BUG-037: honor the documented contract — drivers see only their OWN active
+  // sessions here, operators only their assigned stations (ADMIN all). The old
+  // handler returned every session with user_id/id_tag to any authenticated caller.
   r.get(
     '/stations/:id/sessions/active',
     authRequired,
@@ -64,11 +66,13 @@ module.exports = function extended(store) {
       const cpIds = new Set(
         [...store.cps.values()].filter((c) => String(c.station_id) === sid).map((c) => String(c.cp_id))
       );
-      res.json({
-        sessions: [...store.sessions.values()].filter(
-          (s) => cpIds.has(s.connector_ref.split(':')[0]) && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(s.state)
-        ),
-      });
+      let list = [...store.sessions.values()].filter(
+        (s) => cpIds.has(s.connector_ref.split(':')[0]) && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(s.state)
+      );
+      if (req.user.role === 'DRIVER') list = list.filter((s) => s.user_id === req.user.id);
+      if (req.user.role === 'OPERATOR' && !(req.user.stationScope || []).includes(Number(sid)))
+        return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      res.json({ sessions: list });
     })
   );
 
@@ -160,7 +164,9 @@ module.exports = function extended(store) {
     roles('ADMIN'),
     safe(async (req, res) => {
       try {
-        const { station, provisioned } = store.provisionStation(req.user.id, req.body);
+        // Await is REQUIRED: the Oracle mirror makes provisionStation promise-shaped
+        // (BUG-047 — the same BUG-041 class; an un-awaited call publishes a promise).
+        const { station, provisioned } = await store.provisionStation(req.user.id, req.body);
         // Return secrets once at provision time (operator configures the physical charger).
         res.status(201).json({ station, provisioned });
       } catch (e) {
@@ -173,11 +179,23 @@ module.exports = function extended(store) {
     authRequired,
     roles('ADMIN'),
     safe(async (req, res) => {
-      const s = store.stations.get(Number(req.params.id));
-      if (!s) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'station' } });
-      if (req.body.status) s.status = req.body.status;
-      if (req.body.operator_id !== undefined) s.operator_id = req.body.operator_id;
-      if (req.body.name) s.name = req.body.name;
+      if (!store.stations.get(Number(req.params.id)))
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'station' } });
+      // BUG-034: mirror Oracle's station.status CHECK (ACTIVE/INACTIVE) — the web
+      // console flips ACTIVE<->INACTIVE, so an arbitrary string must not be writable
+      // (the local store would otherwise accept values the schema rejects).
+      if (req.body.status && !['ACTIVE', 'INACTIVE'].includes(req.body.status))
+        return res
+          .status(422)
+          .json({ error: { code: 'INVALID_STATUS', message: 'station status must be ACTIVE or INACTIVE' } });
+      // BUG-047: station metadata updates go through the store method so the Oracle
+      // adapter mirrors them (PATCH on a provisioned/seed station must be durable).
+      // Await required — the mirror wrapper is promise-shaped (BUG-041 class).
+      const { station: s } = await store.updateStation(Number(req.params.id), {
+        status: req.body.status,
+        operator_id: req.body.operator_id,
+        name: req.body.name,
+      });
       store.auditLog(req.user.id, 'STATION', s.station_id, 'UPDATE', null, { status: s.status });
       res.json({ station: s });
     })
@@ -190,29 +208,194 @@ module.exports = function extended(store) {
       const b = req.body;
       if (!store.stations.get(Number(b.station_id)))
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'station' } });
-      const n = [...store.cps.values()].filter((c) => c.station_id === Number(b.station_id)).length + 1;
-      const ocpp_identity = b.ocpp_identity || `VH-${b.station_id}-CP${n}`;
-      if (store.cpsByOcpp.has(ocpp_identity))
-        return res.status(409).json({ error: { code: 'DUPLICATE_OCPP_ID', message: ocpp_identity } });
-      const cp_id = ++store.seq.cp;
-      const cp = {
-        cp_id,
-        station_id: Number(b.station_id),
-        ocpp_identity,
-        auth_secret: b.auth_secret || crypto.randomBytes(18).toString('hex'),
-        vendor: b.vendor || 'VoltHub',
-        model: b.model || 'VH-DC60',
-        firmware_version: '1.6.5',
-        // Provisioned ≠ connected: the gateway flips this to ONLINE on the first
-        // OCPP socket (same contract as provisionStation).
-        status: 'OFFLINE',
-        last_boot_at: null,
-        last_seen_at: null,
-      };
-      store.cps.set(cp_id, cp);
-      store.cpsByOcpp.set(ocpp_identity, cp_id);
-      store.auditLog(req.user.id, 'CHARGE_POINT', cp_id, 'PROVISION', null, { ocpp_identity });
-      res.status(201).json({ charge_point: { ...cp }, ws_url: `/ocpp/${ocpp_identity}` });
+      // BUG-033: validate admin-supplied hardware fields before any write — a bad
+      // ocpp_identity would corrupt the gateway's URL routing (it is embedded in
+      // /ocpp/:identity), and a weak auth_secret undermines OCPP Security Profile 1
+      // basic auth. Generated values (random hex / defaults) always pass.
+      if (b.ocpp_identity != null) {
+        const id = String(b.ocpp_identity);
+        if (!id || id.length > 64 || !/^[A-Za-z0-9._-]+$/.test(id))
+          return res.status(422).json({
+            error: { code: 'INVALID_OCPP_ID', message: 'ocpp_identity must be 1..64 chars of [A-Za-z0-9._-]' },
+          });
+      }
+      if (b.auth_secret != null && (typeof b.auth_secret !== 'string' || b.auth_secret.length < 16))
+        return res
+          .status(422)
+          .json({ error: { code: 'WEAK_SECRET', message: 'auth_secret must be a string of >= 16 chars' } });
+      // BUG-047: standalone CP provisioning goes through the store method so the Oracle
+      // adapter mirrors it (a provisioned CP's connectors must exist in the durable
+      // engine or the first reservation on them 500s). Validation lives here; the store
+      // method owns the mutation + GAP-002's one-TYPE2/22kW default connector.
+      // Await required — the mirror wrapper is promise-shaped (BUG-041 class).
+      const cp = await store.provisionChargePoint(Number(b.station_id), b);
+      store.auditLog(req.user.id, 'CHARGE_POINT', cp.cp_id, 'PROVISION', null, { ocpp_identity: cp.ocpp_identity });
+      res.status(201).json({ charge_point: { ...cp }, ws_url: `/ocpp/${cp.ocpp_identity}` });
+    })
+  );
+
+  // ---- AI advisory surface (ADR-0008) ----
+  // Guardrails, enforced HERE (never inside the sidecar): OPERATOR/ADMIN only,
+  // operator station-scope checked before any AI call, and the AI is strictly
+  // advisory — no endpoint here can mutate charging, billing or connector state.
+  // The sidecar is internal-only; this proxy attaches the shared x-internal token
+  // and degrades to 503 AI_UNAVAILABLE (never a 500, never blocking the money path).
+  const AI = {
+    // Read per call (not at mount) so tests can point AI_URL at a stub, then at a
+    // dead port, within one process.
+    get url() {
+      return process.env.AI_URL || 'http://127.0.0.1:8100';
+    },
+    get token() {
+      return process.env.AI_TOKEN || 'dev-internal';
+    },
+    get timeoutMs() {
+      return Number(process.env.AI_TIMEOUT_MS || 3000);
+    },
+  };
+  async function aiPost(path, body) {
+    const res = await fetch(`${AI.url}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-internal': AI.token },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(AI.timeoutMs),
+    });
+    if (!res.ok) {
+      const e = new Error(`ai ${path} ${res.status}`);
+      e.code = 'AI_UPSTREAM';
+      e.status = 502;
+      throw e;
+    }
+    return res.json();
+  }
+  function aiScope(req, res, sid) {
+    if (req.user.role === 'OPERATOR' && !(req.user.stationScope || []).includes(Number(sid))) {
+      res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      return false;
+    }
+    return true;
+  }
+  function aiDown(res, e, path) {
+    if (e && e.code === 'AI_UPSTREAM') {
+      return res.status(502).json({ error: { code: 'AI_UNAVAILABLE', message: `AI sidecar answered ${e.message}` } });
+    }
+    return res.status(503).json({ error: { code: 'AI_UNAVAILABLE', message: `AI sidecar unreachable (${path})` } });
+  }
+
+  r.get(
+    '/ai/forecast',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const sid = Number(req.query.stationId);
+      if (!store.stations.has(sid)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
+      }
+      if (!aiScope(req, res, sid)) return;
+      const hours = Math.min(Math.max(Number(req.query.hours) || 24, 1), 48);
+      // Station-relative history: recent hourly kWh per connector aggregated to the
+      // station (last 14 days of local-store telemetry; the sidecar needs >= 168h).
+      const cpIds = [...store.cps.values()].filter((c) => c.station_id === sid).map((c) => c.cp_id);
+      // connector values carry cp_id/connector_no — the ref string is the map key
+      // (store._ref), not a field; deriving it here instead avoids undefined.split.
+      const refs = new Set(
+        [...store.connectors.values()]
+          .filter((c) => cpIds.includes(c.cp_id))
+          .map((c) => store._ref(c.cp_id, c.connector_no))
+      );
+      const sessByHour = new Map();
+      for (const s of store.sessions.values()) {
+        if (!refs.has(s.connector_ref)) continue;
+        const h = new Date(s.started_at);
+        h.setUTCMinutes(0, 0, 0);
+        sessByHour.set(h.toISOString().slice(0, 13), (sessByHour.get(h.toISOString().slice(0, 13)) || 0) + 1);
+      }
+      const history = [...sessByHour.entries()].sort(([a], [b2]) => (a < b2 ? -1 : 1)).map(([, v]) => v);
+      try {
+        // Sidecar contract: history is keyed by station id (it forecasts per station).
+        const j = await aiPost('/v1/forecast', { station_ids: [sid], hours, history: { [String(sid)]: history } });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_FORECAST', null, { hours });
+        res.json({ ...j, station_id: sid });
+      } catch (e) {
+        aiDown(res, e, '/v1/forecast');
+      }
+    })
+  );
+
+  r.get(
+    '/ai/anomalies',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const sid = Number(req.query.stationId);
+      if (!store.stations.has(sid)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
+      }
+      if (!aiScope(req, res, sid)) return;
+      const cpIds = new Set([...store.cps.values()].filter((c) => c.station_id === sid).map((c) => c.cp_id));
+      const sessIds = new Set(
+        [...store.sessions.values()]
+          .filter((s) => cpIds.has(Number(s.connector_ref.split(':')[0])))
+          .map((s) => s.session_id)
+      );
+      const ticks = store.readings
+        .filter((r2) => sessIds.has(r2.session_id))
+        .slice(-2000)
+        .map((r2) => ({ session_id: r2.session_id, ts: r2.taken_at, meter_kwh: r2.meter_kwh, power_kw: r2.power_kw }));
+      if (!ticks.length) {
+        return res.json({ advisory: true, checked: 0, flagged: [], method: 'median/MAD robust z-score' });
+      }
+      try {
+        const j = await aiPost('/v1/anomalies', { ticks });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_ANOMALY_SCAN', null, { checked: ticks.length });
+        res.json({ ...j, station_id: sid });
+      } catch (e) {
+        aiDown(res, e, '/v1/anomalies');
+      }
+    })
+  );
+
+  r.post(
+    '/ai/optimize',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const b = req.body || {};
+      const sid = Number(b.stationId);
+      if (!store.stations.has(sid)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
+      }
+      if (!aiScope(req, res, sid)) return;
+      const vehicles = Array.isArray(b.vehicles) ? b.vehicles : [];
+      if (!vehicles.length) {
+        return res.status(422).json({ error: { code: 'INVALID_VEHICLES', message: 'vehicles[] required' } });
+      }
+      // Hard electrical input: the station's installed connector capacity bounds the LP.
+      const cap = [...store.connectors.values()]
+        .filter((c) => {
+          const cp = store.cps.get(c.cp_id);
+          return cp && cp.station_id === sid;
+        })
+        .reduce((m, c) => m + Number(c.max_power_kw || 22), 0);
+      try {
+        const j = await aiPost('/v1/optimize', {
+          station_id: sid,
+          window_hours: Math.min(Math.max(Number(b.windowHours) || 24, 1), 72),
+          station_power_cap_kw: cap,
+          price_per_kwh: Array.isArray(b.pricePerKwh) && b.pricePerKwh.length ? b.pricePerKwh : [8.5],
+          vehicles: vehicles.slice(0, 200).map((v) => ({
+            id: String(v.id),
+            arrive: Number(v.arriveHour) || 0,
+            deadline: Number(v.deadlineHour) || 24,
+            energy_kwh: Number(v.energyKwh),
+            max_kw: Number(v.maxKw) || 22,
+          })),
+        });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_OPTIMIZE', null, { vehicles: vehicles.length });
+        res.json({ ...j, station_id: sid });
+      } catch (e) {
+        aiDown(res, e, '/v1/optimize');
+      }
     })
   );
 
