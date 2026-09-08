@@ -4,6 +4,40 @@ Evidence discipline: **EXECUTED** (ran in this repo's environment) vs
 **STRONGLY INFERRED** (CI config verified line-by-line; execution on runners)
 vs **PENDING** (blocked here; exact command given). No claim without a receipt.
 
+## BUG-048 — interleaved undo truncation sparse-hole crash (EXECUTED, 2026-09-08)
+
+Observed live on the running compose stack: the worker's acks 500'd forever and
+outbox lag sat stuck — `/internal/outbox/ack` crashed with `Cannot read
+properties of undefined (reading 'event_id')` because `outbox.find(...)` visited
+a sparse hole. Root cause: the Oracle adapter's undo paths rolled back appended
+rows with `arr.length = savedLen`, which is only safe when failures never
+interleave. With two mirrors failing around a shared snapshot, the second undo
+GROWS the array back to its own later snapshot, leaving holes.
+
+- **Fix (red→green):** `db/oracle.js` now exports `truncateTo(arr, savedLen)` —
+  a shrink-only clamp (`if (arr.length > savedLen) arr.length = savedLen`) that
+  never resurrects a hole and keeps rows appended by other writers after the
+  snapshot (correct at-least-once behaviour for the outbox). All rollback sites
+  use it: topup ledger rollback, `startSession` undo (stateEvents, audit AND the
+  outbox — the last was still raw `arr.length =` when the round started),
+  `provisionStation` undo (amenities, audit). The regression test drives the
+  REAL exported helper through two interleaved failing mirrors and asserts zero
+  sparse holes — verified red against the pre-fix `arr.length = savedLen`
+  assignment and green against `truncateTo`.
+- **BUG-048b:** `/internal/outbox/ack` pinned as 200 + idempotent for unknown
+  ids, replayed ids and an empty batch (at-least-once delivery contract).
+- **Full gate (EXECUTED):** lint clean · prettier clean · `npm audit` 0 findings
+  on both lockfiles · `next build` 17 routes. `npm test` green — relay **7** ·
+  api **31** (incl. the two new BUG-048 regressions) · sim 2 · security **17** ·
+  xlayer 4 · ocpp-remote 2 · gateway-close 6 · ai 6 · invariants 11 local ·
+  drift `spec=52 routes~56` OK · race 2/2.
+- **DB-backed gate (EXECUTED — fresh Oracle 23ai, migrate + seed applied, the
+  CI path):** `STORE=oracle` contract suite **31/31** and race **2/2** against a
+  live Oracle; invariants runner in oracle mode **11/11 real SQL, 0 rows**;
+  Timescale cagg refresh smoke OK (tick_1m/tick_1h/state_1m + enriched views).
+  The running demo compose stack (volthub-oracle/timescale/api/worker/web) was
+  left untouched — the fresh gate DB was a throwaway container, removed after.
+
 ## DB-backed gate, run locally for the FIRST time (2026-09-07) — BUG-045/046/047 + real-SQL invariants + e2e — receipts
 
 Environment: Docker 29.5.3 · Oracle 23ai free (gvenzl/oracle-free:23-slim, fresh volume, migrate+seed applied) · TimescaleDB 2.17.2-pg16 · Node v20.20.2. Every suite below ran against the LIVE engines, not the local store.
