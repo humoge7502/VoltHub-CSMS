@@ -30,6 +30,6 @@ keywords:
   - race-testing
   - ci-cd
 license: MIT
-commit: 2591ff2831ae7fb57fae3ede05c00cf1d0c35d36
-version: v1.5.0
-date-released: 2026-09-07
+commit: ff80543610ee6b62e21cd6d648b88b50ece5de1a
+version: v1.5.1
+date-released: 2026-09-08
