@@ -4,6 +4,31 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **BUG-048 (durable engine, latent crash): interleaved Oracle mirror failures
+  could GROW an undo array back and crash the ack route.** The write-through
+  adapter's undo paths rolled back appended rows with `arr.length = savedLen`;
+  if two mirrors failed around a shared snapshot (A appends 2 → B captures → A
+  fails and truncates to its snapshot → B fails and sets the length back to its
+  own later snapshot), the array was left with sparse holes. Every later
+  `outbox.find(...)` visited `undefined` and `/internal/outbox/ack` 500'd
+  forever — observed live on the compose stack (worker acks failing, outbox lag
+  stuck). All rollback sites now use `truncateTo`, which only ever shrinks
+  (clamps to the saved length, never resurrects a hole; rows appended by other
+  writers after the snapshot are kept — the correct at-least-once behaviour).
+  Regression: `apps/api/test/run.js` BUG-048 drives two interleaved failing
+  mirrors through the REAL exported `truncateTo` and asserts zero sparse holes
+  (red against the pre-fix assignment), plus BUG-048b pins `/internal/outbox/ack`
+  as 200 + idempotent for unknown/replayed/empty id batches.
+
+### Added
+
+- **compose forwards `RATE_LIMIT_OFF`** so DB-backed k6 load runs
+  (`bench/README.md` experiments 1/2/5) can disable the 60 req/min throttle
+  without editing compose (the middleware toggle already existed; the env was
+  not plumbed through the `api` service).
+
 ## [1.5.0] — 2026-09-07
 
 ### Added

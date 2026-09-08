@@ -609,6 +609,63 @@ async function main() {
     assert.equal(norm.status, 409);
   });
 
+  await t('BUG-048: undo truncation never grows an array back (no sparse holes)', async () => {
+    // Root cause: the Oracle adapter's undo paths did `arr.length = savedLen`.
+    // Interleaving: A captures len 10 → A appends 2 outbox rows (len 12) → B captures
+    // len 12 → A's mirror FAILS and truncates to 10 → B's mirror fails and truncates
+    // to 12 — GROWING the array with sparse holes. Every later `outbox.find(...)`
+    // visits `undefined` and crashed the internal /internal/outbox/ack route with
+    // `Cannot read properties of undefined (reading 'event_id')` (observed live on
+    // the compose stack: worker acks 500'd forever, outbox lag stuck at 26).
+    // The fix (truncateTo) only ever shrinks. This test drives the store directly:
+    // simulate two interleaved failed mirrors around a shared snapshot of outboxLen.
+    const s = store;
+    const before = s.outbox.length;
+    const snapA = s.outbox.length; // A captures 10
+    s.emitOutbox('test.kind', `t48a-${Date.now()}`, { session_id: 1 }); // A appends → 12
+    const snapB = s.outbox.length; // B captures 12
+    s.emitOutbox('test.kind', `t48b-${Date.now()}`, { session_id: 2 }); // B appends → 13
+    // A fails first, truncating to ITS snapshot (10). B then fails and — pre-fix —
+    // would set length back to 12, growing past the true tail (10 + A's 2 rows were
+    // rolled back; B must roll back only to its own snapshot, never beyond it).
+    // Post-fix both undos clamp: nothing grows, no holes.
+    // Use the REAL implementation (module export) so this test goes red against
+    // the pre-fix `arr.length = savedLen` and green against truncateTo.
+    const { truncateTo } = require('../src/db/oracle');
+    truncateTo(s.outbox, snapA); // A undo
+    truncateTo(s.outbox, snapB); // B undo (pre-fix: length = 12 > current → holes)
+    const holes = [...Array(s.outbox.length).keys()].filter((i) => !(i in s.outbox));
+    assert.ok(holes.length === 0, `outbox has ${holes.length} sparse holes`);
+    // The ack route's find() must not crash over the repaired array.
+    const probed = s.outbox.find((x) => x.event_id === 999999);
+    assert.equal(probed, undefined);
+    assert.ok(s.outbox.length >= before, 'undo kept at least the pre-test rows');
+  });
+
+  await t('BUG-048b: /internal/outbox/ack tolerates unknown + replayed ids (500-free)', async () => {
+    // At-least-once delivery: the worker re-acks events that may already be processed
+    // or unknown to this boot. The ack route must stay 200 and idempotent.
+    const ids = [999999, 999998, 999997];
+    const r1 = await api('/internal/outbox/ack', {
+      method: 'POST',
+      headers: { 'x-internal': 'dev-internal' },
+      body: JSON.stringify({ ids }),
+    });
+    assert.equal(r1.status, 200);
+    const r2 = await api('/internal/outbox/ack', {
+      method: 'POST',
+      headers: { 'x-internal': 'dev-internal' },
+      body: JSON.stringify({ ids }),
+    });
+    assert.equal(r2.status, 200);
+    const r3 = await api('/internal/outbox/ack', {
+      method: 'POST',
+      headers: { 'x-internal': 'dev-internal' },
+      body: JSON.stringify({ ids: [] }),
+    });
+    assert.equal(r3.status, 200);
+  });
+
   await t('BUG-044: listen defers to the store-upgrade promise but still binds + fires the callback', async () => {
     // Before BUG-044 the Oracle upgrade ran while the socket was ALREADY accepting
     // (ghost local-only rows in the hydration window; STORE=oracle tests raced the
