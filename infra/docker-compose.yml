@@ -55,6 +55,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-only-32-byte-secret-0123456789}
       WEB_ORIGIN: http://localhost:3000
       SEED_PROFILE: demo
+      # Load-testing toggle (bench/README.md): set 1 only for k6 runs — the
+      # 60 req/min throttle would otherwise count the whole k6 fleet as one IP.
+      RATE_LIMIT_OFF: ${RATE_LIMIT_OFF:-0}
     ports: ['4000:4000']
     depends_on:
       oracle: { condition: service_healthy }

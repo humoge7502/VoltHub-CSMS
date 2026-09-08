@@ -406,6 +406,18 @@ async function hydrate(local, pool) {
   return stats;
 }
 
+// BUG-048: undo paths used `arr.length = savedLen` to roll back appended rows.
+// If two mirror failures interleave, a later undo can GROW the array back to a stale
+// length, leaving sparse holes — Array.prototype.find/filter then visit `undefined`
+// and crash (`Cannot read properties of undefined (reading 'event_id')` in the
+// internal outbox/ack route). truncateTo only ever shrinks: it clamps to the saved
+// length and never resurrects a hole. (Safe even when other writers appended after
+// the snapshot — those rows are simply kept, which is the correct at-least-once
+// behaviour for the outbox.)
+function truncateTo(arr, savedLen) {
+  if (arr.length > savedLen) arr.length = savedLen;
+}
+
 function wrapWithOracle(local, pool) {
   const oracledb = driver();
   const withConn = async (fn) => {
@@ -520,7 +532,7 @@ function wrapWithOracle(local, pool) {
         wBefore.updated_at = new Date().toISOString();
         local.wallets.set(Number(uid), wBefore);
       } else local.wallets.delete(Number(uid));
-      local.ledgers.length = ledgerBefore;
+      truncateTo(local.ledgers, ledgerBefore);
       local.audit = local.audit.filter(
         (a) => !(a.entity_name === 'WALLET' && a.entity_id === String(uid) && a.action === 'TOPUP')
       );
@@ -666,9 +678,9 @@ function wrapWithOracle(local, pool) {
         cBefore.last_state_change_at = new Date().toISOString();
       }
       if (rBefore && rStatusBefore) rBefore.status = rStatusBefore;
-      local.stateEvents.length = stateEventsLen;
-      local.audit.length = auditLen;
-      local.outbox.length = outboxLen;
+      truncateTo(local.stateEvents, stateEventsLen);
+      truncateTo(local.audit, auditLen);
+      truncateTo(local.outbox, outboxLen);
       throw fromDriver(e);
     }
   };
@@ -746,8 +758,8 @@ function wrapWithOracle(local, pool) {
         local.cpsByOcpp.delete(cp.ocpp_identity);
       }
       for (const cn of newConns) local.connectors.delete(`${cn.cp_id}:${cn.connector_no}`);
-      local.amenities.length = amenitiesLen;
-      local.audit.length = auditLen;
+      truncateTo(local.amenities, amenitiesLen);
+      truncateTo(local.audit, auditLen);
       throw fromDriver(e);
     }
   };
@@ -911,4 +923,4 @@ function wrapWithOracle(local, pool) {
   return local;
 }
 
-module.exports = { createPool, ping, hydrate, wrapWithOracle };
+module.exports = { createPool, ping, hydrate, wrapWithOracle, truncateTo };
