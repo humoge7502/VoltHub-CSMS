@@ -2,7 +2,7 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
-## [Unreleased]
+## [1.5.1] — 2026-09-08
 
 ### Fixed
 
