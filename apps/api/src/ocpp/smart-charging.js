@@ -7,6 +7,7 @@
 const crypto = require('crypto');
 const { call } = require('@volthub/ocpp-messages');
 const { envelopeCheck } = require('../control/controller');
+const { registerPendingCall } = require('./gateway');
 
 let __callUid = 900000;
 function nextCallId() {
@@ -79,6 +80,11 @@ function setChargingProfile(store, registry, log, { cpId, identity, profile, dec
   } catch (e) {
     return Promise.reject(e);
   }
+  // Dispatch receipt + ack correlation (ADR-0010 "ack-correlated"): only now is the
+  // profile "in force" for the verifier, and the pending-call registry is what turns
+  // the CP's CALLRESULT/CALLERROR into an ack on the audit row (or a dead letter).
+  store.markPushSent(row.push_id);
+  registerPendingCall(uid, { action: 'SetChargingProfile', cpId: Number(cpId), pushId: row.push_id, decisionId });
   if (log && typeof log.info === 'function')
     log.info({ identity: ident, cpId, decisionId }, 'ocpp SetChargingProfile sent');
   return Promise.resolve({ uid, push_id: row.push_id, identity: ident });
@@ -97,6 +103,7 @@ function clearChargingProfile(registry, identity, { profileId, connectorId } = {
   if (profileId != null) payload.id = Number(profileId);
   if (connectorId != null) payload.connectorId = Number(connectorId);
   ws.send(call(uid, 'ClearChargingProfile', payload));
+  registerPendingCall(uid, { action: 'ClearChargingProfile', cpId: null });
   return Promise.resolve({ uid, identity });
 }
 
@@ -112,6 +119,7 @@ function getCompositeSchedule(registry, identity, { connectorId = 0, duration = 
   ws.send(
     call(uid, 'GetCompositeSchedule', { connectorId: Number(connectorId), duration: Number(duration), unit: 'W' })
   );
+  registerPendingCall(uid, { action: 'GetCompositeSchedule', cpId: null });
   return Promise.resolve({ uid, identity });
 }
 

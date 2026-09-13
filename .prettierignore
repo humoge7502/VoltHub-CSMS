@@ -1,2 +1,17 @@
 # prettier has no parser for gitattributes attributes files
 .gitattributes
+
+# Machine-written benchmark receipts: byte-reproducible from their committed scripts
+# (`node bench/<id>.js`), and the writer's JSON layout is not prettier's. Formatting
+# them by hand both breaks reproducibility and breaks the gate again on the next run.
+bench/results/
+
+# Generated OpenAPI snapshot: byte-compared against src/docs.js by
+# `node scripts/gen-openapi.js --check` in CI, so it must keep the generator's layout.
+docs/openapi.json
+
+# Build artifacts and caches are not source.
+.next/
+coverage/
+__pycache__/
+.pytest_cache/

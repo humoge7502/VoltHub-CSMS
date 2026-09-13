@@ -17,7 +17,14 @@ what the repo can honestly measure today:
 
 - **One script per experiment** in `bench/` (`e1-cost.js`, …) emitting
   `bench/results/<id>.json` with an environment block (node, platform, CPUs,
-  timestamp) and the full seed/params — reproducible by one command.
+  timezone, timestamp) and the full seed/params — reproducible by one command.
+- **A fixed scenario epoch is part of the protocol.** "Reproducible by one command"
+  only holds if the scenario does not read ambient state: `twin.makeScenario` defaults
+  to the stated UTC epoch (`SCENARIO_EPOCH`, recorded in every receipt as
+  `args.scenario_epoch`) and the twin's diurnal functions (`touPrice`,
+  `arrivalIntensity`) work in UTC. Both were violated in the first receipts — the
+  horizon slid with the wall clock and the results changed with the runner's timezone,
+  so the same command produced different numbers — and both are now pinned by tests.
 - **Pre-registration**: each script carries its hypothesis, metric definitions,
   and acceptance threshold in its header BEFORE results are committed. Changing a
   metric after results exist requires a new experiment id (e1b, e2b, …).

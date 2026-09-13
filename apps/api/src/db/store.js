@@ -253,6 +253,28 @@ function createStore() {
     if (!c) throw err('INVALID_CONNECTOR', `unknown connector ${cp}:${no}`, 404);
     return c;
   };
+  // Per-session reading index. `readings` is append-only, so a lazy incremental
+  // index is O(total) once and O(1) amortized afterwards — the controllers call
+  // this per active session per plan cycle, and the naive filter made a fleet-wide
+  // plan quadratic in history size. Tests push rows directly into `readings`; the
+  // cursor-based build picks those up on the next call.
+  s._readingsBySession = new Map();
+  s._readingsIndexed = 0;
+  s.readingsFor = (sid) => {
+    const id = Number(sid);
+    for (let i = s._readingsIndexed; i < s.readings.length; i++) {
+      const r = s.readings[i];
+      const k = Number(r.session_id);
+      let arr = s._readingsBySession.get(k);
+      if (!arr) {
+        arr = [];
+        s._readingsBySession.set(k, arr);
+      }
+      arr.push(r);
+    }
+    s._readingsIndexed = s.readings.length;
+    return s._readingsBySession.get(id) || [];
+  };
 
   // ---- users/wallet ----
   // PERF-002: async so Argon2id runs on the sidecar's thread pool — a registration
@@ -1188,6 +1210,61 @@ function createStore() {
     const p = s.profilePushes.get(Number(pushId));
     if (p) p.ack_result = String(ackResult || 'UNKNOWN').slice(0, 20);
     return p;
+  };
+  // Dispatch receipt: the audit row is written BEFORE the wire send (idempotency on
+  // (cp, decision)), so "in force on the charger" needs its own mark. Without it a
+  // profile that never left the process would still authorise enforcement ticks.
+  s.markPushSent = (pushId) => {
+    const p = s.profilePushes.get(Number(pushId));
+    if (p) p.sent_at = new Date().toISOString();
+    return p;
+  };
+  // The profile currently in force on a charge point: highest push_id that was sent
+  // and not answered with a rejection/error. CALLERROR and Rejected both mean "the
+  // charger is not following this schedule", so they disqualify the row.
+  s.activeProfileFor = (cpId) => {
+    let best = null;
+    for (const p of s.profilePushes.values()) {
+      if (p.cp_id !== Number(cpId)) continue;
+      if (!p.sent_at) continue;
+      if (p.ack_result && p.ack_result !== 'Accepted') continue;
+      if (!best || p.push_id > best.push_id) best = p;
+    }
+    return best;
+  };
+  // Scheduled kW at an instant, resolved from the in-force profile's active period
+  // (OCPP startPeriod is seconds from startSchedule). Returns null when nothing is
+  // in force or when the profile uses current units (not comparable to kW readings —
+  // returning a number there would fabricate a comparison).
+  s.scheduledKwAt = (cpId, atMs) => {
+    const push = s.activeProfileFor(cpId);
+    if (!push) return null;
+    let prof;
+    try {
+      prof = JSON.parse(push.profile_payload);
+    } catch {
+      return null;
+    }
+    const sch = prof && prof.chargingSchedule;
+    if (!sch || sch.chargingRateUnit === 'A') return null;
+    const periods = [...(sch.chargingSchedulePeriods || [])].sort((a, b) => a.startPeriod - b.startPeriod);
+    if (!periods.length) return null;
+    const startMs = sch.startSchedule ? Date.parse(sch.startSchedule) : Date.parse(push.push_at);
+    const elapsedS = Math.max(0, ((atMs || Date.now()) - (Number.isFinite(startMs) ? startMs : Date.now())) / 1000);
+    const cur = periods.filter((p) => p.startPeriod <= elapsedS).pop();
+    if (!cur) return null;
+    return +((Number(cur.limit) || 0) / 1000).toFixed(4);
+  };
+  // Latest committed plan for a site — the durable source of `lastReplanAt` for the
+  // hysteresis in model.shouldReplan (a module-level variable would not survive a
+  // restart and would make the verifier's cadence untestable).
+  s.latestDecisionFor = (siteId) => {
+    let best = null;
+    for (const d of s.controlDecisions.values()) {
+      if (d.site_id !== Number(siteId)) continue;
+      if (!best || d.decision_id > best.decision_id) best = d;
+    }
+    return best;
   };
 
   // Compliance telemetry: scheduled vs actual kW per CP (Timescale T003 in prod;

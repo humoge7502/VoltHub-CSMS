@@ -5,6 +5,9 @@
 const express = require('express');
 const crypto = require('crypto');
 
+// Recorded once when this module is loaded (i.e. API boot). Exposed on /health.
+const STARTED_AT = new Date().toISOString();
+
 // SEC-012: minimal RFC 6265 cookie reader (parse-only; no cookie-parser dep —
 // hand-rolled middlewares are a named trade-off in the README's stack table).
 function readCookie(header, name) {
@@ -1066,6 +1069,15 @@ module.exports = function routes(store) {
         oracle: store._pool ? 'connected' : process.env.ORACLE_HOST ? store._mode || 'connecting' : 'local-store',
         timescale: process.env.TS_HOST ? 'configured' : 'local-rollup',
         outbox_lag: lag,
+        // Mirror divergence counter (ADR-0005/0011): write-through failures are
+        // fire-and-forget by design, so they must be observable. Non-zero means the
+        // durable engine and the read cache have parted ways — page on it.
+        mirror_errors: store._mirrorErrors || 0,
+        last_mirror_error: store._lastMirrorError || null,
+        // Process start time. Monitoring needs it to tell "restarted just now" from
+        // "degraded for an hour", and the durability tests use it to prove an endpoint
+        // serves evidence that predates this boot (e.g. the hydrated audit trail).
+        process_started_at: STARTED_AT,
         now: new Date().toISOString(),
       });
     })

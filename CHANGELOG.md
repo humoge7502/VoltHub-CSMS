@@ -4,6 +4,117 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+### Added (control loop closed end-to-end — the actuate/verify stages are now real)
+
+- **The plan cycle now CERTIFIES before it schedules.** `control/controller.js` resolves
+  admission facts from the store instead of test hooks: energy requirement from the
+  connected vehicle's battery + target SoC (`vehicleStateFor`), deadline from the
+  reservation that owns the connector, floors from ACTIVE `feasibility_certificate`
+  rows, and it issues/reuses one certificate per active session via
+  `model.certifyVehicle`. Contention is computed over **overlapping charging windows**,
+  not over every vehicle ever admitted. New route
+  `POST /control/sessions/{id}/certify` shares the same code path (a promise must not
+  depend on who asked for it); the plan response carries `certifications`.
+- **Certificates are taper-aware.** `model.acceptanceFactor` (CC-CV knee at 80% SoC,
+  decaying to 15%) is now part of the worst-case simulation, so a promise made at 20%
+  SoC is not silently reused at 95%. The flat floor is the rate still guaranteed at the
+  END of the simulated window — conservative by construction.
+- **The loop's missing edge: CSMS→CP ack correlation.** The gateway previously handled
+  only inbound CALLs and dropped every CALLRESULT (`if (msg.kind !== 'CALL') return`),
+  which made actuation fire-and-forget. It now correlates results against a bounded
+  pending-call registry: `SetChargingProfile` acks land on the `charging_profile_push`
+  row, CALLERRORs are dead-lettered, and an unanswered call is swept to an explicit
+  `ACK_TIMEOUT` instead of being assumed successful. `RemoteStop`/`RemoteStart` share
+  the same plumbing.
+- **The verify stage now consumes real telemetry.** `MeterValues` records an enforcement
+  tick (scheduled kW from the profile **in force** vs the metered kW) whenever a profile
+  is in force — a push is "in force" only after dispatch (`markPushSent`) and before any
+  rejection (`Rejected`/`CALLERROR` disqualify the row). No profile in force means no
+  comparison, never a fabricated zero. New route `GET /control/enforcement`.
+- **Solver: feasibility-first, then price-aware, and honest about windows.** The shipped
+  `solveSchedule` now runs certified floors → EDF feasibility fill → a cost-shift pass
+  that moves energy only into cheaper slots _inside each vehicle's own
+  [arrival, deadline) window_; it is deterministic (ties break on sessionId). The
+  previous dead code (`rank`/`price` computed and then `void`ed) is gone. `arrivalAt` is
+  a hard lower bound, which is what makes future-arrival experiments valid.
+- **Digital twin + offline harness** (`apps/simulator/src/twin.js`,
+  `baselines.js`, `offline.js`): deterministic Poisson-ish arrivals with commute peaks,
+  battery/SoC/deadlines, ToU tariffs, CC-CV acceptance (imported from the certificate
+  implementation so promise and experiment cannot disagree), non-compliant chargers, a
+  shared evaluator, and a percentile bootstrap for CIs.
+- **Experiments E1b and E3** (`bench/e1b-cost.js`, `bench/e3-deadline.js`) with
+  pre-registered hypotheses, paired seeds, identical populations and 95% CIs, run by
+  `npm run bench:e1b` / `npm run bench:e3`.
+- **OpenAPI snapshot is generated and drift-gated** (`scripts/gen-openapi.js`,
+  `npm run openapi:gen`, `--check` in CI): `docs/openapi.json` had silently fallen 14
+  paths behind the live spec (52 vs 66) while the README called it a verified snapshot.
+
+### Added (durable-path verification — the loop is now proven through the DB engine)
+
+- **Control-plane E2E suite** (`test/e2e/control-plane.js`, `npm run test:e2e:control`,
+  wired into the CI `e2e` job): drives certify → plan → actuate → typed outcome → durable
+  audit over HTTP against the compose stack, refusing to run unless the API reports the
+  durable engine (`mode: oracle`). It asserts the electrical invariant holds through
+  Oracle's triggers (child cap above parent → `GRID_CAP_MONOTONIC`), that ADVISORY never
+  touches the wire, that every ENFORCED actuation is either dispatched or a **typed**
+  error (never a 500), that the promise is explicit (an admission commits real power; a
+  refusal states why), and that no write-through mirror failure was recorded. Re-runnable:
+  it reuses an existing site root, walks a ladder of booking offsets to find a genuinely
+  free reservation window, and stops its own session so no active vehicle is left behind.
+- **`/health.process_started_at`**: monitoring needs it to tell "restarted just now" from
+  "degraded for an hour", and it lets the durability test prove an endpoint serves
+  evidence that predates the running process.
+
+### Fixed
+
+- **Experiment receipts were not reproducible, despite the protocol saying they were.** The
+  twin anchored each scenario to `Date.now()` and read diurnal quantities with
+  `getHours()`, so the horizon slid across ToU bands and commute peaks between runs (the
+  same command produced different numbers minutes apart) and the results depended on the
+  runner's timezone. Scenarios are now generated at a fixed UTC epoch
+  (`twin.SCENARIO_EPOCH`, recorded in every receipt as `args.scenario_epoch`), `touPrice`
+  and `arrivalIntensity` use UTC, and two new twin tests pin the anchor and the timezone
+  independence. `bench/results/e1b-cost.json` and `e3-deadline.json` were regenerated and
+  every figure in `docs/perf.md`, `README.md` and ADR-0014 updated to match — including a
+  **softer E3 taper-family claim** (at ρ = 0.9 the deadline delta is now indistinguishable
+  from static-cap rather than significantly worse; the honest statement is the softer one).
+  Receipts are also compacted (`offline.compactRow`): the per-slot schedule matrices and
+  the per-session arrival/deadline slot maps are scenario inputs, not results — dropping
+  them took the two receipts from 14 MB of debug detail to ~5 MB of per-seed evidence,
+  with every retained number byte-identical.
+- **A reservation could be advertised with an id Oracle had never issued.** Oracle's
+  identity sequence caches values, so a container restart hands out ids well above the
+  local counter (hydrated from `MAX(id)`). The write-through path created the row in
+  Oracle and then returned the **local** id — unlike sessions, which remap. The result:
+  the API answered 201 with a reservation that could not be started
+  (`-20505 RESERVATION_MISMATCH` on the very next call) and a cancel would have targeted
+  the wrong row, until the next restart re-synced the counters. Found by
+  `test/e2e/control-plane.js` on its first re-run after a restart; the path now remaps
+  local ids, audit rows, notifications and the outbox payload to the durable id, and the
+  fallback branch caches the durable row instead of returning one the read-cache cannot
+  resolve.
+- **Control-plane audit rows never reached Oracle.** `GRID_ASSET` / `CONTROL_MODE` writes
+  were audited in the read-cache only, and the control-mode mirror inserted into
+  `control_audit_note` — a table that exists in no migration — inside a `.catch()` that
+  swallowed the failure. Actuation could therefore be enabled on a site with no durable
+  record of who enabled it. Both now write `audit_log`, the table the PL/SQL packages
+  already use (ADR-0011/0014).
+- **`/admin/audit-logs` served a process-local buffer that was never hydrated.** Every
+  audit row written before a restart vanished from the endpoint the audit claim rests on.
+  `hydrate()` now restores the newest 200 rows, with timestamps emitted as explicit UTC.
+- **`shouldReplan` treated `hysteresisMin: 0` as "unset"** (`hysteresisMin || 5`), so an
+  explicitly immediate replan was impossible and the property test asserting it was
+  unreachable.
+- **CI did not run the flagship suites**: `apps/api/test/control.js` and
+  `apps/api/test/ai.js` were in the root `npm test` chain but absent from the CI `quality`
+  and `db-tests` jobs, so the FC-HCC properties and the AI advisory contract were ungated.
+- **CI was red on `main`**: `bench/results/e1-cost.json` (a committed receipt) failed
+  `prettier --check .`, which the `lint` job runs — and every other job `needs: lint`.
+  Generated receipts are now excluded from formatting by policy (`.prettierignore`).
+- **Docs were understating the repo** (52 routes / 9 ADRs while the spec had 66 paths and
+  13 ADRs; `ARCHITECTURE.md` said 49 routes) and the README never mentioned the control
+  loop at all — the flagship mechanism was invisible on the front page.
+
 ### Added (FC-HCC control loop — ADR-0010..0013)
 
 - **OCPP 1.6 Smart Charging actuation path** (`apps/api/src/ocpp/smart-charging.js`):

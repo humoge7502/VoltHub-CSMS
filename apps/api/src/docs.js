@@ -127,8 +127,14 @@ Object.assign(spec.paths, {
   },
   '/control/plan/{siteId}': {
     post: P(
-      'One FC-HCC cycle: estimate → certify → optimize → persist decision; actuates OCPP SetChargingProfile only in ENFORCED mode (operator+)'
+      'One FC-HCC cycle: estimate → certify (admission) → optimize → persist decision; actuates OCPP SetChargingProfile only in ENFORCED mode (operator+)'
     ),
+  },
+  '/control/sessions/{id}/certify': {
+    post: P('Issue/reuse a feasibility certificate for one active session (operator+)'),
+  },
+  '/control/enforcement': {
+    get: P('Enforcement telemetry: scheduled vs actual kW per charge point, newest first (operator+, ?siteId=&limit=)'),
   },
   '/control/decisions': { get: P('Decision history with solver/bounds provenance (operator+, ?siteId=)') },
   '/control/decisions/{id}': { get: P('Decision detail incl. full x[v][t] payload (operator+)') },

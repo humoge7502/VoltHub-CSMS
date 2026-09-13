@@ -84,7 +84,7 @@ module.exports = function controlRoutes(store, registry, log) {
       if (!store.stations.get(siteId))
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'station' } });
       try {
-        const { mode, decision, solved, pushes } = control.planSite(store, siteId, req.body || {});
+        const { mode, decision, solved, pushes, certifications } = control.planSite(store, siteId, req.body || {});
         const actuated = [];
         if (mode === 'ENFORCED') {
           for (const p of pushes) {
@@ -106,12 +106,44 @@ module.exports = function controlRoutes(store, registry, log) {
           mode,
           decision: { ...decision, payload_json: undefined },
           metrics: solved.metrics,
+          certifications,
           compiled: pushes.map((p) => ({ cp_id: p.cpId, clamped: p.clamped, sha256: p.payloadSha256 })),
           actuated,
         });
       } catch (e) {
         res.status(oraStatus(e)).json({ error: { code: e.code, message: e.message, ora: e.num || null } });
       }
+    })
+  );
+
+  // ---- certify one session on demand (plug-in admission; blueprint H.2.4) ----
+  r.post(
+    '/control/sessions/:id/certify',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      try {
+        res.json(control.certifySession(store, req.params.id, req.body || {}));
+      } catch (e) {
+        res.status(oraStatus(e)).json({ error: { code: e.code, message: e.message, ora: e.num || null } });
+      }
+    })
+  );
+
+  // ---- enforcement telemetry: scheduled vs actual kW (the verifier's evidence) ----
+  r.get(
+    '/control/enforcement',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const limit = Math.min(Number(req.query.limit) || 50, 500);
+      let rows = [...store.enforcementTicks];
+      if (req.query.siteId) {
+        const sid = Number(req.query.siteId);
+        const cpIds = new Set([...store.cps.values()].filter((c) => c.station_id === sid).map((c) => Number(c.cp_id)));
+        rows = rows.filter((t) => cpIds.has(Number(t.cp_id)));
+      }
+      res.json({ ticks: rows.slice(-limit).reverse() });
     })
   );
 

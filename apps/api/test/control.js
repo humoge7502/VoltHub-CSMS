@@ -8,6 +8,19 @@
 //   P6  Deadline/energy: the schedule serves certified floors first and never
 //       exceeds the site cap in any interval (constraint 5/8 parity, local LP).
 //   P7  Dead letters capture envelope rejections and dedupe on event_ref.
+//   P8  Compliance: deviation beyond tolerance erodes ACTIVE certificates.
+//   P9  The plan cycle CERTIFIES: every active session gets a certificate row whose
+//       admission verdict matches its worst case, and floors never exceed the promise.
+//   P10 Deadlines are real: a reservation end bounds the delivered energy window
+//       (no scheduled kWh at or after the deadline slot) and the certificate carries it.
+//   P11 Requirement is derived, not hard-coded: a registered vehicle's battery + target
+//       SoC sets remainingKwh; without one the documented default applies.
+//   P12 The solver is price-aware and feasibility-first: with headroom, energy lands in
+//       cheaper intervals before expensive ones; deadlines still hold.
+//   P13 CSMS->CP calls are ack-correlated (the loop's missing edge): CALLRESULT sets the
+//       push ack, CALLERROR dead-letters, and an unanswered call times out as TIMEOUT.
+//   P14 Verify: enforcement ticks compare the in-force schedule to the meter, and no
+//       profile in force means no fabricated comparison (null, not zero).
 // Run: node apps/api/test/control.js
 'use strict';
 const assert = require('assert');
@@ -15,6 +28,7 @@ const { createStore } = require('../src/db/store');
 const { seedStore } = require('../src/db/seed');
 const control = require('../src/control/controller');
 const smartCharging = require('../src/ocpp/smart-charging');
+const gw = require('../src/ocpp/gateway');
 
 function fakeRegistry(store, cpId, sink) {
   const cp = store.cps.get(Number(cpId));
@@ -283,6 +297,261 @@ async function main() {
     assert.equal(verdict.reason, 'MARGIN_EROSION');
     const after = [...s2.certificates.values()].find((c) => c.cert_id === cert.cert_id);
     assert.equal(after.status, 'ERODED');
+  });
+
+  await t('P9 certify: the plan cycle issues certificates for every active session', async () => {
+    const s3 = createStore();
+    seedStore(s3, 'demo');
+    const site3 = [...s3.stations.keys()][0];
+    s3.upsertGridAsset(site3, { kind: 'SITE', label: 'root', cap_kw: 10 }, null);
+    const c1 = [...s3.connectors.keys()][0];
+    stageSession(s3, c1, 5);
+    const { certifications } = control.planSite(s3, site3, { planId: 2 });
+    assert.equal(certifications.length, 1, 'one active session => one certificate');
+    const cert = [...s3.certificates.values()].find((c) => c.cert_id === certifications[0].cert_id);
+    assert.ok(cert, 'certificate row persisted');
+    // site cap 10 kW, reserve 10% => 9 kW usable; 6h window => 9*0.25*24 = 54 kWh worst case
+    const usable = 10 * (1 - control.FORECAST_RESERVE_FRACTION);
+    assert.equal(cert.status, 'ACTIVE');
+    assert.ok(Math.abs(cert.floor_kw - Math.min(22, usable)) < 1e-6, 'floor = residual share');
+    assert.ok(cert.worst_case_kwh >= cert.required_kwh + cert.margin_kwh, 'admission implies worst case clears need');
+    // The promise is a schedulable floor: a second plan cycle protects it.
+    const second = control.planSite(s3, site3, { planId: 2 });
+    assert.equal(second.certifications[0].reused, true, 'an ACTIVE certificate is reused, not duplicated');
+  });
+
+  await t('P9b certify: infeasible admission is FAILED, and stays FAILED (no rejection spam)', async () => {
+    const s4 = createStore();
+    seedStore(s4, 'demo');
+    const site4 = [...s4.stations.keys()][0];
+    s4.upsertGridAsset(site4, { kind: 'SITE', label: 'root', cap_kw: 1 }, null); // 1 kW site
+    stageSession(s4, [...s4.connectors.keys()][0], 1);
+    const first = control.planSite(s4, site4, { planId: 2 });
+    assert.equal(first.certifications[0].status, 'FAILED');
+    const rowsAfterFirst = s4.certificates.size;
+    const second = control.planSite(s4, site4, { planId: 2 });
+    assert.equal(second.certifications[0].reused, true, 'unchanged negative verdict is not re-inserted');
+    assert.equal(s4.certificates.size, rowsAfterFirst, 'no certificate spam per plan cycle');
+  });
+
+  await t('P10 deadlines: a reservation end bounds the schedule window', async () => {
+    const s5 = createStore();
+    seedStore(s5, 'demo');
+    const site5 = [...s5.stations.keys()][0];
+    s5.upsertGridAsset(site5, { kind: 'SITE', label: 'root', cap_kw: 10 }, null);
+    const conn5 = [...s5.connectors.keys()][0];
+    const cpNum5 = Number(conn5.split(':')[0]);
+    const connNo5 = Number(conn5.split(':')[1]);
+    // A real booking on the connector, ending ~45 min out => deadline slot 3.
+    const startAt = new Date(Date.now() + 15 * 60000).toISOString();
+    const endAt = new Date(Date.now() + 45 * 60000).toISOString();
+    const res = s5.createReservation(1, null, cpNum5, connNo5, startAt, endAt);
+    // createReservation is async by design (mutex); await it before starting.
+    await res;
+    const sess = await s5.startSession({
+      uid: 1,
+      cpId: cpNum5,
+      connNo: connNo5,
+      planId: 2,
+      reservationId: null,
+      idTag: 'TAG-1',
+    });
+    s5.readings.push({
+      session_id: sess.session_id,
+      seq_no: 1,
+      taken_at: new Date().toISOString(),
+      meter_kwh: 0.5,
+      power_kw: 2,
+      source: 'OCPP',
+    });
+    const { solved, certifications } = control.planSite(s5, site5, { planId: 2 });
+    assert.equal(certifications.length, 1, 'the plan certifies the active session');
+    const slots = solved.metrics.deadline_slots[sess.session_id];
+    assert.ok(Number.isFinite(slots) && slots > 0, `deadline resolved from the reservation (got ${slots})`);
+    // The certificate carries the same deadline, so the promise and the plan agree.
+    const cert = [...s5.certificates.values()].find((c) => c.session_id === sess.session_id);
+    assert.ok(cert.deadline_at, 'certificate records the deadline it was promised against');
+    for (let t = slots; t < solved.metrics.horizon; t++) {
+      assert.equal(solved.schedule[sess.session_id][t], 0, `no energy scheduled at/after the deadline (slot ${t})`);
+    }
+  });
+
+  await t('P11 requirement: vehicle battery + target SoC replaces the hard-coded default', async () => {
+    const s6 = createStore();
+    seedStore(s6, 'demo');
+    const site6 = [...s6.stations.keys()][0];
+    s6.upsertGridAsset(site6, { kind: 'SITE', label: 'root', cap_kw: 50 }, null);
+    const veh = s6.createVehicle(1, { make: 'Tata', model: 'Nexon EV', battery_kwh: 40 });
+    const conn6 = [...s6.connectors.keys()][0];
+    const sess = await s6.startSession({
+      uid: 1,
+      vehicleId: veh.vehicle_id,
+      cpId: Number(conn6.split(':')[0]),
+      connNo: Number(conn6.split(':')[1]),
+      planId: 2,
+      reservationId: null,
+      idTag: 'TAG-1',
+    });
+    const model = require('../src/control/model');
+    // The richer resolver also carries the battery/SoC reference the certifier needs.
+    const est = model.estimateVehicles(s6, site6, Date.now(), { vehicleStateFor: control.vehicleStateFor(s6) });
+    const row = est.find((v) => v.sessionId === sess.session_id);
+    assert.equal(row.requirementSource, 'declared');
+    assert.ok(
+      Math.abs(row.remainingKwh - 40 * control.TARGET_SOC) < 1e-6,
+      `remaining = battery*targetSoC (got ${row.remainingKwh})`
+    );
+    assert.equal(row.batteryKwh, 40, 'the battery size reaches the certifier');
+    // The SoC reference is the conservative one: never below the target SoC.
+    assert.ok(row.socRef >= control.TARGET_SOC, `socRef is conservative (got ${row.socRef})`);
+    // And with no declared vehicle the documented default is used, not an invention.
+    const estDefault = model.estimateVehicles(s6, site6, Date.now(), { requirementKwhFor: () => null });
+    assert.equal(estDefault[0].requirementSource, 'default');
+  });
+
+  await t('P12 solver: price-aware (cheap intervals first) while deadlines hold', async () => {
+    const model = require('../src/control/model');
+    const H = 8;
+    // Price 4:1 between slot 0 (cheap) and slot 7 (expensive); no deadline pressure.
+    const prices = [0.1, 0.1, 0.1, 0.1, 0.4, 0.4, 0.4, 0.4];
+    const out = model.solveSchedule({
+      vehicles: [{ sessionId: 1, cpId: 1, maxKw: 10, remainingKwh: 4, deadlineAt: null, certifiedFloorKw: 0 }],
+      siteCapKw: 10,
+      cpCaps: new Map([[1, 10]]),
+      priceSeries: () => prices,
+      dtMin: 15,
+      horizon: H,
+      now: Date.now(),
+    });
+    const arr = out.schedule[1];
+    const cheap = arr.slice(0, 4).reduce((a, b) => a + b, 0);
+    const expensive = arr.slice(4).reduce((a, b) => a + b, 0);
+    assert.ok(cheap >= expensive, `cheap slots carry at least as much energy (${cheap} vs ${expensive})`);
+    assert.ok(Math.abs(cheap + expensive - 4) < 1e-6, 'the full requirement is delivered');
+    assert.equal(out.metrics.unmet_kwh, 0);
+    assert.equal(out.metrics.peak_kw <= 10 + 1e-6, true);
+    // Determinism: identical inputs => identical schedule (ADR-0008).
+    const again = model.solveSchedule({
+      vehicles: [{ sessionId: 1, cpId: 1, maxKw: 10, remainingKwh: 4, deadlineAt: null, certifiedFloorKw: 0 }],
+      siteCapKw: 10,
+      cpCaps: new Map([[1, 10]]),
+      priceSeries: () => prices,
+      dtMin: 15,
+      horizon: H,
+      now: Date.now(),
+    });
+    assert.deepEqual(again.schedule, out.schedule, 'identical inputs => identical schedule');
+    // Arrival window is a hard lower bound: a vehicle arriving in slot 2 gets nothing before it.
+    const now0 = Date.now();
+    const grid0 = model.intervalGrid(now0, 15, H);
+    const arrived = model.solveSchedule({
+      vehicles: [
+        {
+          sessionId: 2,
+          cpId: 1,
+          maxKw: 10,
+          remainingKwh: 4,
+          arrivalAt: grid0.start + 2 * grid0.dt,
+          deadlineAt: grid0.start + H * grid0.dt,
+          certifiedFloorKw: 0,
+        },
+      ],
+      siteCapKw: 10,
+      cpCaps: new Map([[1, 10]]),
+      priceSeries: () => Array(H).fill(0.2),
+      dtMin: 15,
+      horizon: H,
+      now: now0,
+    });
+    assert.deepEqual(arrived.schedule[2].slice(0, 2), [0, 0], 'no energy may be scheduled before the vehicle arrives');
+  });
+
+  await t('P13 ack correlation: RESULT sets the push ack, ERROR dead-letters, silence times out', async () => {
+    const s7 = createStore();
+    seedStore(s7, 'demo');
+    const site7 = [...s7.stations.keys()][0];
+    s7.upsertGridAsset(site7, { kind: 'SITE', label: 'root', cap_kw: 10 }, null);
+    s7.setControlMode(site7, 'ENFORCED', null);
+    const conn7 = [...s7.connectors.keys()][0];
+    stageSession(s7, conn7, 5);
+    const cp7 = Number(conn7.split(':')[0]);
+    const sent = [];
+    const registry = fakeRegistry(s7, cp7, sent);
+    const { decision, pushes } = control.planSite(s7, site7, { planId: 2 });
+    const pushed = await smartCharging.setChargingProfile(s7, registry, null, {
+      cpId: cp7,
+      profile: pushes[0].profile,
+      decisionId: decision.decision_id,
+      payloadSha256: pushes[0].payloadSha256,
+    });
+    assert.equal(gw.pendingCallCount() >= 1, true, 'the send registered a pending call');
+    const ok = gw.handleCsmsResult(s7, { kind: 'RESULT', uid: pushed.uid, payload: { status: 'Accepted' } }, null);
+    assert.equal(ok.handled, true);
+    assert.equal(ok.pushId, pushed.push_id);
+    assert.equal(s7.profilePushes.get(pushed.push_id).ack_result, 'Accepted', 'ack persisted on the audit row');
+    assert.ok(s7.activeProfileFor(cp7), 'an accepted profile is in force');
+    // CALLERROR path: dead-lettered, not swallowed. Rate limit is 6/min so this
+    // profile push uses a fresh decision id to avoid the governor.
+    const pushed2 = await smartCharging.setChargingProfile(s7, registry, null, {
+      cpId: cp7,
+      profile: pushes[0].profile,
+      decisionId: decision.decision_id + 1,
+    });
+    const bad = gw.handleCsmsResult(s7, { kind: 'ERROR', uid: pushed2.uid, code: 'NotSupported', desc: 'nope' }, null);
+    assert.equal(bad.ack, 'CALLERROR');
+    assert.ok(
+      s7.listDeadLetters().some((l) => l.reason_code === 'NotSupported'),
+      'a rejected command is triageable'
+    );
+    // Unanswered call: the sweeper converts silence into an explicit TIMEOUT.
+    const pushed3 = await smartCharging.setChargingProfile(s7, registry, null, {
+      cpId: cp7,
+      profile: pushes[0].profile,
+      decisionId: decision.decision_id + 2,
+    });
+    const expired = gw.sweepExpiredAcks(s7, Date.now() + gw.ACK_TIMEOUT_MS + 1000);
+    assert.ok(expired.includes(pushed3.uid), 'the unacked call expired');
+    assert.equal(s7.profilePushes.get(pushed3.push_id).ack_result, 'TIMEOUT');
+    assert.ok(s7.listDeadLetters().some((l) => l.reason_code === 'ACK_TIMEOUT'));
+    // Unknown uids stay ignorable, and are counted rather than crashing the gateway.
+    const before = gw.unknownResultCount();
+    assert.equal(gw.handleCsmsResult(s7, { kind: 'RESULT', uid: 'never-sent', payload: {} }, null).handled, false);
+    assert.equal(gw.unknownResultCount(), before + 1);
+  });
+
+  await t('P14 verify: enforcement ticks compare schedule to meter; nothing in force => no tick', async () => {
+    const s8 = createStore();
+    seedStore(s8, 'demo');
+    const site8 = [...s8.stations.keys()][0];
+    s8.upsertGridAsset(site8, { kind: 'SITE', label: 'root', cap_kw: 10 }, null);
+    const conn8 = [...s8.connectors.keys()][0];
+    const cp8 = Number(conn8.split(':')[0]);
+    assert.equal(
+      gw.enforcementSample(s8, cp8, 1, 5, new Date().toISOString()),
+      null,
+      'no profile => no fabricated comparison'
+    );
+    s8.setControlMode(site8, 'ENFORCED', null);
+    const sess8 = stageSession(s8, conn8, 5);
+    const sent = [];
+    const registry = fakeRegistry(s8, cp8, sent);
+    const { decision, pushes } = control.planSite(s8, site8, { planId: 2 });
+    await smartCharging.setChargingProfile(s8, registry, null, {
+      cpId: cp8,
+      profile: pushes[0].profile,
+      decisionId: decision.decision_id,
+    });
+    const ts = new Date().toISOString();
+    const tick = gw.enforcementSample(s8, cp8, sess8.session_id, 3.2, ts);
+    assert.ok(tick, 'a tick is recorded when a schedule is in force');
+    assert.ok(tick.scheduled_kw >= 0, 'scheduled kW resolved from the in-force profile');
+    assert.equal(tick.session_id, sess8.session_id);
+    assert.ok(Math.abs(tick.deviation_kw - (3.2 - tick.scheduled_kw)) < 1e-6, 'deviation = actual - scheduled');
+    // And the verifier consumes them: a large deviation erodes the certificate.
+    s8.recordEnforcementTick({ cpId: cp8, sessionId: sess8.session_id, scheduledKw: tick.scheduled_kw, actualKw: 0.1 });
+    const verdict = control.verifyCompliance(s8, site8, { toleranceKw: 0.5, hysteresisMin: 0 });
+    assert.equal(verdict.replan, true);
+    assert.equal(verdict.reason, 'MARGIN_EROSION');
   });
 
   console.log(`\nControl tests: ${pass} passed`);

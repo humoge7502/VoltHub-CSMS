@@ -781,6 +781,199 @@
           }
         }
       }
+    },
+    "/stations/{id}/grid-assets": {
+      "get": {
+        "summary": "Electrical hierarchy (SITE/PANEL/FEEDER) + effective site cap + control mode (staff)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      },
+      "post": {
+        "summary": "Upsert grid asset — cap monotonicity enforced, cap reductions start PENDING (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/grid-assets/{id}/approve": {
+      "post": {
+        "summary": "Second-person approval of a PENDING cap reduction (admin, four-eyes)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/mode": {
+      "post": {
+        "summary": "Per-site control mode OFF|ADVISORY|ENFORCED (admin; ENFORCED needs an ACTIVE site cap)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/plan/{siteId}": {
+      "post": {
+        "summary": "One FC-HCC cycle: estimate → certify (admission) → optimize → persist decision; actuates OCPP SetChargingProfile only in ENFORCED mode (operator+)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/sessions/{id}/certify": {
+      "post": {
+        "summary": "Issue/reuse a feasibility certificate for one active session (operator+)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/enforcement": {
+      "get": {
+        "summary": "Enforcement telemetry: scheduled vs actual kW per charge point, newest first (operator+, ?siteId=&limit=)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/decisions": {
+      "get": {
+        "summary": "Decision history with solver/bounds provenance (operator+, ?siteId=)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/decisions/{id}": {
+      "get": {
+        "summary": "Decision detail incl. full x[v][t] payload (operator+)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/certificates": {
+      "get": {
+        "summary": "Feasibility certificates with lifecycle state (operator+, ?siteId=)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/certificates/{id}": {
+      "get": {
+        "summary": "Certificate detail: floor_kw, margin, worst-case energy (operator+)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/ops/dead-letters": {
+      "get": {
+        "summary": "Poison events + rejected pushes triage queue (admin, ?status=)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/ops/dead-letters/{id}/resolve": {
+      "post": {
+        "summary": "Resolve a dead letter: REPLAYED|DISMISSED (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/cp/{cpId}/clear-profile": {
+      "post": {
+        "summary": "ClearChargingProfile to a charge point (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/cp/{cpId}/composite-schedule": {
+      "get": {
+        "summary": "GetCompositeSchedule probe for a charge point (operator+)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
     }
   }
 }

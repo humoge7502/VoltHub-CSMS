@@ -13,6 +13,91 @@ function nextCallId() {
   return `csms-${Date.now().toString(36)}-${++__callUid}`;
 }
 
+// ---- CSMS->CP call correlation (ADR-0010 "ack-correlated") --------------------
+// The gateway used to drop every CALLRESULT (only CALLs were handled), which made
+// actuation fire-and-forget: a charger could answer `Rejected` and nothing in the
+// CSMS would know. A bounded pending-call map fixes the loop's missing edge:
+//   send -> registerPendingCall(uid, meta) -> CALLRESULT/CALLERROR -> setPushAck.
+// Unknown uids stay ignorable (a chatty CP must not crash the gateway), but they are
+// counted so the leak is observable.
+const ACK_TIMEOUT_MS = Number(process.env.OCPP_ACK_TIMEOUT_MS || 10000);
+const pendingCalls = new Map(); // uid -> { action, cpId, pushId, decisionId, deadline }
+let unknownResults = 0;
+
+function registerPendingCall(uid, meta) {
+  pendingCalls.set(String(uid), { ...meta, deadline: Date.now() + ACK_TIMEOUT_MS });
+}
+
+// Resolve one inbound CALLRESULT/CALLERROR. Returns { handled, ack, pushId }.
+// Pure with respect to the socket, so the suite drives it without a TCP peer.
+function handleCsmsResult(store, msg, log) {
+  if (!msg || (msg.kind !== 'RESULT' && msg.kind !== 'ERROR')) return { handled: false };
+  const key = String(msg.uid);
+  const meta = pendingCalls.get(key);
+  if (!meta) {
+    unknownResults++;
+    return { handled: false };
+  }
+  pendingCalls.delete(key);
+  const ack = msg.kind === 'RESULT' ? String(msg.payload?.status || 'Accepted') : 'CALLERROR';
+  if (meta.pushId != null) store.setPushAck(meta.pushId, ack);
+  if (msg.kind === 'ERROR') {
+    // A rejected command is a poison event with an owner: it lands in the triage
+    // queue instead of a log line (ADR-0011 dead-letter loop).
+    store.deadLetter({
+      eventRef: `ack:${key}`,
+      kind: meta.action || 'CSMS_CALL',
+      reasonCode: msg.code || 'CALLERROR',
+      detail: msg.desc || null,
+      payload: { cpId: meta.cpId ?? null, decisionId: meta.decisionId ?? null },
+    });
+  }
+  if (log && typeof log.info === 'function')
+    log.info({ action: meta.action, cpId: meta.cpId, ack }, 'ocpp CALLRESULT correlated');
+  return { handled: true, ack, pushId: meta.pushId ?? null, action: meta.action, cpId: meta.cpId ?? null };
+}
+
+// Timeout sweep: an unanswered CSMS call must not stay pending forever (the charger
+// is gone, wedged, or silently dropping frames). Expired calls are dead-lettered and
+// the push audit row records TIMEOUT — the honest alternative to "assume Accepted".
+function sweepExpiredAcks(store, now) {
+  const nowMs = now || Date.now();
+  const expired = [];
+  for (const [uid, meta] of pendingCalls) {
+    if (meta.deadline > nowMs) continue;
+    pendingCalls.delete(uid);
+    if (meta.pushId != null) store.setPushAck(meta.pushId, 'TIMEOUT');
+    store.deadLetter({
+      eventRef: `ack-timeout:${uid}`,
+      kind: meta.action || 'CSMS_CALL',
+      reasonCode: 'ACK_TIMEOUT',
+      detail: `no CALLRESULT within ${ACK_TIMEOUT_MS} ms`,
+      payload: { cpId: meta.cpId ?? null, decisionId: meta.decisionId ?? null },
+    });
+    expired.push(uid);
+  }
+  return expired;
+}
+
+// Enforcement telemetry (ADR-0010 step "verify"): the scheduled kW of the profile in
+// force versus what the meter actually reports. Returns the recorded tick, or null
+// when no profile is in force (ADVISORY sites and non-compliant chargers must not
+// manufacture a comparison that does not exist).
+function enforcementSample(store, cpId, sessionId, powerKw, ts) {
+  if (typeof store.scheduledKwAt !== 'function') return null;
+  const scheduledKw = store.scheduledKwAt(cpId, Date.parse(ts));
+  if (scheduledKw == null) return null;
+  const push = typeof store.activeProfileFor === 'function' ? store.activeProfileFor(cpId) : null;
+  return store.recordEnforcementTick({
+    cpId: Number(cpId),
+    sessionId: sessionId != null ? Number(sessionId) : null,
+    decisionId: push ? push.decision_id : null,
+    scheduledKw,
+    actualKw: powerKw,
+    ts,
+  });
+}
+
 // B2G-009: CSMS→CP remote commands (half-duplex fix). Fire-and-forget CALL over the
 // stored socket; the CP answers with CALLRESULT (handled in the RESULT branch below).
 // Currently used by POST /sessions/:id/remote-stop; RemoteStart shares the plumbing.
@@ -30,6 +115,9 @@ function stopTransaction(registry, identity, sessionId, log) {
   } catch (e) {
     return Promise.reject(e);
   }
+  // Correlate the CP's answer too: a rejected remote stop must be observable, not
+  // assumed (the same registry that carries SetChargingProfile acks).
+  registerPendingCall(uid, { action: 'RemoteStopTransaction', cpId: null, sessionId: Number(sessionId) });
   // B3G-001: method-call form preserves pino `this` (detached log.info throws msgPrefix TypeError).
   if (log && typeof log.info === 'function') log.info({ identity, sessionId }, 'ocpp RemoteStopTransaction sent');
   return Promise.resolve({ uid, identity, transactionId: Number(sessionId) });
@@ -48,6 +136,7 @@ function startTransaction(registry, identity, idTag, connectorId, log) {
   } catch (e) {
     return Promise.reject(e);
   }
+  registerPendingCall(uid, { action: 'RemoteStartTransaction', cpId: null });
   if (log && typeof log.info === 'function') log.info({ identity, idTag }, 'ocpp RemoteStartTransaction sent');
   return Promise.resolve({ uid, identity });
 }
@@ -83,6 +172,19 @@ function checkBasic(req, identity, cp) {
 
 function mountOcpp(wss, store, log) {
   const registry = new Map(); // ocpp_identity -> ws
+  // Ack sweeper: unref'd so it never holds the process (or a test suite) open.
+  const ackSweeper = setInterval(
+    () => {
+      try {
+        sweepExpiredAcks(store);
+      } catch (err) {
+        log.warn({ err: err.message }, 'ack sweep failed');
+      }
+    },
+    Math.max(1000, Math.floor(ACK_TIMEOUT_MS / 2))
+  );
+  if (typeof ackSweeper.unref === 'function') ackSweeper.unref();
+  wss.on('close', () => clearInterval(ackSweeper));
   const lastMsg = new Map();
   const seqByTx = new Map(); // BUG-006: monotonic per-session seq (OCPP has no seq; gateway owns it)
   global.__ocppTickCursor = seqByTx; // test seam (BUG-024): lets a suite drop the cursor to simulate a CSMS restart
@@ -141,7 +243,13 @@ function mountOcpp(wss, store, log) {
         ws.send(callError('0', 'FormationViolation'));
         return;
       }
-      // B2G-009: CSMS-initiated CALLs get CALLRESULT/CALLERROR answers — log and drop.
+      // B2G-009 + ADR-0010: CSMS-initiated CALLs get CALLRESULT/CALLERROR answers.
+      // They are correlated against the pending-call registry above (the previous
+      // behaviour — log and drop — broke the control loop's verify stage).
+      if (msg.kind === 'RESULT' || msg.kind === 'ERROR') {
+        handleCsmsResult(store, msg, log);
+        return;
+      }
       if (msg.kind !== 'CALL') return;
       const p = msg.payload || {};
       try {
@@ -262,15 +370,17 @@ function mountOcpp(wss, store, log) {
               }
               const next = seqByTx.get(sid) + 1;
               seqByTx.set(sid, next);
-              await store.recordTick(
-                sid,
-                next,
-                new Date().toISOString(),
-                Number(e.value) / 1000,
-                pr ? Number(pr.value) / 1000 : null,
-                null,
-                null
-              );
+              const sampledAt = new Date().toISOString();
+              const sampledKw = pr ? Number(pr.value) / 1000 : null;
+              await store.recordTick(sid, next, sampledAt, Number(e.value) / 1000, sampledKw, null, null);
+              // Verify stage: only after the tick is durably recorded do we compare it
+              // to the schedule in force — a tick that was rejected/deduped must not
+              // become compliance evidence.
+              try {
+                enforcementSample(store, cpId, sid, sampledKw, sampledAt);
+              } catch (err) {
+                log.warn({ identity, err: err.message }, 'enforcement sample failed');
+              }
             }
             ws.send(result(msg.uid, {}));
             break;
@@ -321,4 +431,16 @@ function mountOcpp(wss, store, log) {
   return registry;
 }
 
-module.exports = { mountOcpp, checkBasic, stopTransaction, startTransaction };
+module.exports = {
+  mountOcpp,
+  checkBasic,
+  stopTransaction,
+  startTransaction,
+  registerPendingCall,
+  handleCsmsResult,
+  sweepExpiredAcks,
+  enforcementSample,
+  pendingCallCount: () => pendingCalls.size,
+  unknownResultCount: () => unknownResults,
+  ACK_TIMEOUT_MS,
+};

@@ -188,6 +188,36 @@ async function hydrate(local, pool) {
         local.seq.gridAsset = Math.max(local.seq.gridAsset, Number(r.ASSET_ID));
       }
     );
+    // Audit trail hydration. `/admin/audit-logs` serves `local.audit`, and a control-plane
+    // review found that the buffer was never restored: every row written before the last
+    // restart vanished from the endpoint (GRID_ASSET / CONTROL_MODE edits looked unaudited
+    // even though the durable table had them). Restore the newest window — exactly the
+    // 200 rows the endpoint caps at, ascending so the buffer tail is the latest action.
+    // CLOBs are projected with DBMS_LOB.SUBSTR so they arrive as short strings, and the
+    // timestamp is emitted with an explicit 'Z' (the DB timestamp is UTC): rows restored
+    // here are compared against process boot time by the durability test, so an
+    // ambiguous naive timestamp would make that comparison depend on the reader's TZ.
+    await q(
+      `SELECT audit_id, actor_user_id, entity_name, entity_id, action,
+              DBMS_LOB.SUBSTR(old_value, 4000, 1) ov, DBMS_LOB.SUBSTR(new_value, 4000, 1) nv,
+              TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z' c
+         FROM (SELECT * FROM audit_log ORDER BY audit_id DESC FETCH FIRST 200 ROWS ONLY)
+        ORDER BY audit_id`,
+      'audit',
+      (r) => {
+        local.audit.push({
+          audit_id: Number(r.AUDIT_ID),
+          actor_user_id: r.ACTOR_USER_ID != null ? Number(r.ACTOR_USER_ID) : null,
+          entity_name: r.ENTITY_NAME,
+          entity_id: String(r.ENTITY_ID),
+          action: r.ACTION,
+          old_value: r.OV != null ? String(r.OV) : null,
+          new_value: r.NV != null ? String(r.NV) : null,
+          created_at: r.C || '',
+        });
+        local.seq.audit = Math.max(local.seq.audit, Number(r.AUDIT_ID));
+      }
+    );
     await q(
       `SELECT decision_id, site_id, horizon_start, interval_min, bounds_hash, solver, runtime_ms, state_version, status,
               TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') c FROM control_decision`,
@@ -760,13 +790,42 @@ function wrapWithOracle(local, pool) {
       // instead call the local implementation inside the same per-connector mutex only if Oracle won.
       // Simplest coherent path: run local create (it will succeed — Oracle already serialized),
       // but on local conflict (clock skew) prefer the Oracle id.
+      const remap = (r, localId) => {
+        // Identity divergence, not a theoretical concern: Oracle's identity sequence
+        // caches values, so after a container restart it hands out ids well above the
+        // local counter (which is hydrated from MAX(id)). Returning the LOCAL id made
+        // the API advertise a reservation that Oracle had never heard of — the next
+        // `start_session` failed with -20505 RESERVATION_MISMATCH, and a cancel would
+        // have targeted the wrong row. `startSession` already remaps; reservations did
+        // not (caught by test/e2e/control-plane.js on the first re-run after a restart).
+        if (Number(out) === Number(localId)) return r;
+        local.reservations.delete(Number(localId));
+        r.reservation_id = Number(out);
+        local.reservations.set(Number(out), r);
+        // Anything already pointing at the booking must follow it, or reads disagree
+        // with what we just told the client.
+        for (const a of local.audit)
+          if (a.entity_name === 'RESERVATION' && a.entity_id === String(localId)) a.entity_id = String(out);
+        for (const n of local.notifs)
+          if (n.payload && n.payload.reservation_id === Number(localId)) n.payload.reservation_id = Number(out);
+        for (const ev of local.outbox)
+          if (ev.payload && ev.payload.reservation_id === Number(localId)) {
+            ev.payload.reservation_id = Number(out);
+            ev.dedupe_key = String(ev.dedupe_key).replace(/:\d+$/, `:${Number(out)}`);
+          }
+        local.seq.res = Math.max(local.seq.res, Number(out));
+        return r;
+      };
       try {
         const r = await origCreateReservation(uid, vehicleId, cpId, connNo, startAt, endAt);
-        r.oracle_id = out;
-        return r;
+        r.oracle_id = Number(out);
+        return remap(r, r.reservation_id);
       } catch {
-        return {
-          reservation_id: out,
+        // Oracle won while the local mirror refused (clock skew on the overlap check).
+        // Return the durable row AND cache it, or the client would hold a booking the
+        // read-cache cannot resolve.
+        const row = {
+          reservation_id: Number(out),
           connector_ref: `${cpId}:${connNo}`,
           cp_id: Number(cpId),
           connector_no: Number(connNo),
@@ -775,8 +834,12 @@ function wrapWithOracle(local, pool) {
           start_at: new Date(startAt).toISOString(),
           end_at: new Date(endAt).toISOString(),
           status: 'BOOKED',
+          created_at: new Date().toISOString(),
           oracle: true,
         };
+        local.reservations.set(Number(out), row);
+        local.seq.res = Math.max(local.seq.res, Number(out));
+        return row;
       }
     } catch (e) {
       throw fromDriver(e);
@@ -1139,10 +1202,47 @@ function wrapControl(local, pool) {
     }
   };
 
+  // Mirror failures were swallowed whole (`.catch(() => {})`), so a diverging control
+  // plane was invisible: the worst case found in review was a mirror writing to a table
+  // that does not exist (`control_audit_note`) and failing silently forever. Fire-and-forget
+  // stays (the local store is the authority for control writes, ADR-0005), but the failure
+  // is now COUNTED and surfaced at /health, so divergence is observable instead of assumed.
+  const mirrorFail = (what) => (e) => {
+    local._mirrorErrors = (local._mirrorErrors || 0) + 1;
+    local._lastMirrorError = `${what}: ${e && e.message ? e.message : 'unknown'}`;
+  };
+
+  // Control-plane actions must leave an audit trail in the DURABLE store: the PL/SQL
+  // packages write audit_log for the money path, but grid-asset edits, control-mode
+  // changes and dead-letter triage are app-layer actions, so without this insert the
+  // authoritative audit_log has no record of who changed the electrical limits
+  // (ADR-0011 §"Control-mode governance" / §"Decision provenance").
+  const auditControl = (c, { actor, entity, id, action, oldV, newV }) =>
+    c.execute(
+      `INSERT INTO audit_log (actor_user_id, entity_name, entity_id, action, old_value, new_value)
+       VALUES (:actor, :entity, :id, :action, :oldV, :newV)`,
+      {
+        actor: actor == null ? null : Number(actor),
+        entity: String(entity),
+        id: String(id),
+        action: String(action).slice(0, 24),
+        oldV: oldV == null ? null : String(oldV),
+        newV: newV == null ? null : String(newV),
+      }
+    );
+
   const origUpsertGridAsset = local.upsertGridAsset.bind(local);
   local.upsertGridAsset = (stationId, b, actor) => {
     const a = origUpsertGridAsset(stationId, b, actor);
     const p = withConn(async (c) => {
+      await auditControl(c, {
+        actor,
+        entity: 'GRID_ASSET',
+        id: a.asset_id,
+        action: a.status === 'PENDING' ? 'CAP_REDUCE_PROPOSED' : b.asset_id ? 'UPDATE' : 'CREATE',
+        oldV: b.asset_id ? 'existing' : null,
+        newV: `cap_kw=${a.cap_kw};status=${a.status}`,
+      });
       if (b.asset_id) {
         await c.execute(
           `UPDATE grid_asset SET cap_kw = :cap, ramp_kw = :ramp, status = :st, updated_at = SYSTIMESTAMP WHERE asset_id = :id`,
@@ -1167,7 +1267,7 @@ function wrapControl(local, pool) {
       }
       await c.commit();
     });
-    p.catch(() => {});
+    p.catch(mirrorFail('grid-asset write-through'));
     return a;
   };
 
@@ -1179,8 +1279,17 @@ function wrapControl(local, pool) {
         `UPDATE grid_asset SET status = :st, approved_by = :appr, updated_at = SYSTIMESTAMP WHERE asset_id = :id`,
         { st: a.status, appr: a.approved_by, id: a.asset_id }
       );
+      // Four-eyes is only an audit control if the second signature is recorded.
+      await auditControl(c, {
+        actor,
+        entity: 'GRID_ASSET',
+        id: a.asset_id,
+        action: 'APPROVE',
+        oldV: 'PENDING',
+        newV: `ACTIVE;approved_by=${a.approved_by}`,
+      });
       await c.commit();
-    }).catch(() => {});
+    }).catch(mirrorFail('grid-asset approve'));
     return a;
   };
 
@@ -1188,19 +1297,20 @@ function wrapControl(local, pool) {
   local.setControlMode = (siteId, mode, actor) => {
     const out = origSetControlMode(siteId, mode, actor);
     withConn(async (c) => {
-      // Mode is station-level; keep the audit trail in Oracle via AUDIT_PKG-equivalent insert.
-      await c
-        .execute(`INSERT INTO control_audit_note (site_id, from_mode, to_mode, actor) VALUES (:sid, :f, :t, :a)`, {
-          sid: out.site_id,
-          f: out.previous,
-          t: out.mode,
-          a: actor ?? null,
-        })
-        .catch(async () => {
-          // Table is optional sugar; the audit row is the source of truth.
-        });
+      // The previous version inserted into control_audit_note — a table that does not
+      // exist in any migration — inside a `.catch()` that swallowed the failure, so the
+      // durable audit_log had NO record of actuation being enabled on a site. The audit
+      // row is written to audit_log (the table the other packages use) instead.
+      await auditControl(c, {
+        actor,
+        entity: 'CONTROL_MODE',
+        id: out.site_id,
+        action: 'SET',
+        oldV: out.previous,
+        newV: out.mode,
+      });
       await c.commit();
-    }).catch(() => {});
+    }).catch(mirrorFail('control-mode'));
     return out;
   };
 
@@ -1337,7 +1447,15 @@ function wrapControl(local, pool) {
         { st: row.status, id: row.letter_id },
         { autoCommit: true }
       );
-    }).catch(() => {});
+      await auditControl(c, {
+        actor,
+        entity: 'DEAD_LETTER',
+        id: row.letter_id,
+        action: 'RESOLVE',
+        oldV: 'OPEN',
+        newV: row.status,
+      });
+    }).catch(mirrorFail('dead-letter resolve'));
     return row;
   };
 
