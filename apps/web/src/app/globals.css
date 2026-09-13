@@ -1,6 +1,7 @@
 /* Grid Current — VoltHub design tokens (masterplan §21).
-   Dark-only ops surfaces. Space Grotesk display / Inter UI / IBM Plex Mono numerals. */
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+   Dark-only ops surfaces. Fonts are self-hosted via next/font (see layout.js);
+   the CSS variables it sets --font-inter/--font-grotesk/--font-plex-mono are
+   defined on <html> — this file only consumes them, with system fallbacks. */
 :root {
   --bg: #0b0e11;
   --s1: #11151a;
@@ -37,7 +38,8 @@ body {
   background: var(--bg);
   color: var(--tx);
   font:
-    14px/1.5 Inter,
+    14px/1.5 var(--font-inter),
+    Inter,
     system-ui,
     sans-serif;
 }
@@ -54,7 +56,7 @@ h1,
 h2,
 h3,
 .display {
-  font-family: 'Space Grotesk', Inter, sans-serif;
+  font-family: var(--font-grotesk), 'Space Grotesk', Inter, sans-serif;
   text-transform: uppercase;
   letter-spacing: -0.02em;
   margin: 0;
@@ -66,7 +68,10 @@ h3,
   text-wrap: balance;
 }
 .micro {
-  font: 600 11px/1.2 Inter;
+  font:
+    600 11px/1.2 var(--font-inter),
+    Inter,
+    sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--tx2);
@@ -74,7 +79,7 @@ h3,
 .num,
 td.n,
 .mono {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--font-plex-mono), 'IBM Plex Mono', monospace;
   font-variant-numeric: tabular-nums;
 }
 a {
@@ -97,9 +102,10 @@ a {
   z-index: 10;
 }
 .brand {
-  font-family: 'Space Grotesk';
+  font-family: var(--font-grotesk), 'Space Grotesk', sans-serif;
   font-weight: 700;
   letter-spacing: 0.02em;
+  text-decoration: none;
 }
 .brand b {
   background: var(--cream);
@@ -145,7 +151,10 @@ a {
 }
 /* BUG-017 fix: `composes:` is CSS-Modules syntax — invalid in global CSS. Inline the .micro rules. */
 .kpi .l {
-  font: 600 11px/1.2 Inter;
+  font:
+    600 11px/1.2 var(--font-inter),
+    Inter,
+    sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--tx2);
@@ -234,7 +243,10 @@ table.t {
 }
 .t th {
   text-align: left;
-  font: 600 11px Inter;
+  font:
+    600 11px var(--font-inter),
+    Inter,
+    sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--tx2);
@@ -354,7 +366,22 @@ table.t {
   cursor: pointer;
 }
 svg text {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--font-plex-mono), 'IBM Plex Mono', monospace;
+}
+/* Skip link (WCAG 2.4.1): visually hidden until focused. */
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  background: var(--cream);
+  color: var(--carbon);
+  padding: 10px 16px;
+  border-radius: 0 0 var(--r-s) 0;
+  font-weight: 600;
+}
+.skip:focus {
+  left: 0;
 }
 .err {
   color: var(--bad);

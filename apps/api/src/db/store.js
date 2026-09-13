@@ -29,6 +29,10 @@ const ORA = {
   PAY_CONFLICT: -20704,
   INSUFFICIENT_FUNDS: -20705,
   CONNECTOR_GUARD: -20801,
+  // ADR-0010 grid-control band (V007 triggers + gateway envelope raise these).
+  GRID_ASSET_INVALID: -20901,
+  GRID_CAP_MONOTONIC: -20902,
+  ENVELOPE_REJECTED: -20903,
 };
 
 // Simple async mutex per key (models SELECT ... FOR UPDATE serialization).
@@ -132,6 +136,12 @@ function createStore() {
       notif: 0,
       audit: 0,
       outbox: 0,
+      // ADR-0010 control sequences (local ids are the authority; Oracle mirrors explicit ids).
+      gridAsset: 0,
+      decision: 0,
+      cert: 0,
+      push: 0,
+      letter: 0,
     },
     users: new Map(),
     wallets: new Map(),
@@ -162,6 +172,17 @@ function createStore() {
     // DA3 projection (TimescaleDB in prod; in-process rollup locally)
     ticks: [],
     stateEvents: [],
+    // ADR-0010 (FC-HCC): grid assets + control artifacts. Mirrors Oracle V007.
+    // Control rows are append-only: status transitions, never deletes (no-DELETE role).
+    gridAssets: new Map(),
+    controlDecisions: new Map(),
+    certificates: new Map(),
+    profilePushes: new Map(),
+    deadLetters: new Map(),
+    // Per-site control mode (blueprint Q.1): OFF | ADVISORY | ENFORCED. Default OFF
+    // until receipts exist — actuation is opt-in per site, mirroring the V007 posture.
+    controlMode: new Map(),
+    enforcementTicks: [],
     mutex: new Mutex(),
   };
   const ref = (cp, no) => `${cp}:${no}`;
@@ -885,6 +906,348 @@ function createStore() {
     });
     return cp;
   };
+  // ===================== ADR-0010: FC-HCC control surface =====================
+  // All control writes go through the store port (ADR-0005) exactly like the money
+  // path: the local store is the reference implementation; db/oracle.js mirrors each
+  // method write-through to V007 with the same ids (identity-by-default-on-null).
+  // Control errors carry the V007 ORA band on a REAL Error (no-throw-literal): the
+  // shared error middleware + oraStatus() key on e.num/e.code/e.status.
+  const controlErr = (code, message, status, num) => {
+    const e = new Error(message);
+    e.code = code;
+    e.num = num;
+    e.status = status;
+    return e;
+  };
+
+  // Grid asset CRUD with hierarchy validation mirrored from trg_grid_asset_shape +
+  // trg_grid_cap_monotonic (V007). Local engine raises the SAME -2090x codes.
+  s.upsertGridAsset = (stationId, b, actor) => {
+    const sid = Number(stationId);
+    if (!s.stations.get(sid)) {
+      const e = err('NOT_FOUND', 'station not found', 404);
+      throw e;
+    }
+    const kind = String(b.kind || '').toUpperCase();
+    if (!['SITE', 'PANEL', 'FEEDER'].includes(kind))
+      throw controlErr('GRID_ASSET_INVALID', 'kind must be SITE|PANEL|FEEDER', 422, ORA.GRID_ASSET_INVALID);
+    const capKw = Number(b.cap_kw);
+    if (!(capKw > 0)) throw controlErr('GRID_ASSET_INVALID', 'cap_kw must be > 0', 422, ORA.GRID_ASSET_INVALID);
+    const parentId = b.parent_id != null ? Number(b.parent_id) : null;
+    if (kind === 'SITE' && parentId != null)
+      throw controlErr('GRID_ASSET_INVALID', 'SITE is the root (no parent)', 422, ORA.GRID_ASSET_INVALID);
+    if (kind !== 'SITE' && parentId == null)
+      throw controlErr('GRID_ASSET_INVALID', kind + ' requires a parent', 422, ORA.GRID_ASSET_INVALID);
+    if (parentId != null) {
+      const p = s.gridAssets.get(parentId);
+      if (!p) throw controlErr('GRID_ASSET_INVALID', 'parent asset not found', 422, ORA.GRID_ASSET_INVALID);
+      if (p.station_id !== sid)
+        throw controlErr(
+          'GRID_CAP_MONOTONIC',
+          'parent asset belongs to a different station',
+          409,
+          ORA.GRID_CAP_MONOTONIC
+        );
+      if (capKw > p.cap_kw)
+        throw controlErr(
+          'GRID_CAP_MONOTONIC',
+          `child cap ${capKw} kW exceeds parent cap ${p.cap_kw} kW`,
+          409,
+          ORA.GRID_CAP_MONOTONIC
+        );
+    }
+    // Exactly one non-retired SITE root per station (V007 trigger parity).
+    if (kind === 'SITE') {
+      const existingRoot = [...s.gridAssets.values()].find(
+        (a) => a.station_id === sid && a.kind === 'SITE' && a.status !== 'RETIRED' && a.asset_id !== b.asset_id
+      );
+      if (existingRoot)
+        throw controlErr('GRID_ASSET_INVALID', 'station already has a SITE root', 422, ORA.GRID_ASSET_INVALID);
+    }
+    // Two-person rule: a cap REDUCTION on an existing asset starts PENDING and needs a
+    // second distinct ADMIN approval (blueprint N.1). Increases apply immediately.
+    const existing = b.asset_id ? s.gridAssets.get(Number(b.asset_id)) : null;
+    const now = new Date().toISOString();
+    if (existing && capKw < existing.cap_kw) {
+      existing.cap_kw = capKw;
+      existing.ramp_kw = b.ramp_kw != null ? Number(b.ramp_kw) : existing.ramp_kw;
+      existing.status = 'PENDING';
+      existing.proposed_by = actor ?? null;
+      existing.approved_by = null;
+      existing.updated_at = now;
+      s.auditLog(actor, 'GRID_ASSET', existing.asset_id, 'CAP_REDUCE_PROPOSED', existing.cap_kw, capKw);
+      return existing;
+    }
+    if (existing) {
+      existing.cap_kw = capKw;
+      existing.ramp_kw = b.ramp_kw != null ? Number(b.ramp_kw) : existing.ramp_kw;
+      existing.status = 'ACTIVE';
+      existing.updated_at = now;
+      s.auditLog(actor, 'GRID_ASSET', existing.asset_id, 'UPDATE', null, { cap_kw: capKw });
+      return existing;
+    }
+    const asset_id = ++s.seq.gridAsset;
+    const a = {
+      asset_id,
+      station_id: sid,
+      parent_id: parentId,
+      kind,
+      label: String(b.label || kind + '-' + asset_id),
+      cap_kw: capKw,
+      ramp_kw: b.ramp_kw != null ? Number(b.ramp_kw) : null,
+      status: 'ACTIVE',
+      proposed_by: actor ?? null,
+      approved_by: null,
+      created_at: now,
+      updated_at: now,
+    };
+    s.gridAssets.set(asset_id, a);
+    s.auditLog(actor, 'GRID_ASSET', asset_id, 'CREATE', null, { kind, cap_kw: capKw });
+    return a;
+  };
+  // Second-person approval for a PENDING cap reduction (four-eyes on grid edits).
+  s.approveGridAsset = (assetId, actor) => {
+    const a = s.gridAssets.get(Number(assetId));
+    if (!a) throw err('NOT_FOUND', 'grid asset not found', 404);
+    if (a.status !== 'PENDING')
+      throw controlErr('GRID_ASSET_INVALID', 'asset is not PENDING', 422, ORA.GRID_ASSET_INVALID);
+    if (actor != null && a.proposed_by != null && Number(actor) === Number(a.proposed_by))
+      throw controlErr(
+        'GRID_ASSET_INVALID',
+        'the proposer cannot approve their own cap reduction',
+        422,
+        ORA.GRID_ASSET_INVALID
+      );
+    a.status = 'ACTIVE';
+    a.approved_by = actor ?? null;
+    a.updated_at = new Date().toISOString();
+    s.auditLog(actor, 'GRID_ASSET', a.asset_id, 'APPROVE', 'PENDING', 'ACTIVE');
+    return a;
+  };
+  // Effective site cap = the SITE root cap (children are always <= parent by monotonicity).
+  s.siteCapKw = (stationId) => {
+    let cap = Infinity;
+    for (const a of s.gridAssets.values()) {
+      if (a.station_id === Number(stationId) && a.kind === 'SITE' && a.status === 'ACTIVE')
+        cap = Math.min(cap, a.cap_kw);
+    }
+    return cap;
+  };
+  s.getControlMode = (siteId) => s.controlMode.get(Number(siteId)) || 'OFF';
+  s.setControlMode = (siteId, mode, actor) => {
+    const sid = Number(siteId);
+    if (!s.stations.get(sid)) throw err('NOT_FOUND', 'station not found', 404);
+    if (!['OFF', 'ADVISORY', 'ENFORCED'].includes(mode))
+      throw controlErr('GRID_ASSET_INVALID', 'mode must be OFF|ADVISORY|ENFORCED', 422, ORA.GRID_ASSET_INVALID);
+    // ENFORCED requires an ACTIVE SITE root (an envelope without a certified cap is a hope).
+    if (mode === 'ENFORCED' && s.siteCapKw(sid) === Infinity)
+      throw controlErr(
+        'GRID_ASSET_INVALID',
+        'define an ACTIVE SITE grid asset before ENFORCED mode',
+        422,
+        ORA.GRID_ASSET_INVALID
+      );
+    const prev = s.getControlMode(sid);
+    s.controlMode.set(sid, mode);
+    s.auditLog(actor, 'CONTROL_MODE', sid, 'SET', prev, mode);
+    s.emitOutbox('CONTROL_DECISION', `ctlmode:${sid}:${Date.now()}`, { site_id: sid, from: prev, to: mode });
+    return { site_id: sid, mode, previous: prev };
+  };
+
+  // One optimizer run, append-only. payload_json carries the full x[v][t] schedule.
+  s.recordDecision = (siteId, d) => {
+    const decision_id = ++s.seq.decision;
+    const row = {
+      decision_id,
+      site_id: Number(siteId),
+      horizon_start: d.horizon_start || new Date().toISOString(),
+      interval_min: d.interval_min || 15,
+      payload_json: d.payload_json || '{}',
+      bounds_hash: d.bounds_hash || null,
+      solver: d.solver || 'fchcc-lp-merit',
+      runtime_ms: d.runtime_ms ?? null,
+      state_version: d.state_version ?? null,
+      status: 'COMMITTED',
+      created_at: new Date().toISOString(),
+    };
+    s.controlDecisions.set(decision_id, row);
+    s.emitOutbox('CONTROL_DECISION', `ctl:${decision_id}`, {
+      decision_id,
+      site_id: row.site_id,
+      horizon: row.interval_min,
+      status: 'COMMITTED',
+    });
+    return row;
+  };
+
+  // Admission-time feasibility certificate. Same-transaction discipline: called by the
+  // certifier with the session/reservation it covers, so admission and money-path state
+  // never diverge (blueprint P.2). worst-case delivered energy must clear the need.
+  s.issueCertificate = ({
+    sessionId,
+    reservationId,
+    stationId,
+    cpId,
+    connectorNo,
+    floorKw,
+    marginKwh,
+    worstCaseKwh,
+    requiredKwh,
+    deadlineAt,
+    decisionId,
+    admitted,
+  }) => {
+    const cert_id = ++s.seq.cert;
+    const row = {
+      cert_id,
+      session_id: sessionId != null ? Number(sessionId) : null,
+      reservation_id: reservationId != null ? Number(reservationId) : null,
+      station_id: Number(stationId),
+      cp_id: Number(cpId),
+      connector_no: Number(connectorNo),
+      floor_kw: Number(floorKw || 0),
+      margin_kwh: Number(marginKwh || 0),
+      worst_case_kwh: Number(worstCaseKwh || 0),
+      required_kwh: Number(requiredKwh || 0),
+      deadline_at: deadlineAt,
+      decision_id: decisionId != null ? Number(decisionId) : null,
+      status: admitted ? 'ACTIVE' : 'FAILED',
+      issued_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      reason: admitted ? null : 'worst-case deliverable energy below required energy minus margin',
+    };
+    s.certificates.set(cert_id, row);
+    s.emitOutbox('CERT_LIFECYCLE', `cert:${cert_id}:ISSUED`, {
+      cert_id,
+      from: null,
+      to: row.status,
+      reason: row.reason,
+    });
+    return row;
+  };
+  // Certificate state machine (blueprint P.1: ISSUED/ACTIVE/ERODED/FAILED/MET).
+  s.transitionCertificate = (certId, to, reason) => {
+    const c = s.certificates.get(Number(certId));
+    if (!c) throw err('NOT_FOUND', 'certificate not found', 404);
+    const legal = {
+      ISSUED: ['ACTIVE', 'FAILED'],
+      ACTIVE: ['ERODED', 'FAILED', 'MET'],
+      ERODED: ['FAILED', 'MET', 'ACTIVE'],
+    };
+    if (!(legal[c.status] || []).includes(to))
+      throw controlErr(
+        'ILLEGAL_TRANSITION',
+        `certificate ${c.status} -> ${to} is illegal`,
+        409,
+        ORA.ILLEGAL_TRANSITION
+      );
+    const from = c.status;
+    c.status = to;
+    c.reason = reason || c.reason;
+    c.updated_at = new Date().toISOString();
+    s.emitOutbox('CERT_LIFECYCLE', `cert:${c.cert_id}:${to}:${Date.now()}`, {
+      cert_id: c.cert_id,
+      from,
+      to,
+      reason: c.reason,
+    });
+    return c;
+  };
+
+  // Protocol artifact audit: one row per (cp, decision) — idempotent on retry,
+  // mirrors uq_push_cp_decision. The gateway records ack_result after CALLRESULT.
+  s.recordProfilePush = ({ decisionId, cpId, profilePayload, payloadSha256, clamped }) => {
+    const key = `${Number(cpId)}:${Number(decisionId)}`;
+    const found = [...s.profilePushes.values()].find(
+      (p) => p.cp_id === Number(cpId) && p.decision_id === Number(decisionId)
+    );
+    if (found) return { row: found, deduped: true };
+    const push_id = ++s.seq.push;
+    const row = {
+      push_id,
+      decision_id: Number(decisionId),
+      cp_id: Number(cpId),
+      profile_payload: profilePayload || '{}',
+      payload_sha256: payloadSha256 || null,
+      clamped: clamped ? 'Y' : 'N',
+      push_at: new Date().toISOString(),
+      ack_result: null,
+    };
+    s.profilePushes.set(push_id, row);
+    s._pushKey = s._pushKey || new Map();
+    s._pushKey.set(key, push_id);
+    s.emitOutbox('PROFILE_PUSHED', `push:${push_id}`, {
+      push_id,
+      cp_id: row.cp_id,
+      decision_id: row.decision_id,
+      payload_sha256: row.payload_sha256,
+    });
+    return { row, deduped: false };
+  };
+  s.setPushAck = (pushId, ackResult) => {
+    const p = s.profilePushes.get(Number(pushId));
+    if (p) p.ack_result = String(ackResult || 'UNKNOWN').slice(0, 20);
+    return p;
+  };
+
+  // Compliance telemetry: scheduled vs actual kW per CP (Timescale T003 in prod;
+  // in-process ring locally). Negative deviation = charger under-delivering.
+  s.recordEnforcementTick = ({ cpId, sessionId, decisionId, scheduledKw, actualKw, ts }) => {
+    const scheduled = Number(scheduledKw);
+    const actual = actualKw == null ? null : Number(actualKw);
+    const tick = {
+      ts: ts || new Date().toISOString(),
+      cp_id: Number(cpId),
+      session_id: sessionId != null ? Number(sessionId) : null,
+      decision_id: decisionId != null ? Number(decisionId) : null,
+      scheduled_kw: scheduled,
+      actual_kw: actual,
+      deviation_kw: actual == null ? null : +(actual - scheduled).toFixed(4),
+    };
+    s.enforcementTicks.push(tick);
+    if (s.enforcementTicks.length > 5000) s.enforcementTicks.splice(0, s.enforcementTicks.length - 5000);
+    // T003 path: rides the same outbox -> relay -> meter_tick_enforcement hypertable
+    // channel as telemetry (ADR-0003). Dedupe per (cp, ts, scheduled) like the PK.
+    s.emitOutbox('ENFORCEMENT_TICK', `enf:${tick.cp_id}:${tick.ts}:${tick.scheduled_kw}`, tick);
+    return tick;
+  };
+
+  // Dead letters: poison events + envelope-rejected pushes, operator triage route.
+  s.deadLetter = ({ eventRef, kind, reasonCode, detail, payload }) => {
+    const key = String(eventRef || '');
+    const found = [...s.deadLetters.values()].find((d) => d.event_ref === key);
+    if (found) {
+      found.last_seen_at = new Date().toISOString();
+      return found;
+    }
+    const letter_id = ++s.seq.letter;
+    const row = {
+      letter_id,
+      event_ref: key,
+      kind: String(kind || 'UNKNOWN'),
+      reason_code: String(reasonCode || 'UNKNOWN'),
+      detail: detail ? String(detail).slice(0, 500) : null,
+      payload: payload ? JSON.stringify(payload).slice(0, 2000) : null,
+      first_seen_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
+      status: 'OPEN',
+    };
+    s.deadLetters.set(letter_id, row);
+    return row;
+  };
+  s.listDeadLetters = (status = 'OPEN') =>
+    [...s.deadLetters.values()].filter((d) => d.status === status).sort((a, b) => b.letter_id - a.letter_id);
+  s.resolveDeadLetter = (letterId, action, actor) => {
+    const d = s.deadLetters.get(Number(letterId));
+    if (!d) throw err('NOT_FOUND', 'dead letter not found', 404);
+    if (!['REPLAYED', 'DISMISSED'].includes(action))
+      throw controlErr('GRID_ASSET_INVALID', 'action must be REPLAYED|DISMISSED', 422, ORA.GRID_ASSET_INVALID);
+    d.status = action;
+    d.last_seen_at = new Date().toISOString();
+    s.auditLog(actor, 'DEAD_LETTER', d.letter_id, action, 'OPEN', action);
+    return d;
+  };
+
   // BUG-047: station metadata updates (PATCH /admin/stations/:id) extracted into a store
   // method so the adapter can mirror them. Returns { station, prev } — prev is the undo
   // snapshot for the mirror. Route keeps HTTP validation (BUG-034 status allow-list).

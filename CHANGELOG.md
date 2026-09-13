@@ -2,6 +2,82 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
+## [Unreleased]
+
+### Added (FC-HCC control loop — ADR-0010..0013)
+
+- **OCPP 1.6 Smart Charging actuation path** (`apps/api/src/ocpp/smart-charging.js`):
+  `SetChargingProfile` / `ClearChargingProfile` / `GetCompositeSchedule` dispatch
+  with an **optimizer-independent safety envelope** — hard caps derive from the
+  certified `grid_asset` hierarchy, never from the optimizer's output; a push that
+  would violate a cap is rejected with a new error band **-20903
+  ENVELOPE_REJECTED**, dead-lettered, and pinned by tests. Profile pushes are
+  idempotent per (cp_id, decision_id), rate-governed at 6/min per charge point
+  (429), and ack-correlated into an append-only audit table.
+- **Grid electrical model (Oracle V007 + Timescale T003)**: `grid_asset`
+  (SITE→PANEL/FEEDER hierarchy with enforced cap monotonicity toward the root,
+  band -20902), `control_decision` (append-only, solver + bounds-hash provenance),
+  `feasibility_certificate` (ISSUED/ACTIVE/ERODED/FAILED/MET state machine),
+  `charging_profile_push` (idempotent audit), `dead_letter` (operator triage), and
+  `meter_tick_enforcement` hypertable (scheduled vs actual kW per CP, 5-minute
+  compliance cagg). Local store implements the identical contract (ADR-0005);
+  Oracle mirrors write through with local-id authority.
+- **FC-HCC control module** (`apps/api/src/control/`): estimator (per-vehicle
+  energy/acceptance state from sessions + readings), worst-case certifier,
+  deterministic merit-order LP surrogate (site/CP caps, deadlines, certified-floor
+  priority), OCPP profile compiler, and margin-erosion replan trigger with
+  hysteresis. Per-site control mode OFF/ADVISORY/ENFORCED (default OFF; ENFORCED
+  requires an ACTIVE site cap). Control REST surface under `/api/v1/control/*`,
+  `/stations/{id}/grid-assets`, `/ops/dead-letters` — covered by the OpenAPI drift
+  gate.
+- **Two-person rule on cap reductions**: a grid-asset cap REDUCTION starts PENDING
+  and requires a second, distinct ADMIN approval (self-approval rejected, -20901).
+- **Simulator profile compliance (ADR-0012)**: simulated charge points honor
+  `SetChargingProfile` (metered kW = min(natural, profile limit)) and can be
+  impaired (`--impair noncompliant`) so the compliance verifier has an honest
+  adversarial case.
+- **Bench E1/E2 with pre-registered protocol (ADR-0013)** (`bench/e1-cost.js`):
+  FC-HCC vs uncontrolled vs static-cap over 20 seeds with paired arrival streams;
+  total cost = ToU energy + β·peak (β=10 $/kW, stated assumption). First receipt:
+  mean total cost 104.25 (FC-HCC) vs 104.83 (static-cap) vs 373.59 (uncontrolled),
+  peak 10 kW capped on all seeds, 20/20 + 20/20 acceptance. Results committed to
+  `bench/results/e1-cost.json` with environment block.
+- **Control-loop test suite** (`apps/api/test/control.js`, 9 pins): envelope never
+  exceeded by compiled profiles; cap monotonicity; worst-case certificate refusal
+  - legal lifecycle; ENFORCED actuation frames vs ADVISORY silence; push
+    idempotency; rate governance; dead-letter dedupe/resolve; compliance-driven
+    certificate erosion + replan.
+
+### Fixed
+
+- **BUG-049 tests shipped red: `MIRROR_SEQ_TABLES` was not exported.** The
+  BUG-049/049b regression tests import `MIRROR_SEQ_TABLES` from
+  `src/db/oracle.js`, but the new export line only carried
+  `fromMirrorInsertError` + `realignMirrorSeq` — the suite crashed with
+  `TypeError: Cannot read properties of undefined (reading 'app_user')` before
+  BUG-049b could run. Export added; both tests now pass against the real site
+  config (counter clamp + wallet/audit re-key exercised as production runs
+  them). Formatting of `apps/api/test/run.js` restored to pass the
+  `format:check` gate.
+
+### Changed (apps/web)
+
+- **Fonts self-hosted via `next/font`** (Inter, Space Grotesk 500/700,
+  IBM Plex Mono 400/500 — same faces/weights as before). Removes the
+  render-blocking fonts.googleapis.com CSS round-trip and the second
+  fonts.gstatic.com fetch; fonts are now preloaded same-origin woff2 with
+  metric-compatible fallbacks. CSP tightened accordingly: `style-src` and
+  `font-src` no longer allow the Google font origins.
+- **Accessibility (WCAG 2.4.1/2.4.7/1.3.1):** skip-to-content link, primary
+  nav gets `aria-label="Primary"` + `aria-current="page"` on the active link,
+  brand is a real link, and the five invalid `<a><button>` nestings (home
+  CTAs, discover cards, AuthGate login CTA) became `Link className="btn"` —
+  one tab stop each, client-side navigation preserved. `Line`/`Heatmap`/
+  `CorridorMap` SVGs expose `role="img"` + programmatic labels.
+- **SEO:** `metadataBase` (+ `NEXT_PUBLIC_SITE_URL`), canonical, Open Graph
+  site/url, plus generated `/robots.txt` and `/sitemap.xml` routes (static
+  routes only — dynamic auth-scoped views excluded by design).
+
 ## [1.5.1] — 2026-09-08
 
 ### Fixed

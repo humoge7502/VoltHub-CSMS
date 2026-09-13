@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { api, Pill, CorridorMap } from '../../lib/ui';
 
 export default function Discover() {
@@ -82,9 +83,9 @@ export default function Discover() {
                   <button className="btn" onClick={() => setSel(s.station_id)}>
                     Select
                   </button>
-                  <a href={`/stations/${s.station_id}`}>
-                    <button className="btn pri">Open · Reserve</button>
-                  </a>
+                  <Link href={`/stations/${s.station_id}`} className="btn pri">
+                    Open · Reserve
+                  </Link>
                 </div>
               </div>
             ))}
@@ -108,11 +109,9 @@ export default function Discover() {
                   </div>
                 ))}
               </div>
-              <a href={`/stations/${cur.station_id}`}>
-                <button className="btn pri" style={{ marginTop: 12, width: '100%' }}>
-                  Reserve a connector
-                </button>
-              </a>
+              <Link href={`/stations/${cur.station_id}`} className="btn pri" style={{ marginTop: 12, width: '100%' }}>
+                Reserve a connector
+              </Link>
             </>
           ) : (
             '—'

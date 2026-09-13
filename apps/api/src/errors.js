@@ -7,6 +7,11 @@ function oraStatus(e) {
   // B2G-013: -20505 RESERVATION_MISMATCH -> 409 (ownership/connector mismatch at session start).
   if ([-20502, -20503, -20504, -20505, -20601, -20602, -20603, -20702, -20703, -20704].includes(e.num)) return 409;
   if (e.num === -20705) return 402;
+  // V007/ADR-0010: grid-control band — a rejected cap change is a conflict with
+  // the current electrical state (409), a malformed asset/hierarchy is client error (422).
+  if (e.num === -20901) return 422; // GRID_ASSET_INVALID
+  if (e.num === -20902) return 409; // GRID_CAP_MONOTONIC
+  if (e.num === -20903) return 409; // ENVELOPE_REJECTED (gateway safety envelope)
   return e.status || 500;
 }
 
@@ -30,6 +35,10 @@ const ORA_CODE_BY_NUM = {
   20704: 'PAY_CONFLICT',
   20705: 'INSUFFICIENT_FUNDS',
   20801: 'CONNECTOR_GUARD',
+  // V007/ADR-0010: grid-control band (single truth with db/oracle/V007 + store.js ORA table).
+  20901: 'GRID_ASSET_INVALID',
+  20902: 'GRID_CAP_MONOTONIC',
+  20903: 'ENVELOPE_REJECTED',
 };
 function oraError(num, code, message) {
   const e = new Error(message || code);

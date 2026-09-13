@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 // Minimal API client: 15-min access token in localStorage; the 30-day refresh
 // rides an httpOnly cookie (SEC-012) — XSS can only steal a 15-min window, and
 // POST /auth/logout revokes the whole refresh family server-side.
@@ -105,9 +106,9 @@ export function AuthGate({ error, children }) {
       <div className="card" role="alert">
         <div className="micro">LOGIN REQUIRED</div>
         <p style={{ color: 'var(--tx2)' }}>This view needs a signed-in account.</p>
-        <a href="/login">
-          <button className="btn pri">Go to login</button>
-        </a>
+        <Link className="btn pri" href="/login">
+          Go to login
+        </Link>
       </div>
     );
   }
@@ -134,7 +135,12 @@ export function Line({ pts, h = 160, stroke = '#C6F24E' }) {
   const Y = (v) => H - P - (v / mx) * (H - 2 * P);
   const d = pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(ys[i]).toFixed(1)}`).join(' ');
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: h }}>
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      style={{ width: '100%', height: h }}
+      role="img"
+      aria-label={`Load curve, ${pts.length} points, peak ${Math.max(...ys).toFixed(1)} kW`}
+    >
       {[0.25, 0.5, 0.75].map((f) => (
         <line key={f} x1={P} x2={W - P} y1={H * f} y2={H * f} stroke="rgba(255,255,255,.08)" />
       ))}
@@ -152,7 +158,7 @@ export function Heatmap({ grid }) {
   const mx = Math.max(1, ...grid.flat());
   const col = (v) => (v === 0 ? '#171C23' : v / mx < 0.5 ? '#FFFDD0' : '#C6F24E');
   return (
-    <svg viewBox="0 0 520 160" style={{ width: '100%' }}>
+    <svg viewBox="0 0 520 160" style={{ width: '100%' }} role="img" aria-label="7-day by-hour utilization heatmap">
       {grid.map((row, d) =>
         row.map((v, h) => (
           <rect
@@ -192,7 +198,7 @@ export function CorridorMap({ stations, selected, onPick }) {
       viewBox="0 0 560 220"
       style={{ width: '100%', background: '#11151A', border: '1px solid rgba(255,255,255,.08)', borderRadius: 8 }}
       role="img"
-      aria-label="Chennai station corridor map"
+      aria-label="Chennai station corridor map — each station is also listed beside the map"
     >
       <path d="M40,180 L200,120 L360,90 L520,40" stroke="#5C6670" strokeDasharray="6 6" fill="none" />
       <text x="44" y="196" fill="#5C6670" fontSize="10">

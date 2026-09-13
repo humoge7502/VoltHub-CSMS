@@ -116,5 +116,27 @@ Object.assign(spec.paths, {
       'AI advisory: deterministic LP smart-charging schedule under hard station/connector constraints (operator in scope / admin)'
     ),
   },
+  // ---- ADR-0010: FC-HCC control plane ----
+  '/stations/{id}/grid-assets': {
+    get: P('Electrical hierarchy (SITE/PANEL/FEEDER) + effective site cap + control mode (staff)'),
+    post: P('Upsert grid asset — cap monotonicity enforced, cap reductions start PENDING (admin)'),
+  },
+  '/grid-assets/{id}/approve': { post: P('Second-person approval of a PENDING cap reduction (admin, four-eyes)') },
+  '/control/mode': {
+    post: P('Per-site control mode OFF|ADVISORY|ENFORCED (admin; ENFORCED needs an ACTIVE site cap)'),
+  },
+  '/control/plan/{siteId}': {
+    post: P(
+      'One FC-HCC cycle: estimate → certify → optimize → persist decision; actuates OCPP SetChargingProfile only in ENFORCED mode (operator+)'
+    ),
+  },
+  '/control/decisions': { get: P('Decision history with solver/bounds provenance (operator+, ?siteId=)') },
+  '/control/decisions/{id}': { get: P('Decision detail incl. full x[v][t] payload (operator+)') },
+  '/control/certificates': { get: P('Feasibility certificates with lifecycle state (operator+, ?siteId=)') },
+  '/control/certificates/{id}': { get: P('Certificate detail: floor_kw, margin, worst-case energy (operator+)') },
+  '/ops/dead-letters': { get: P('Poison events + rejected pushes triage queue (admin, ?status=)') },
+  '/ops/dead-letters/{id}/resolve': { post: P('Resolve a dead letter: REPLAYED|DISMISSED (admin)') },
+  '/control/cp/{cpId}/clear-profile': { post: P('ClearChargingProfile to a charge point (admin)') },
+  '/control/cp/{cpId}/composite-schedule': { get: P('GetCompositeSchedule probe for a charge point (operator+)') },
 });
 module.exports = spec;

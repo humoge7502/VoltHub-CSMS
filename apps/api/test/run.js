@@ -666,6 +666,71 @@ async function main() {
     assert.equal(r3.status, 200);
   });
 
+  await t('BUG-049: explicit-id mirror INSERT maps ORA-00001 to the canonical 409 DUPLICATE_ID', async () => {
+    // Root cause (observed live on the compose stack): the local store owns id
+    // authority, but Oracle's IDENTITY still auto-increments for any OTHER writer
+    // (second API process, STORE=oracle suite, manual INSERT). The local counter
+    // then sits permanently behind and EVERY register 500'd with
+    // `ORA-00001 ... USER_ID 4543 already exists` until restart. Two-layer fix:
+    //   1. withMirrorRetry re-baselines the counter from Oracle's MAX(id), re-keys
+    //      the staged local row, and retries the INSERT once (self-healing);
+    //   2. if the lost race reaches the client anyway, fromMirrorInsertError maps
+    //      it to the local store's duplicate contract (409 DUPLICATE_ID) — never
+    //      a raw 500. This test pins layer 2 via the REAL export, red against the
+    //      pre-fix fromDriver passthrough (which left ORA-00001 as a 500).
+    const { fromMirrorInsertError } = require('../src/db/oracle');
+    const boom = new Error(
+      'ORA-00001: unique constraint (VOLTHUB.SYS_C008744) violated on table VOLTHUB.APP_USER columns (USER_ID)\nORA-03301: (ORA-00001 details) row with column values (USER_ID:4543) already exists'
+    );
+    const mapped = fromMirrorInsertError(boom);
+    assert.equal(mapped.code, 'DUPLICATE_ID');
+    assert.equal(mapped.status, 409);
+    // Non-1A errors keep the BUG-043 canonical mapping (e.g. package OVERLAP).
+    const overlap = fromMirrorInsertError(new Error('ORA-20503: OVERLAP'));
+    assert.equal(overlap.code, 'OVERLAP');
+    assert.equal(overlap.status, 409);
+  });
+
+  await t('BUG-049b: realignMirrorSeq clamps the counter UP to Oracle MAX(id) + re-keys the staged row', async () => {
+    // Drives the REAL realignMirrorSeq against a fake pool: seq.user=17 (the stale
+    // boot state), Oracle says MAX(user_id)=4543, a staged local user 4543 already
+    // exists locally (the colliding register). Post-fix: counter clamps to 4543,
+    // the staged user re-keys to 4544 (wallet + audit trail follow), and the next
+    // register takes 4545. Pre-fix there was no realign at all — red by absence.
+    const { realignMirrorSeq, MIRROR_SEQ_TABLES } = require('../src/db/oracle');
+    const fakePool = {
+      getConnection: async () => ({
+        execute: async () => ({ rows: [[4543]] }),
+        close: async () => {},
+      }),
+    };
+    const s = store;
+    const staged = 4543;
+    s.users.set(staged, { user_id: staged, email: 'staged@example.in', role: 'DRIVER' });
+    s.wallets.set(staged, { user_id: staged, balance: 500, currency: 'INR' });
+    s.audit.push({ entity_name: 'APP_USER', entity_id: String(staged), action: 'CREATE' });
+    s.seq.user = 17;
+    // Use the REAL site config (MIRROR_SEQ_TABLES.app_user) so the wallet/audit
+    // re-key hooks are exercised exactly as production runs them.
+    const next = await realignMirrorSeq(s, fakePool, { ...MIRROR_SEQ_TABLES.app_user, table: 'app_user' }, staged);
+    assert.equal(next, 4544, 'staged row re-keyed to the first post-clamp id');
+    assert.equal(s.seq.user, 4544, 'counter clamped UP to Oracle MAX then incremented');
+    assert.ok(!s.users.has(staged) && s.users.has(4544), 'users map re-keyed');
+    assert.ok(!s.wallets.has(staged) && s.wallets.has(4544), 'wallet followed the user');
+    assert.ok(s.wallets.get(4544).user_id === 4544, 'wallet.user_id rewritten');
+    assert.ok(
+      s.audit.some((a) => a.entity_name === 'APP_USER' && a.entity_id === '4544'),
+      'audit trail re-pointed'
+    );
+    // Counter must never move DOWN: a second realign against an older MAX is a no-op.
+    const again = await realignMirrorSeq(s, fakePool, { ...MIRROR_SEQ_TABLES.app_user, table: 'app_user' }, null);
+    assert.equal(again, null, 'no conflict → no re-key');
+    assert.equal(s.seq.user, 4544, 'counter never regresses');
+    // Cleanup so later suites don't inherit the synthetic rows.
+    s.users.delete(4544);
+    s.wallets.delete(4544);
+  });
+
   await t('BUG-044: listen defers to the store-upgrade promise but still binds + fires the callback', async () => {
     // Before BUG-044 the Oracle upgrade ran while the socket was ALREADY accepting
     // (ghost local-only rows in the hydration window; STORE=oracle tests raced the

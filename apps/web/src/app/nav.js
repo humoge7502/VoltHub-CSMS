@@ -17,9 +17,14 @@ const NAV = [
 export function Nav() {
   const path = usePathname() || '/';
   return (
-    <nav className="nav">
+    <nav className="nav" aria-label="Primary">
       {NAV.map(([href, label]) => (
-        <Link key={href} href={href} className={path === href ? 'on' : undefined}>
+        <Link
+          key={href}
+          href={href}
+          className={path === href ? 'on' : undefined}
+          aria-current={path === href ? 'page' : undefined}
+        >
           {label}
         </Link>
       ))}

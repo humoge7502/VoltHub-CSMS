@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api, Kpi } from '../lib/ui';
 
 export default function Home() {
@@ -25,12 +26,12 @@ export default function Home() {
           constraints.
         </p>
         <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-          <a href="/discover">
-            <button className="btn pri">Find a charger</button>
-          </a>
-          <a href="/dashboard">
-            <button className="btn">Operator view</button>
-          </a>
+          <Link href="/discover" className="btn pri">
+            Find a charger
+          </Link>
+          <Link href="/dashboard" className="btn">
+            Operator view
+          </Link>
         </div>
       </section>
       <div className="grid cards" style={{ marginTop: 24 }}>

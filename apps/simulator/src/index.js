@@ -66,7 +66,7 @@ async function loginDriver() {
   return { token: j.accessToken, userId: j.user.user_id };
 }
 
-async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag = 'TAG-1') {
+async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag = 'TAG-1', opts = {}) {
   // SEC-003: Security Profile 1 — Basic(identity:secret) on the WS upgrade.
   // Demo seeds use deterministic `dev-<identity>`; provisioned CPs use the secret
   // returned once by POST /admin/stations|charge-points (env OCPP_SECRET_<n> override for fleets).
@@ -80,7 +80,12 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
   });
   // B2G-009: honor inbound CSMS→CP CALLs (RemoteStop/Start). Answers CALLRESULT so the
   // gateway's fire-and-forget send is observable in tests; RemoteStop ends metering early.
+  // ADR-0010 profile compliance (Phase 2 completion criterion): a compliant CP honors
+  // a SetChargingProfile — its metered kW tracks min(natural, profile limit). A
+  // non-compliant CP (--impair noncompliant) ignores profiles, which is the honest
+  // robustness case the twin must prove the controller against.
   let remoteStopTx = null;
+  let profileLimitW = null; // current TxDefaultProfile limit (W)
   ws.on('message', (raw) => {
     try {
       const m = JSON.parse(String(raw));
@@ -93,6 +98,26 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
       } else if (action === 'RemoteStartTransaction') {
         ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
         console.log(`[sim:${identity}] RemoteStartTransaction accepted`);
+      } else if (action === 'SetChargingProfile') {
+        const prof = payload?.csChargingProfiles;
+        if (opts.compliant !== false && prof?.chargingSchedule?.chargingSchedulePeriods?.length) {
+          // Find the period covering "now" (startPeriod is seconds from startSchedule).
+          const periods = [...prof.chargingSchedule.chargingSchedulePeriods].sort(
+            (a, b) => a.startPeriod - b.startPeriod
+          );
+          const startMs = prof.chargingSchedule.startSchedule ? Date.parse(prof.chargingSchedule.startSchedule) : 0;
+          const elapsedS = Math.max(0, (Date.now() - startMs) / 1000);
+          const cur = periods.filter((p) => p.startPeriod <= elapsedS).pop();
+          profileLimitW = cur ? Number(cur.limit) : null;
+          ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+          console.log(`[sim:${identity}] SetChargingProfile accepted — limit ${profileLimitW} W`);
+        } else {
+          ws.send(JSON.stringify([3, uid, { status: 'Rejected' }]));
+          console.log(`[sim:${identity}] SetChargingProfile REJECTED (non-compliant mode)`);
+        }
+      } else if (action === 'ClearChargingProfile') {
+        profileLimitW = null;
+        ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
       } else {
         ws.send(JSON.stringify([4, uid, 'NotSupported', action, {}]));
       }
@@ -136,6 +161,11 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
       console.log(`[sim:${identity}] FAULT injected mid-session`);
       break;
     }
+    // Natural draw vs honored profile: a compliant CP meters min(natural, limit).
+    const naturalW = 30000 + i * 500;
+    const drawW = profileLimitW != null ? Math.min(naturalW, profileLimitW) : naturalW;
+    if (profileLimitW != null && drawW < naturalW)
+      console.log(`[sim:${identity}] profile honored: ${naturalW}W -> ${drawW}W`);
     await ocppCall(ws, 'MeterValues', {
       connectorId: connNo,
       transactionId,
@@ -144,7 +174,7 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
           timestamp: new Date().toISOString(),
           sampledValue: [
             { value: String(i * 2500), measurand: 'Energy.Active.Import.Register', unit: 'Wh' },
-            { value: String(30000 + i * 500), measurand: 'Power.Active.Import', unit: 'W' },
+            { value: String(drawW), measurand: 'Power.Active.Import', unit: 'W' },
           ],
         },
       ],
@@ -267,7 +297,11 @@ async function main() {
   for (let i = 0; i < N; i++) {
     const c = cps[i % cps.length];
     const [cp, no] = c.connector_ref.split(':').map(Number);
-    await normalFlow(c.ocpp_identity, cp, no, token, false, TAG);
+    // --impair noncompliant: CP ignores SetChargingProfile (robustness case for
+    // FC-HCC compliance verification — the verifier must see the deviation).
+    await normalFlow(c.ocpp_identity, cp, no, token, false, TAG, {
+      compliant: args.impair !== 'noncompliant',
+    });
   }
 }
 main().catch((e) => {
