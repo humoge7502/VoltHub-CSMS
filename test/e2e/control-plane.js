@@ -72,8 +72,29 @@ async function main() {
 
   const stations = await api('/admin/stations', { headers: AH });
   ok('station inventory readable', stations.status === 200 && stations.j.stations.length > 0);
-  const station = stations.j.stations[0];
-  const siteId = station.station_id;
+
+  // Pick a station that actually has a free connector instead of taking stations[0] on
+  // faith. The suite runs against a live, long-lived database: a station anyone added
+  // (by hand or by another test) can sort first and have nothing free, which made the
+  // suite report "provision a connector first" about a site this run never chose.
+  let siteId = null;
+  let candidates = [];
+  for (const candidate of stations.j.stations.slice(0, 12)) {
+    const detail = await api(`/stations/${candidate.station_id}`, { headers: AH });
+    const free = (detail.j.station?.charge_points || [])
+      .flatMap((cp) => cp.connectors || [])
+      .filter((c) => c.status === 'AVAILABLE');
+    if (free.length) {
+      siteId = candidate.station_id;
+      candidates = free;
+      break;
+    }
+  }
+  ok(
+    'a station with an available connector exists',
+    siteId != null && candidates.length > 0,
+    'every station scanned has its connectors busy — seed/provision a connector first'
+  );
 
   // Idempotent by design: CI runs this against a persistent database, and a second SITE
   // root is (correctly) rejected by the electrical model — so reuse an existing root
@@ -139,11 +160,14 @@ async function main() {
   ok('driver registered', drv.status === 201);
   const DH = { Authorization: `Bearer ${drv.j.accessToken}` };
 
+  // Re-read the site as the driver: the connector list a DRIVER sees is what the flow
+  // below reserves against, and roles do not necessarily see the same projection.
   const detail = await api(`/stations/${siteId}`, { headers: DH });
-  const candidates = (detail.j.station?.charge_points || [])
+  const freeForDriver = (detail.j.station?.charge_points || [])
     .flatMap((cp) => cp.connectors || [])
     .filter((c) => c.status === 'AVAILABLE');
-  ok('an available connector exists on the site', candidates.length > 0, 'seed/provision a connector first');
+  ok('the driver sees the free connectors on the chosen site', freeForDriver.length > 0);
+  candidates = freeForDriver;
 
   // Find a window that is genuinely free. A CONVERTED reservation KEEPS its window (the
   // money path holds the booking until it expires), so on a re-run the connector an
