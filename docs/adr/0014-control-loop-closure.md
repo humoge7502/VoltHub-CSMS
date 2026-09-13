@@ -128,6 +128,14 @@ certify → plan → actuate → typed outcome → audit through HTTP against th
     rows, notifications and the outbox payload, and the fallback branch caches the durable
     row instead of returning one the read-cache cannot resolve.
 
+11. **`POST /admin/stations` and `POST /admin/charge-points` returned 500 on Oracle.** Both
+    write-through wrappers `return await withMirrorRetry(...)` — the mirror's own return
+    value, which is `undefined` — rather than the local method's result, so the routes that
+    destructure `{ station, provisioned }` failed with `PROVISION_FAILED: Cannot destructure
+property 'station' of undefined`. Provisioning worked perfectly on the local store and
+    was broken on the durable engine, which is exactly the asymmetry the `db-tests` job's
+    `STORE=oracle` suite exists to catch (it was red before this change, and green after).
+
 The suite also surfaced two behaviours that are **correct but worth stating**, because a
 test that trips over them looks like a product bug:
 

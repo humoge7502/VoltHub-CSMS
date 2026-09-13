@@ -1011,7 +1011,13 @@ function wrapWithOracle(local, pool) {
         await mirrorConn.commit();
       });
     try {
-      return await withMirrorRetry(local, pool, 'station', st.station_id, attempt);
+      // The mirror result is not the method result. `withMirrorRetry` resolves to the
+      // INSERT's return value (undefined), so returning it made `provisionStation`
+      // resolve to undefined — and the route destructures `{ station, provisioned }`, so
+      // POST /admin/stations answered 500 PROVISION_FAILED on the durable engine while
+      // working perfectly on the local store. Return the local method's shape.
+      await withMirrorRetry(local, pool, 'station', st.station_id, attempt);
+      return res;
     } catch (e) {
       local.stations.delete(st.station_id);
       for (const cp of newCps) {
@@ -1055,7 +1061,8 @@ function wrapWithOracle(local, pool) {
         await mirrorConn.commit();
       });
     try {
-      return await withMirrorRetry(local, pool, 'charge_point', cp.cp_id, attempt);
+      await withMirrorRetry(local, pool, 'charge_point', cp.cp_id, attempt);
+      return cp; // same shape trap as provisionStation (see above)
     } catch (e) {
       local.cps.delete(cp.cp_id);
       local.cpsByOcpp.delete(cp.ocpp_identity);

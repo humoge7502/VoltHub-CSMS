@@ -82,6 +82,14 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   the per-session arrival/deadline slot maps are scenario inputs, not results — dropping
   them took the two receipts from 14 MB of debug detail to ~5 MB of per-seed evidence,
   with every retained number byte-identical.
+- **Station and charge-point provisioning returned 500 on the durable engine.** Both
+  write-through wrappers `return await withMirrorRetry(...)` — the mirror's return value,
+  which is `undefined` — instead of the local method's result, so the routes that
+  destructure `{ station, provisioned }` blew up with `PROVISION_FAILED: Cannot destructure
+property 'station' of undefined`. `POST /admin/stations` and `POST /admin/charge-points`
+  therefore worked on the local store and failed on Oracle, which is why the `db-tests`
+  `STORE=oracle` suite was red. (The neighbouring `updateStation` wrapper already returned
+  the right shape — the comment there even says so.) Both now return the local result.
 - **A reservation could be advertised with an id Oracle had never issued.** Oracle's
   identity sequence caches values, so a container restart hands out ids well above the
   local counter (hydrated from `MAX(id)`). The write-through path created the row in
