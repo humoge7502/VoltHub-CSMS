@@ -3,6 +3,7 @@
 // mode is OFF — actuation is opt-in per site until receipts exist.
 'use strict';
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const { authRequired, roles } = require('./middleware/auth');
 const { makeLimiter } = require('./middleware/security');
 const { oraStatus } = require('./errors');
@@ -12,13 +13,28 @@ const smartCharging = require('./ocpp/smart-charging');
 module.exports = function controlRoutes(store, registry, log) {
   const r = express.Router();
   const safe = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-  // Tiered control-plane limiter (see middleware/security.js): every mutating
-  // control route authorizes and several actuate hardware — rate-limit each one
-  // explicitly at 30/min/user in addition to the global per-role throttle.
-  // (Plan/certify bodies pass through model.clampHorizon/clampDtMin downstream,
-  // so untrusted horizon/cadence values can never size an allocation.)
-  const controlLimiter = makeLimiter({ key: 'ctl', limit: 30 });
-  const writeLimited = [authRequired, roles('ADMIN'), controlLimiter];
+  // Tiered control-plane limiters: every mutating control route authorizes and
+  // several actuate hardware, so each carries an explicit canonical limiter —
+  // 30/min per user (req.user is set by authRequired, which runs first), plus a
+  // per-IP tier as defense in depth. The global per-role throttle still applies
+  // upstream; this tier is the hardware-actuation backstop. Plan/certify bodies
+  // pass through model.clampHorizon/clampDtMin downstream, so untrusted
+  // horizon/cadence values can never size an allocation.
+  const controlLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 30,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    keyGenerator: (req) => `ctl:u:${req.user?.id ?? 'anon'}`,
+    skip: () => process.env.RATE_LIMIT_OFF === '1',
+    handler: (req, res) => {
+      res.setHeader('retry-after', '60');
+      res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'slow down: 30 req/min' } });
+    },
+  });
+  const ipLimiter = makeLimiter({ key: 'ctl-ip', limit: 30 });
+  const controlLimited = [ipLimiter, controlLimiter];
+  const writeLimited = [authRequired, roles('ADMIN'), ...controlLimited];
 
   // ---- grid assets (electrical hierarchy) — ADMIN ----
   r.post(
@@ -84,7 +100,7 @@ module.exports = function controlRoutes(store, registry, log) {
     '/control/plan/:siteId',
     authRequired,
     roles('OPERATOR', 'ADMIN'),
-    controlLimiter,
+    ...controlLimited,
     safe(async (req, res) => {
       const siteId = Number(req.params.siteId);
       if (!store.stations.get(siteId))
@@ -127,7 +143,7 @@ module.exports = function controlRoutes(store, registry, log) {
     '/control/sessions/:id/certify',
     authRequired,
     roles('OPERATOR', 'ADMIN'),
-    controlLimiter,
+    ...controlLimited,
     safe(async (req, res) => {
       try {
         res.json(control.certifySession(store, req.params.id, req.body || {}));
