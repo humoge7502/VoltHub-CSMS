@@ -13,13 +13,12 @@ const smartCharging = require('./ocpp/smart-charging');
 module.exports = function controlRoutes(store, registry, log) {
   const r = express.Router();
   const safe = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-  // Tiered control-plane limiters: every mutating control route authorizes and
-  // several actuate hardware, so each carries an explicit canonical limiter —
-  // 30/min per user (req.user is set by authRequired, which runs first), plus a
-  // per-IP tier as defense in depth. The global per-role throttle still applies
-  // upstream; this tier is the hardware-actuation backstop. Plan/certify bodies
-  // pass through model.clampHorizon/clampDtMin downstream, so untrusted
-  // horizon/cadence values can never size an allocation.
+  // Tiered control-plane limiters: 30/min per user (req.user is set by
+  // authRequired on every route here) via the canonical express-rate-limit,
+  // plus a per-IP tier as defense in depth. The global per-role throttle still
+  // applies upstream; this tier is the hardware-actuation backstop.
+  // Plan/certify bodies pass through model.clampHorizon/clampDtMin downstream,
+  // so untrusted horizon/cadence values can never size an allocation.
   const controlLimiter = rateLimit({
     windowMs: 60_000,
     limit: 30,
@@ -33,13 +32,17 @@ module.exports = function controlRoutes(store, registry, log) {
     },
   });
   const ipLimiter = makeLimiter({ key: 'ctl-ip', limit: 30 });
-  const controlLimited = [ipLimiter, controlLimiter];
-  const writeLimited = [authRequired, roles('ADMIN'), ...controlLimited];
+  // Router-wide control-plane barrier: every route on this surface authorizes,
+  // and several actuate hardware or expose enforcement telemetry, so the whole
+  // router sits behind an explicit limiter. Reads and writes share the tier —
+  // the control plane is small, human-facing, and hardware-backed.
+  r.use(ipLimiter, controlLimiter);
+  const adminWrite = [authRequired, roles('ADMIN')];
 
   // ---- grid assets (electrical hierarchy) — ADMIN ----
   r.post(
     '/stations/:id/grid-assets',
-    ...writeLimited,
+    ...adminWrite,
     safe(async (req, res) => {
       try {
         const asset = store.upsertGridAsset(Number(req.params.id), req.body, req.user.id);
@@ -66,7 +69,7 @@ module.exports = function controlRoutes(store, registry, log) {
   // Second-person approval of a PENDING cap reduction (four-eyes rule, N.1).
   r.post(
     '/grid-assets/:id/approve',
-    ...writeLimited,
+    ...adminWrite,
     safe(async (req, res) => {
       try {
         const asset = store.approveGridAsset(Number(req.params.id), req.user.id);
@@ -80,7 +83,7 @@ module.exports = function controlRoutes(store, registry, log) {
   // ---- control mode — ADMIN (default OFF until receipts exist) ----
   r.post(
     '/control/mode',
-    ...writeLimited,
+    ...adminWrite,
     safe(async (req, res) => {
       try {
         const out = store.setControlMode(
@@ -100,7 +103,6 @@ module.exports = function controlRoutes(store, registry, log) {
     '/control/plan/:siteId',
     authRequired,
     roles('OPERATOR', 'ADMIN'),
-    ...controlLimited,
     safe(async (req, res) => {
       const siteId = Number(req.params.siteId);
       if (!store.stations.get(siteId))
@@ -143,7 +145,6 @@ module.exports = function controlRoutes(store, registry, log) {
     '/control/sessions/:id/certify',
     authRequired,
     roles('OPERATOR', 'ADMIN'),
-    ...controlLimited,
     safe(async (req, res) => {
       try {
         res.json(control.certifySession(store, req.params.id, req.body || {}));
@@ -224,7 +225,7 @@ module.exports = function controlRoutes(store, registry, log) {
   );
   r.post(
     '/ops/dead-letters/:id/resolve',
-    ...writeLimited,
+    ...adminWrite,
     safe(async (req, res) => {
       try {
         const d = store.resolveDeadLetter(
@@ -242,7 +243,7 @@ module.exports = function controlRoutes(store, registry, log) {
   // ---- direct profile ops (diagnostics; envelope still governs SetChargingProfile) ----
   r.post(
     '/control/cp/:cpId/clear-profile',
-    ...writeLimited,
+    ...adminWrite,
     safe(async (req, res) => {
       const cp = store.cps.get(Number(req.params.cpId));
       if (!cp) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'charge point' } });
