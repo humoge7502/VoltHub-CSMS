@@ -10,7 +10,7 @@ flowchart TB
   SIM["OCPP simulator fleet<br/>normal · race · fault · no-show · burst"] --> GW
   SIM --> REST
   subgraph API["apps/api — one port :4000"]
-    REST["REST /api/v1 (49 routes)"]
+    REST["REST /api/v1 (66 spec'd paths)"]
     GW["OCPP 1.6J gateway (WS, Basic auth)"]
   end
   REST --> ST
@@ -46,6 +46,43 @@ flowchart TB
 | 0003 | Outbox + relay            | Atomic-with-write publication; dual-write diverges on crash; CDC too heavy for scope       |
 | 0004 | Plain JS + Express        | Zero-build velocity; contracts carried by OpenAPI drift gate + tests, not types            |
 | 0005 | Hexagonal store           | Replacement, not rewrite: routes unchanged between engines; hermetic tests preserved       |
+| 0014 | Control-loop closure      | A loop whose certify/verify stages are test-only is a diagram, not a mechanism             |
+| 0006 | Connector FK-native       | Display handles (`cp_id:connector_no`) stop being the only truth; joins stop being LIKE    |
+| 0007 | OCPP remote commands      | CSMS→CP calls share one registry + uid plumbing instead of three ad-hoc senders            |
+| 0008 | AI as advisory sidecar    | A model between a driver and a breaker is unauditable; deterministic LP owns constraints   |
+| 0009 | Multi-tenancy (deferred)  | Retrofitting tenancy is rewrite-grade; designed in ADR-0009, started only with a tenant    |
+| 0010 | FC-HCC control loop       | Sensing without actuation makes every smart-charging claim unfalsifiable                   |
+| 0011 | Control-path integrity    | The envelope must not consult the optimizer it constrains (failure independence)           |
+| 0012 | Twin profile compliance   | A twin that always obeys validates nothing; it must honor — or honestly ignore — profiles  |
+| 0013 | Benchmark methodology     | A methodology decided after results exist is not a methodology                             |
+
+## The control path (the part that acts)
+
+```mermaid
+flowchart LR
+  A["sense + estimate<br/>sessions · readings"] --> B["optimize<br/>deterministic LP<br/>15-min x 24 intervals"]
+  B --> C["certify<br/>worst-case admission<br/>feasibility_certificate"]
+  C --> D["compile<br/>x[v][t] -> SetChargingProfile"]
+  D --> E{"envelope<br/>grid_asset cap<br/>optimizer-INDEPENDENT"}
+  E -- "ok" --> F["gateway · 6 pushes/min/CP<br/>idempotent per (cp, decision)"]
+  E -- "reject -20903" --> G["dead_letter<br/>ADMIN triage route"]
+  F --> H["verify<br/>scheduled vs actual kW"]
+  H -- "erosion > tolerance" --> B
+```
+
+Per-site mode is `OFF | ADVISORY | ENFORCED`, default **OFF** — actuation is opt-in per
+site, and `ENFORCED` requires an ACTIVE SITE grid asset (an envelope without a certified
+cap is a hope).
+
+Certification runs **before** scheduling and is graded **after** it: the promise is a
+persisted row, the plan must honour its floor, the acks are correlated, and metered kW
+is compared against the schedule in force. Where the promise was not kept — target SoC
+above the CC-CV knee, where the allocator planned energy the battery could not absorb —
+the benchmark said so (ADR-0014, `docs/perf.md`), and **ADR-0015 fixes it**: the allocator
+now consumes the same acceptance curve as the certifier and the twin (`acceptanceFactor`,
+one definition, three consumers), so plan-time and realised feasibility cannot disagree.
+Measured in E6: shortfall 42.6% → 2.36%, deadline miss 56.6% → 15.7%, plan-honesty gap
+1,280 kWh → 0.011 kWh, and **bit-identical schedules below the knee** (H0).
 
 ## Where it deliberately stops (scale exits, not features)
 

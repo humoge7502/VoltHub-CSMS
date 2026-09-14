@@ -137,6 +137,10 @@ server.on('upgrade', (req, socket, head) => {
 });
 const __ocppRegistry = mountOcpp(wss, store, log);
 global.__ocppRegistry = __ocppRegistry;
+// ADR-0010: control-plane surface (grid assets, FC-HCC plan cycles, dead letters).
+// Mounted after mountOcpp so ENFORCED-mode plan cycles can actuate through the live
+// registry (the mount needs the populated Map reference — TDZ-safe ordering).
+app.use('/api/v1', require('./control-routes')(store, __ocppRegistry, log));
 
 const PORT = Number(process.env.PORT || process.env.API_PORT || 4000);
 // BUG-044 companion: bind only after the store upgrade settles. Listen arguments are

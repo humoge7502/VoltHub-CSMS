@@ -165,6 +165,107 @@ async function hydrate(local, pool) {
     );
     // B2G-005: hydrate the transactional world (reservations → sessions → invoices → ledger).
     // Best-effort per table; empty DB => keep seeds. seq counters reseeded from MAX(id).
+    // ADR-0010: V007 control rows hydrate best-effort too (a DB without V007 skips clean).
+    await q(
+      `SELECT asset_id, station_id, parent_id, kind, label, cap_kw, ramp_kw, status, proposed_by, approved_by,
+              TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') c FROM grid_asset`,
+      'gridAssets',
+      (r) => {
+        local.gridAssets.set(Number(r.ASSET_ID), {
+          asset_id: Number(r.ASSET_ID),
+          station_id: Number(r.STATION_ID),
+          parent_id: r.PARENT_ID != null ? Number(r.PARENT_ID) : null,
+          kind: r.KIND,
+          label: r.LABEL,
+          cap_kw: Number(r.CAP_KW),
+          ramp_kw: r.RAMP_KW != null ? Number(r.RAMP_KW) : null,
+          status: r.STATUS,
+          proposed_by: r.PROPOSED_BY != null ? Number(r.PROPOSED_BY) : null,
+          approved_by: r.APPROVED_BY != null ? Number(r.APPROVED_BY) : null,
+          created_at: r.C || '',
+          updated_at: '',
+        });
+        local.seq.gridAsset = Math.max(local.seq.gridAsset, Number(r.ASSET_ID));
+      }
+    );
+    // Audit trail hydration. `/admin/audit-logs` serves `local.audit`, and a control-plane
+    // review found that the buffer was never restored: every row written before the last
+    // restart vanished from the endpoint (GRID_ASSET / CONTROL_MODE edits looked unaudited
+    // even though the durable table had them). Restore the newest window — exactly the
+    // 200 rows the endpoint caps at, ascending so the buffer tail is the latest action.
+    // CLOBs are projected with DBMS_LOB.SUBSTR so they arrive as short strings, and the
+    // timestamp is emitted with an explicit 'Z' (the DB timestamp is UTC): rows restored
+    // here are compared against process boot time by the durability test, so an
+    // ambiguous naive timestamp would make that comparison depend on the reader's TZ.
+    await q(
+      `SELECT audit_id, actor_user_id, entity_name, entity_id, action,
+              DBMS_LOB.SUBSTR(old_value, 4000, 1) ov, DBMS_LOB.SUBSTR(new_value, 4000, 1) nv,
+              TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z' c
+         FROM (SELECT * FROM audit_log ORDER BY audit_id DESC FETCH FIRST 200 ROWS ONLY)
+        ORDER BY audit_id`,
+      'audit',
+      (r) => {
+        local.audit.push({
+          audit_id: Number(r.AUDIT_ID),
+          actor_user_id: r.ACTOR_USER_ID != null ? Number(r.ACTOR_USER_ID) : null,
+          entity_name: r.ENTITY_NAME,
+          entity_id: String(r.ENTITY_ID),
+          action: r.ACTION,
+          old_value: r.OV != null ? String(r.OV) : null,
+          new_value: r.NV != null ? String(r.NV) : null,
+          created_at: r.C || '',
+        });
+        local.seq.audit = Math.max(local.seq.audit, Number(r.AUDIT_ID));
+      }
+    );
+    await q(
+      `SELECT decision_id, site_id, horizon_start, interval_min, bounds_hash, solver, runtime_ms, state_version, status,
+              TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') c FROM control_decision`,
+      'controlDecisions',
+      (r) => {
+        local.controlDecisions.set(Number(r.DECISION_ID), {
+          decision_id: Number(r.DECISION_ID),
+          site_id: Number(r.SITE_ID),
+          horizon_start: r.HORIZON_START ? new Date(r.HORIZON_START).toISOString() : '',
+          interval_min: Number(r.INTERVAL_MIN),
+          payload_json: '{}', // payload rehydrates lazily from Oracle on detail reads
+          bounds_hash: r.BOUNDS_HASH,
+          solver: r.SOLVER,
+          runtime_ms: r.RUNTIME_MS != null ? Number(r.RUNTIME_MS) : null,
+          state_version: r.STATE_VERSION != null ? Number(r.STATE_VERSION) : null,
+          status: r.STATUS,
+          created_at: r.C || '',
+        });
+        local.seq.decision = Math.max(local.seq.decision, Number(r.DECISION_ID));
+      }
+    );
+    await q(
+      `SELECT cert_id, session_id, reservation_id, station_id, cp_id, connector_no, floor_kw, margin_kwh,
+              worst_case_kwh, required_kwh, deadline_at, decision_id, status, reason,
+              TO_CHAR(issued_at, 'YYYY-MM-DD"T"HH24:MI:SS') i FROM feasibility_certificate`,
+      'certificates',
+      (r) => {
+        local.certificates.set(Number(r.CERT_ID), {
+          cert_id: Number(r.CERT_ID),
+          session_id: r.SESSION_ID != null ? Number(r.SESSION_ID) : null,
+          reservation_id: r.RESERVATION_ID != null ? Number(r.RESERVATION_ID) : null,
+          station_id: Number(r.STATION_ID),
+          cp_id: Number(r.CP_ID),
+          connector_no: Number(r.CONNECTOR_NO),
+          floor_kw: Number(r.FLOOR_KW),
+          margin_kwh: Number(r.MARGIN_KWH),
+          worst_case_kwh: Number(r.WORST_CASE_KWH),
+          required_kwh: Number(r.REQUIRED_KWH),
+          deadline_at: r.DEADLINE_AT ? new Date(r.DEADLINE_AT).toISOString() : null,
+          decision_id: r.DECISION_ID != null ? Number(r.DECISION_ID) : null,
+          status: r.STATUS,
+          reason: r.REASON || null,
+          issued_at: r.I || '',
+          updated_at: '',
+        });
+        local.seq.cert = Math.max(local.seq.cert, Number(r.CERT_ID));
+      }
+    );
     await q(
       `SELECT reservation_id, connector_ref, cp_id, connector_no, user_id, vehicle_id, start_at, end_at, status,
          TO_CHAR(created_at,'YYYY-MM-DD"T"HH24:MI:SS') c FROM reservation`,
@@ -418,6 +519,117 @@ function truncateTo(arr, savedLen) {
   if (arr.length > savedLen) arr.length = savedLen;
 }
 
+// BUG-049: explicit-id mirror tables (app_user, wallet_account, wallet_ledger,
+// station, charge_point, connector, vehicle). V001 uses IDENTITY BY DEFAULT ON NULL
+// precisely so mirrored rows can carry the LOCAL id — but Oracle still auto-increments
+// its identity for any OTHER writer (a second API process, a STORE=oracle suite, a
+// manual INSERT). After such a write the local seq counter is permanently behind and
+// every subsequent mirror fails with ORA-00001 until restart — observed live on the
+// compose stack (register 500'd with ORA-00001: USER_ID 4543 already exists; the
+// boot log said users:17 while Oracle had MAX(user_id)=4543).
+// This is the mirror of BUG-044's counter-divergence class, but for id-AUTHORITY
+// tables (BUG-044 was Oracle-authoritative ids diverging from local; this is local-
+// authoritative counters diverging from Oracle). Both directions share one repair:
+// read Oracle's MAX(id), clamp the local counter UP to it, re-key any conflicting
+// local rows onto fresh Oracle-side ids, and surface a canonical 409 while the
+// INSERT races another writer.
+// Site inventory: which explicit-id mirror writes key on which counter, and how to
+// re-key a staged row when the id was lost to another writer. wallet_ledger is NOT
+// listed: its seq_no is per-user and mirrored from the staged local entry — a
+// duplicate there means the LEDGER row raced, which the ledger's own uniqueness
+// contract (not a counter) owns; the INSERT simply maps to a canonical 409.
+const MIRROR_SEQ_TABLES = {
+  app_user: {
+    pk: 'user_id',
+    seq: 'user',
+    local: (s) => s.users,
+    // Move the staged user (and its staged wallet + audit trail) onto the new id so
+    // the JWT sub, /me bindings and the retried INSERT all agree.
+    rekey: (local, from, to) => {
+      const map = local.users;
+      const row = map.get(from);
+      map.delete(from);
+      row.user_id = to;
+      map.set(to, row);
+      if (local.wallets.has(from)) {
+        const w = local.wallets.get(from);
+        local.wallets.delete(from);
+        w.user_id = to;
+        local.wallets.set(to, w);
+      }
+      for (const a of local.audit)
+        if (a.entity_name === 'APP_USER' && a.entity_id === String(from)) a.entity_id = String(to);
+    },
+  },
+  station: { pk: 'station_id', seq: 'station', local: (s) => s.stations },
+  charge_point: { pk: 'cp_id', seq: 'cp', local: (s) => s.cps },
+};
+
+// Re-baseline one counter against Oracle and re-map a colliding local row (if the
+// caller already staged one with an id Oracle has since given away). Returns the
+// number Oracle will not hand out again (the counter's new floor) — the caller
+// retries the INSERT with the re-keyed id. Null when the counter was already ahead.
+async function realignMirrorSeq(local, pool, site, conflictId) {
+  const conn = await pool.getConnection();
+  try {
+    const r = await conn.execute(`SELECT NVL(MAX(${site.pk}), 0) AS m FROM ${site.table}`);
+    const maxId = Number(r.rows[0][0] ?? r.rows[0].M ?? 0);
+    if (maxId > local.seq[site.seq]) local.seq[site.seq] = maxId;
+    if (conflictId != null && conflictId <= maxId) {
+      // Another writer owns conflictId: move the staged local row onto the next
+      // free id (post-clamp ++seq is strictly greater than every Oracle row).
+      const next = ++local.seq[site.seq];
+      const map = site.local && site.local(local);
+      if (map && map.has(conflictId) && site.rekey) site.rekey(local, conflictId, next);
+      else if (map && map.has(conflictId)) {
+        const row = map.get(conflictId);
+        map.delete(conflictId);
+        row[site.pk] = next;
+        map.set(next, row);
+      }
+      return next;
+    }
+    return null;
+  } finally {
+    try {
+      await conn.close();
+    } catch {}
+  }
+}
+
+// Map a raw driver error from an explicit-id mirror INSERT to the canonical store
+// contract. ORA-00001 under concurrent writers is a benign lost race — the counter
+// is re-baselined and the caller retries — but if it reaches the client it must look
+// like the local store's duplicate-id contract (409 DUPLICATE_ID), never a 500.
+const ORA_00001_STATUS = 409;
+function fromMirrorInsertError(e) {
+  const m = /ORA-(\d{5})/.exec(String((e && e.message) || e || ''));
+  if (m && m[1] === '00001') {
+    e.num = -1;
+    e.code = 'DUPLICATE_ID';
+    e.status = ORA_00001_STATUS;
+    return e;
+  }
+  return fromDriver(e);
+}
+
+// Mirror helper: run `attempt` (which stages local rows + INSERTs to Oracle with
+// explicit ids); on ORA-00001 re-baseline the counter from Oracle's MAX(id), re-key
+// the staged row, and retry ONCE. Any other error propagates unchanged.
+async function withMirrorRetry(local, pool, table, conflictId, attempt) {
+  try {
+    return await attempt();
+  } catch (e) {
+    const m = /ORA-(\d{5})/.exec(String((e && e.message) || e || ''));
+    if (!m || m[1] !== '00001') throw e;
+    const site = MIRROR_SEQ_TABLES[table];
+    if (!site) throw fromMirrorInsertError(e);
+    const next = await realignMirrorSeq(local, pool, { ...site, table }, conflictId);
+    if (next == null) throw fromMirrorInsertError(e);
+    return attempt(); // retry with the re-keyed id + clamped counter
+  }
+}
+
 function wrapWithOracle(local, pool) {
   const oracledb = driver();
   const withConn = async (fn) => {
@@ -485,26 +697,39 @@ function wrapWithOracle(local, pool) {
   // PERF-002: origCreateUser is async now (off-loop Argon2id) — the wrapper awaits it
   // and stays promise-shaped; routes await the whole chain.
   local.createUser = async (args) => {
-    const u = await origCreateUser(args);
     const walletCreated = (args.role || 'DRIVER') === 'DRIVER';
-    return withConnSync(async () => {
-      await connExec(
-        `INSERT INTO app_user (user_id, email, password_hash, full_name, phone, role, status)
-         VALUES (:id, :email, :hash, :name, :phone, :role, 'ACTIVE')`,
-        { id: u.user_id, email: u.email, hash: u.password_hash, name: u.full_name, phone: u.phone, role: u.role }
-      );
-      if (local.wallets.has(u.user_id)) {
-        await connExec('INSERT INTO wallet_account (user_id, balance) VALUES (:id, 0)', { id: u.user_id });
-      }
-      await mirrorConn.commit();
-      return u;
-    }).catch((e) => {
+    // BUG-049: an ORA-00001 on the explicit-id INSERT means another writer consumed
+    // the id Oracle-side (identity auto-increment is NOT local-authority aware).
+    // Re-baseline seq.user from Oracle's MAX(user_id), re-key the staged local row,
+    // and retry once. The retry re-runs origCreateUser? NO — the local user object
+    // is already staged; only the mirror failed. The retry below re-INSERTs with the
+    // re-keyed id. Attempt is a closure over `u`, so it must be built after staging.
+    let u = null;
+    const attempt = () =>
+      withConnSync(async () => {
+        await connExec(
+          `INSERT INTO app_user (user_id, email, password_hash, full_name, phone, role, status)
+           VALUES (:id, :email, :hash, :name, :phone, :role, 'ACTIVE')`,
+          { id: u.user_id, email: u.email, hash: u.password_hash, name: u.full_name, phone: u.phone, role: u.role }
+        );
+        if (local.wallets.has(u.user_id)) {
+          await connExec('INSERT INTO wallet_account (user_id, balance) VALUES (:id, 0)', { id: u.user_id });
+        }
+        await mirrorConn.commit();
+        return u;
+      });
+    try {
+      u = await origCreateUser(args);
+      return await withMirrorRetry(local, pool, 'app_user', u.user_id, attempt);
+    } catch (e) {
       // Undo the local write so a failed registration leaves no ghost identity.
-      local.users.delete(u.user_id);
-      if (walletCreated) local.wallets.delete(u.user_id);
-      local.audit = local.audit.filter((a) => !(a.entity_name === 'APP_USER' && a.entity_id === String(u.user_id)));
-      throw fromDriver(e);
-    });
+      if (u) {
+        local.users.delete(u.user_id);
+        if (walletCreated) local.wallets.delete(u.user_id);
+        local.audit = local.audit.filter((a) => !(a.entity_name === 'APP_USER' && a.entity_id === String(u.user_id)));
+      }
+      throw fromMirrorInsertError(e);
+    }
   };
 
   local.topup = (uid, amount) => {
@@ -513,19 +738,21 @@ function wrapWithOracle(local, pool) {
     const ledgerBefore = local.ledgers.length;
     const w = origTopup(uid, amount);
     const entry = local.ledgers[local.ledgers.length - 1];
-    return withConnSync(async () => {
-      await connExec(
-        `INSERT INTO wallet_ledger (user_id, seq_no, kind, amount, balance_after, note)
-         VALUES (:u, :seq, 'TOPUP', :amt, :bal, 'top-up')`,
-        { u: Number(uid), seq: entry.seq_no, amt: amount, bal: entry.balance_after }
-      );
-      await connExec('UPDATE wallet_account SET balance = :bal, updated_at = SYSTIMESTAMP WHERE user_id = :u', {
-        bal: entry.balance_after,
-        u: Number(uid),
+    const attempt = () =>
+      withConnSync(async () => {
+        await connExec(
+          `INSERT INTO wallet_ledger (user_id, seq_no, kind, amount, balance_after, note)
+           VALUES (:u, :seq, 'TOPUP', :amt, :bal, 'top-up')`,
+          { u: Number(uid), seq: entry.seq_no, amt: amount, bal: entry.balance_after }
+        );
+        await connExec('UPDATE wallet_account SET balance = :bal, updated_at = SYSTIMESTAMP WHERE user_id = :u', {
+          bal: entry.balance_after,
+          u: Number(uid),
+        });
+        await mirrorConn.commit();
+        return w;
       });
-      await mirrorConn.commit();
-      return w;
-    }).catch((e) => {
+    return withMirrorRetry(local, pool, 'wallet_ledger', null, attempt).catch((e) => {
       // Undo: restore balance, drop the ledger row, filter the audit entry.
       if (wBefore) {
         wBefore.balance = preBalance;
@@ -536,7 +763,7 @@ function wrapWithOracle(local, pool) {
       local.audit = local.audit.filter(
         (a) => !(a.entity_name === 'WALLET' && a.entity_id === String(uid) && a.action === 'TOPUP')
       );
-      throw fromDriver(e);
+      throw fromMirrorInsertError(e);
     });
   };
 
@@ -563,13 +790,42 @@ function wrapWithOracle(local, pool) {
       // instead call the local implementation inside the same per-connector mutex only if Oracle won.
       // Simplest coherent path: run local create (it will succeed — Oracle already serialized),
       // but on local conflict (clock skew) prefer the Oracle id.
+      const remap = (r, localId) => {
+        // Identity divergence, not a theoretical concern: Oracle's identity sequence
+        // caches values, so after a container restart it hands out ids well above the
+        // local counter (which is hydrated from MAX(id)). Returning the LOCAL id made
+        // the API advertise a reservation that Oracle had never heard of — the next
+        // `start_session` failed with -20505 RESERVATION_MISMATCH, and a cancel would
+        // have targeted the wrong row. `startSession` already remaps; reservations did
+        // not (caught by test/e2e/control-plane.js on the first re-run after a restart).
+        if (Number(out) === Number(localId)) return r;
+        local.reservations.delete(Number(localId));
+        r.reservation_id = Number(out);
+        local.reservations.set(Number(out), r);
+        // Anything already pointing at the booking must follow it, or reads disagree
+        // with what we just told the client.
+        for (const a of local.audit)
+          if (a.entity_name === 'RESERVATION' && a.entity_id === String(localId)) a.entity_id = String(out);
+        for (const n of local.notifs)
+          if (n.payload && n.payload.reservation_id === Number(localId)) n.payload.reservation_id = Number(out);
+        for (const ev of local.outbox)
+          if (ev.payload && ev.payload.reservation_id === Number(localId)) {
+            ev.payload.reservation_id = Number(out);
+            ev.dedupe_key = String(ev.dedupe_key).replace(/:\d+$/, `:${Number(out)}`);
+          }
+        local.seq.res = Math.max(local.seq.res, Number(out));
+        return r;
+      };
       try {
         const r = await origCreateReservation(uid, vehicleId, cpId, connNo, startAt, endAt);
-        r.oracle_id = out;
-        return r;
+        r.oracle_id = Number(out);
+        return remap(r, r.reservation_id);
       } catch {
-        return {
-          reservation_id: out,
+        // Oracle won while the local mirror refused (clock skew on the overlap check).
+        // Return the durable row AND cache it, or the client would hold a booking the
+        // read-cache cannot resolve.
+        const row = {
+          reservation_id: Number(out),
           connector_ref: `${cpId}:${connNo}`,
           cp_id: Number(cpId),
           connector_no: Number(connNo),
@@ -578,8 +834,12 @@ function wrapWithOracle(local, pool) {
           start_at: new Date(startAt).toISOString(),
           end_at: new Date(endAt).toISOString(),
           status: 'BOOKED',
+          created_at: new Date().toISOString(),
           oracle: true,
         };
+        local.reservations.set(Number(out), row);
+        local.seq.res = Math.max(local.seq.res, Number(out));
+        return row;
       }
     } catch (e) {
       throw fromDriver(e);
@@ -703,8 +963,8 @@ function wrapWithOracle(local, pool) {
     const st = res.station;
     const newCps = [...local.cps.values()].filter((c) => !cpsBefore.has(c.cp_id));
     const newConns = [...local.connectors.values()].filter((c) => !connsBefore.has(`${c.cp_id}:${c.connector_no}`));
-    try {
-      await withConnSync(async () => {
+    const attempt = () =>
+      withConnSync(async () => {
         await connExec(
           `INSERT INTO station (station_id, name, latitude, longitude, address_line, city, state, pincode, status, operator_id)
            VALUES (:id, :name, :lat, :lng, :addr, :city, :state, :pin, 'ACTIVE', :op)`,
@@ -750,6 +1010,13 @@ function wrapWithOracle(local, pool) {
         }
         await mirrorConn.commit();
       });
+    try {
+      // The mirror result is not the method result. `withMirrorRetry` resolves to the
+      // INSERT's return value (undefined), so returning it made `provisionStation`
+      // resolve to undefined — and the route destructures `{ station, provisioned }`, so
+      // POST /admin/stations answered 500 PROVISION_FAILED on the durable engine while
+      // working perfectly on the local store. Return the local method's shape.
+      await withMirrorRetry(local, pool, 'station', st.station_id, attempt);
       return res;
     } catch (e) {
       local.stations.delete(st.station_id);
@@ -760,7 +1027,7 @@ function wrapWithOracle(local, pool) {
       for (const cn of newConns) local.connectors.delete(`${cn.cp_id}:${cn.connector_no}`);
       truncateTo(local.amenities, amenitiesLen);
       truncateTo(local.audit, auditLen);
-      throw fromDriver(e);
+      throw fromMirrorInsertError(e);
     }
   };
 
@@ -769,8 +1036,8 @@ function wrapWithOracle(local, pool) {
     const connsBefore = new Set([...local.connectors.keys()]);
     const cp = origProvisionChargePoint(stationId, b);
     const newConns = [...local.connectors.values()].filter((c) => !connsBefore.has(`${c.cp_id}:${c.connector_no}`));
-    try {
-      await withConnSync(async () => {
+    const attempt = () =>
+      withConnSync(async () => {
         await connExec(
           `INSERT INTO charge_point (cp_id, station_id, ocpp_identity, vendor, model, firmware_version, status, auth_secret)
            VALUES (:id, :st, :oid, :v, :m, :fv, 'OFFLINE', :sec)`,
@@ -793,12 +1060,14 @@ function wrapWithOracle(local, pool) {
         }
         await mirrorConn.commit();
       });
-      return cp;
+    try {
+      await withMirrorRetry(local, pool, 'charge_point', cp.cp_id, attempt);
+      return cp; // same shape trap as provisionStation (see above)
     } catch (e) {
       local.cps.delete(cp.cp_id);
       local.cpsByOcpp.delete(cp.ocpp_identity);
       for (const cn of newConns) local.connectors.delete(`${cn.cp_id}:${cn.connector_no}`);
-      throw fromDriver(e);
+      throw fromMirrorInsertError(e);
     }
   };
 
@@ -923,4 +1192,291 @@ function wrapWithOracle(local, pool) {
   return local;
 }
 
-module.exports = { createPool, ping, hydrate, wrapWithOracle, truncateTo };
+// ---- ADR-0010 mirrors: control writes go to V007 with the LOCAL id as authority ----
+// (V001 identity-by-default-on-null mirrors explicit local ids; identical rule here).
+// Envelope/grid validation already ran in the local method — the mirror is a
+// straight write-through. Failure raises through fromMirrorInsertError so callers
+// see the ORA band, never a silent divergence.
+function wrapControl(local, pool) {
+  const withConn = async (fn) => {
+    const c = await pool.getConnection();
+    try {
+      return await fn(c);
+    } finally {
+      try {
+        await c.close();
+      } catch {}
+    }
+  };
+
+  // Mirror failures were swallowed whole (`.catch(() => {})`), so a diverging control
+  // plane was invisible: the worst case found in review was a mirror writing to a table
+  // that does not exist (`control_audit_note`) and failing silently forever. Fire-and-forget
+  // stays (the local store is the authority for control writes, ADR-0005), but the failure
+  // is now COUNTED and surfaced at /health, so divergence is observable instead of assumed.
+  const mirrorFail = (what) => (e) => {
+    local._mirrorErrors = (local._mirrorErrors || 0) + 1;
+    local._lastMirrorError = `${what}: ${e && e.message ? e.message : 'unknown'}`;
+  };
+
+  // Control-plane actions must leave an audit trail in the DURABLE store: the PL/SQL
+  // packages write audit_log for the money path, but grid-asset edits, control-mode
+  // changes and dead-letter triage are app-layer actions, so without this insert the
+  // authoritative audit_log has no record of who changed the electrical limits
+  // (ADR-0011 §"Control-mode governance" / §"Decision provenance").
+  const auditControl = (c, { actor, entity, id, action, oldV, newV }) =>
+    c.execute(
+      `INSERT INTO audit_log (actor_user_id, entity_name, entity_id, action, old_value, new_value)
+       VALUES (:actor, :entity, :id, :action, :oldV, :newV)`,
+      {
+        actor: actor == null ? null : Number(actor),
+        entity: String(entity),
+        id: String(id),
+        action: String(action).slice(0, 24),
+        oldV: oldV == null ? null : String(oldV),
+        newV: newV == null ? null : String(newV),
+      }
+    );
+
+  const origUpsertGridAsset = local.upsertGridAsset.bind(local);
+  local.upsertGridAsset = (stationId, b, actor) => {
+    const a = origUpsertGridAsset(stationId, b, actor);
+    const p = withConn(async (c) => {
+      await auditControl(c, {
+        actor,
+        entity: 'GRID_ASSET',
+        id: a.asset_id,
+        action: a.status === 'PENDING' ? 'CAP_REDUCE_PROPOSED' : b.asset_id ? 'UPDATE' : 'CREATE',
+        oldV: b.asset_id ? 'existing' : null,
+        newV: `cap_kw=${a.cap_kw};status=${a.status}`,
+      });
+      if (b.asset_id) {
+        await c.execute(
+          `UPDATE grid_asset SET cap_kw = :cap, ramp_kw = :ramp, status = :st, updated_at = SYSTIMESTAMP WHERE asset_id = :id`,
+          { cap: a.cap_kw, ramp: a.ramp_kw, st: a.status, id: a.asset_id }
+        );
+      } else {
+        await c.execute(
+          `INSERT INTO grid_asset (asset_id, station_id, parent_id, kind, label, cap_kw, ramp_kw, status, proposed_by)
+           VALUES (:id, :sid, :pid, :kind, :label, :cap, :ramp, :st, :proposer)`,
+          {
+            id: a.asset_id,
+            sid: a.station_id,
+            pid: a.parent_id,
+            kind: a.kind,
+            label: a.label,
+            cap: a.cap_kw,
+            ramp: a.ramp_kw,
+            st: a.status,
+            proposer: a.proposed_by,
+          }
+        );
+      }
+      await c.commit();
+    });
+    p.catch(mirrorFail('grid-asset write-through'));
+    return a;
+  };
+
+  const origApproveGridAsset = local.approveGridAsset.bind(local);
+  local.approveGridAsset = (assetId, actor) => {
+    const a = origApproveGridAsset(assetId, actor);
+    withConn(async (c) => {
+      await c.execute(
+        `UPDATE grid_asset SET status = :st, approved_by = :appr, updated_at = SYSTIMESTAMP WHERE asset_id = :id`,
+        { st: a.status, appr: a.approved_by, id: a.asset_id }
+      );
+      // Four-eyes is only an audit control if the second signature is recorded.
+      await auditControl(c, {
+        actor,
+        entity: 'GRID_ASSET',
+        id: a.asset_id,
+        action: 'APPROVE',
+        oldV: 'PENDING',
+        newV: `ACTIVE;approved_by=${a.approved_by}`,
+      });
+      await c.commit();
+    }).catch(mirrorFail('grid-asset approve'));
+    return a;
+  };
+
+  const origSetControlMode = local.setControlMode.bind(local);
+  local.setControlMode = (siteId, mode, actor) => {
+    const out = origSetControlMode(siteId, mode, actor);
+    withConn(async (c) => {
+      // The previous version inserted into control_audit_note — a table that does not
+      // exist in any migration — inside a `.catch()` that swallowed the failure, so the
+      // durable audit_log had NO record of actuation being enabled on a site. The audit
+      // row is written to audit_log (the table the other packages use) instead.
+      await auditControl(c, {
+        actor,
+        entity: 'CONTROL_MODE',
+        id: out.site_id,
+        action: 'SET',
+        oldV: out.previous,
+        newV: out.mode,
+      });
+      await c.commit();
+    }).catch(mirrorFail('control-mode'));
+    return out;
+  };
+
+  const origRecordDecision = local.recordDecision.bind(local);
+  local.recordDecision = (siteId, d) => {
+    const row = origRecordDecision(siteId, d);
+    withConn(async (c) => {
+      await c.execute(
+        `INSERT INTO control_decision (decision_id, site_id, horizon_start, interval_min, payload_json, bounds_hash, solver, runtime_ms, state_version, status)
+         VALUES (:id, :sid, :hs, :iv, :pj, :bh, :sv, :rt, :ver, 'COMMITTED')`,
+        {
+          id: row.decision_id,
+          sid: row.site_id,
+          hs: new Date(row.horizon_start),
+          iv: row.interval_min,
+          pj: String(row.payload_json),
+          bh: row.bounds_hash,
+          sv: row.solver,
+          rt: row.runtime_ms,
+          ver: row.state_version,
+        },
+        { autoCommit: true }
+      );
+    }).catch(() => {});
+    return row;
+  };
+
+  const origIssueCertificate = local.issueCertificate.bind(local);
+  local.issueCertificate = (args) => {
+    const row = origIssueCertificate(args);
+    withConn(async (c) => {
+      await c.execute(
+        `INSERT INTO feasibility_certificate (cert_id, session_id, reservation_id, station_id, cp_id, connector_no, floor_kw, margin_kwh, worst_case_kwh, required_kwh, deadline_at, decision_id, status, reason)
+         VALUES (:id, :sess, :res, :sid, :cp, :no, :floor, :margin, :wc, :req, :dl, :dec, :st, :reason)`,
+        {
+          id: row.cert_id,
+          sess: row.session_id,
+          res: row.reservation_id,
+          sid: row.station_id,
+          cp: row.cp_id,
+          no: row.connector_no,
+          floor: row.floor_kw,
+          margin: row.margin_kwh,
+          wc: row.worst_case_kwh,
+          req: row.required_kwh,
+          dl: row.deadline_at ? new Date(row.deadline_at) : null,
+          dec: row.decision_id,
+          st: row.status,
+          reason: row.reason,
+        },
+        { autoCommit: true }
+      );
+    }).catch(() => {});
+    return row;
+  };
+
+  const origTransitionCertificate = local.transitionCertificate.bind(local);
+  local.transitionCertificate = (certId, to, reason) => {
+    const row = origTransitionCertificate(certId, to, reason);
+    withConn(async (c) => {
+      await c.execute(
+        `UPDATE feasibility_certificate SET status = :st, reason = :reason, updated_at = SYSTIMESTAMP WHERE cert_id = :id`,
+        { st: row.status, reason: row.reason, id: row.cert_id },
+        { autoCommit: true }
+      );
+    }).catch(() => {});
+    return row;
+  };
+
+  const origRecordProfilePush = local.recordProfilePush.bind(local);
+  local.recordProfilePush = (args) => {
+    const out = origRecordProfilePush(args);
+    if (out.deduped) return out;
+    const row = out.row;
+    withConn(async (c) => {
+      await c.execute(
+        `INSERT INTO charging_profile_push (push_id, decision_id, cp_id, profile_payload, payload_sha256, clamped)
+         VALUES (:id, :dec, :cp, :pj, :sha, :cl)`,
+        {
+          id: row.push_id,
+          dec: row.decision_id,
+          cp: row.cp_id,
+          pj: String(row.profile_payload),
+          sha: row.payload_sha256,
+          cl: row.clamped,
+        },
+        { autoCommit: true }
+      );
+    }).catch(() => {});
+    return out;
+  };
+
+  const origSetPushAck = local.setPushAck.bind(local);
+  local.setPushAck = (pushId, ackResult) => {
+    const row = origSetPushAck(pushId, ackResult);
+    withConn(async (c) => {
+      await c.execute(
+        `UPDATE charging_profile_push SET ack_result = :ack WHERE push_id = :id`,
+        { ack: String(ackResult).slice(0, 20), id: Number(pushId) },
+        { autoCommit: true }
+      );
+    }).catch(() => {});
+    return row;
+  };
+
+  const origDeadLetter = local.deadLetter.bind(local);
+  local.deadLetter = (args) => {
+    const row = origDeadLetter(args);
+    withConn(async (c) => {
+      await c.execute(
+        `MERGE INTO dead_letter d USING (SELECT :ref AS event_ref FROM dual) s ON (d.event_ref = s.event_ref)
+         WHEN MATCHED THEN UPDATE SET d.last_seen_at = SYSTIMESTAMP
+         WHEN NOT MATCHED THEN INSERT (letter_id, event_ref, kind, reason_code, detail, payload) VALUES (:id, :ref, :kind, :rc, :detail, :payload)`,
+        {
+          ref: row.event_ref,
+          id: row.letter_id,
+          kind: row.kind,
+          rc: row.reason_code,
+          detail: row.detail,
+          payload: row.payload,
+        },
+        { autoCommit: true }
+      );
+    }).catch(() => {});
+    return row;
+  };
+
+  const origResolveDeadLetter = local.resolveDeadLetter.bind(local);
+  local.resolveDeadLetter = (letterId, action, actor) => {
+    const row = origResolveDeadLetter(letterId, action, actor);
+    withConn(async (c) => {
+      await c.execute(
+        `UPDATE dead_letter SET status = :st, last_seen_at = SYSTIMESTAMP WHERE letter_id = :id`,
+        { st: row.status, id: row.letter_id },
+        { autoCommit: true }
+      );
+      await auditControl(c, {
+        actor,
+        entity: 'DEAD_LETTER',
+        id: row.letter_id,
+        action: 'RESOLVE',
+        oldV: 'OPEN',
+        newV: row.status,
+      });
+    }).catch(mirrorFail('dead-letter resolve'));
+    return row;
+  };
+
+  return local;
+}
+
+module.exports = {
+  createPool,
+  ping,
+  hydrate,
+  wrapWithOracle,
+  wrapControl,
+  truncateTo,
+  fromMirrorInsertError,
+  realignMirrorSeq,
+  MIRROR_SEQ_TABLES,
+};

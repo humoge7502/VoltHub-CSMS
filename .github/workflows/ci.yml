@@ -52,9 +52,19 @@ jobs:
       - run: node apps/api/test/xlayer.js
       - run: node apps/api/test/ocpp-remote.js
       - run: node apps/api/test/gateway-close.js
+      # ADR-0010/0013 receipts: the control-loop properties (envelope, certificates,
+      # rate governance, dead letters) and the AI advisory contract are claims the
+      # README/ADRs make — so they are gated on every push like every other claim.
+      - run: node apps/api/test/control.js
+      - run: node apps/api/test/ai.js
       - run: node test/sql/run-invariants.js
       - run: node scripts/check-openapi.js
+      # The committed snapshot must equal the live spec (scripts/gen-openapi.js).
+      - run: node scripts/gen-openapi.js --check
       - run: npm run test -w apps/simulator
+      # Twin properties (determinism, windows, taper, calibration tolerance) — the
+      # experiments' legitimacy rests on these, so they gate like any other invariant.
+      - run: node apps/simulator/test/twin.test.js
       - run: npm run test:e2e
       - run: npm install --no-audit --no-fund
         working-directory: apps/web
@@ -137,7 +147,7 @@ jobs:
         run: npm run test:race -w apps/api
       - name: Security + cross-layer suites
         env: { ORACLE_HOST: '' }
-        run: node apps/api/test/security.js && node apps/api/test/xlayer.js && node apps/api/test/ocpp-remote.js && node apps/api/test/gateway-close.js
+        run: node apps/api/test/security.js && node apps/api/test/xlayer.js && node apps/api/test/ocpp-remote.js && node apps/api/test/gateway-close.js && node apps/api/test/control.js && node apps/api/test/ai.js
       - name: DB-backed suites (STORE=oracle — adapter write-through)
         run: STORE=oracle npm run test -w apps/api && STORE=oracle npm run test:race -w apps/api
       - name: Invariants gate (real runner — 0 rows or red)
@@ -218,4 +228,9 @@ jobs:
           docker compose -f infra/docker-compose.yml logs --no-color worker 2>&1 | tail -60 || true
           echo 'station_map never populated'; exit 1
       - run: npm run test:e2e
+      # Control-plane E2E: the FC-HCC loop THROUGH HTTP and the Oracle write-through
+      # mirrors at once (certify → plan → actuate → typed outcome → durable audit).
+      # Deliberately not part of `test:e2e`: this one requires the durable engine, so it
+      # belongs to the job that boots the stack, not to the local-store unit tier.
+      - run: npm run test:e2e:control
       - run: docker compose -f infra/docker-compose.yml down

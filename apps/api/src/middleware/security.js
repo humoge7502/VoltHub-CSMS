@@ -53,6 +53,36 @@ function sweepIdle(now = Date.now()) {
     if (!fresh.length) loginWindows.delete(k);
     else if (fresh.length !== arr.length) loginWindows.set(k, fresh);
   }
+  for (const [k, arr] of customWindows) {
+    const fresh = arr.filter((t) => now - t < 120000);
+    if (!fresh.length) customWindows.delete(k);
+    else if (fresh.length !== arr.length) customWindows.set(k, fresh);
+  }
+}
+
+// Tiered route limiters (2026-09-14 CodeQL hardening): the control plane's
+// mutating routes (grid caps, mode flips, plan cycles, dead-letter resolves)
+// authorize on every call and actuate real hardware, so they get their own
+// stricter sliding window instead of relying on the global per-role throttle.
+// 30/min per user is generous for humans and the console's 15 s polls while
+// staying far below the 6/min/CP push governance in ocpp/smart-charging.js.
+const customWindows = new Map(); // key -> [timestamps] shared by makeLimiter tiers
+function makeLimiter({ key, limit }) {
+  return function limited(req, res, next) {
+    if (process.env.RATE_LIMIT_OFF === '1') return next();
+    const id = `${key}:${req.user?.id ?? req.ip}`;
+    const now = Date.now();
+    const arr = (customWindows.get(id) || []).filter((t) => now - t < 60000);
+    arr.push(now);
+    customWindows.set(id, arr);
+    res.setHeader('x-ratelimit-limit', limit);
+    res.setHeader('x-ratelimit-remaining', Math.max(0, limit - arr.length));
+    if (arr.length > limit) {
+      res.setHeader('retry-after', '60');
+      return res.status(429).json({ error: { code: 'RATE_LIMITED', message: `slow down: ${limit} req/min` } });
+    }
+    next();
+  };
 }
 setInterval(() => {
   try {
@@ -103,7 +133,9 @@ module.exports = {
   securityHeaders,
   throttle,
   checkLoginThrottle,
+  makeLimiter,
   _windows: windows,
   _sweepIdle: sweepIdle,
   _loginWindows: loginWindows,
+  _customWindows: customWindows,
 };

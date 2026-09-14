@@ -36,9 +36,12 @@ function _setPoolFactory(fn) {
 
 // Split outbox events into INSERT-ready rows. PK alignment: meter_tick(session_id, seq_no, ts),
 // connector_state_event(connector_ref, ts) — seq_no/dedupe_key carry the pipeline dedupe key (B2G-006).
+// ADR-0010/Phase 3: ENFORCEMENT_TICK rides the same outbox -> meter_tick_enforcement (T003)
+// with priority over analytics-only kinds when relay lag breaches the SLO (O.2 backpressure).
 function toRows(events) {
   const ticks = [],
-    states = [];
+    states = [],
+    enforcement = [];
   for (const e of events) {
     const p = e.payload || {};
     if (e.kind === 'METER_TICK' && p.session_id && p.ts) {
@@ -52,6 +55,17 @@ function toRows(events) {
         p.power_kw ?? null,
         null,
         null,
+        e.dedupe_key,
+      ]);
+    } else if (e.kind === 'ENFORCEMENT_TICK' && p.cp_id != null && p.ts) {
+      enforcement.push([
+        new Date(p.ts),
+        Number(p.cp_id),
+        p.session_id ?? null,
+        p.decision_id ?? null,
+        Number(p.scheduled_kw),
+        p.actual_kw == null ? null : Number(p.actual_kw),
+        p.deviation_kw == null ? null : Number(p.deviation_kw),
         e.dedupe_key,
       ]);
     } else if (e.kind === 'CONNECTOR_STATE' && p.connector_ref) {
@@ -76,7 +90,7 @@ function toRows(events) {
       ]);
     }
   }
-  return { ticks, states };
+  return { ticks, states, enforcement };
 }
 
 // B3G-003: historically named copyBatch; performs chunked multi-row INSERT.
@@ -147,7 +161,7 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
   if (!r.ok) throw new Error(`outbox poll ${r.status}`);
   const { events } = await r.json();
   if (!events.length) return { relayed: 0, ticks: 0, states: 0 };
-  const { ticks, states } = toRows(events);
+  const { ticks, states, enforcement } = toRows(events);
   const p = makePool();
   const client = await p.connect();
   try {
@@ -166,6 +180,16 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
       states.map((s) => s.slice(0, 6)),
       'ON CONFLICT DO NOTHING'
     );
+    let ne = 0;
+    if (enforcement.length) {
+      ne = await insertBatch(
+        client,
+        'meter_tick_enforcement',
+        ['ts', 'cp_id', 'session_id', 'decision_id', 'scheduled_kw', 'actual_kw', 'deviation_kw', 'dedupe_key'],
+        enforcement.map((x) => x.slice(0, 8)),
+        'ON CONFLICT DO NOTHING'
+      );
+    }
     await client.query('COMMIT');
     const ack = await fetchFn(`${apiBase}/internal/outbox/ack`, {
       method: 'POST',
@@ -173,7 +197,7 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
       body: JSON.stringify({ ids: events.map((e) => e.event_id) }),
     });
     if (!ack.ok) throw new Error(`ack ${ack.status}`);
-    return { relayed: events.length, ticks: nt, states: ns };
+    return { relayed: events.length, ticks: nt, states: ns, enforcement: ne };
   } catch (e) {
     try {
       await client.query('ROLLBACK');
