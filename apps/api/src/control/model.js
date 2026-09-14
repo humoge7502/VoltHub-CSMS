@@ -8,6 +8,21 @@
 const DEFAULT_INTERVAL_MIN = 15;
 const DEFAULT_HORIZON = 24;
 
+// Hard bounds (2026-09-14 hardening): plan/certify horizon+cadence are experiment
+// knobs, never allocation sizes — untrusted values fall back to the documented
+// defaults instead of reaching Array(horizon). Benches legitimately use 96
+// (24 h @ 15 min); 168 = 7 days, a generous ceiling that is still a sane DoS bound.
+const HORIZON_MAX = 168;
+const DT_MIN_ALLOWED = [5, 10, 15, 30, 60];
+function clampHorizon(v) {
+  const h = Number(v);
+  return Number.isInteger(h) && h >= 1 && h <= HORIZON_MAX ? h : DEFAULT_HORIZON;
+}
+function clampDtMin(v) {
+  const dt = Number(v);
+  return DT_MIN_ALLOWED.includes(dt) ? dt : DEFAULT_INTERVAL_MIN;
+}
+
 // Honest fallback when neither the vehicle nor a reservation declares a target:
 // a documented default beats an invented one. Callers pass requirementKwhFor()
 // to replace it (controller derives it from vehicle battery + target SoC).
@@ -185,6 +200,10 @@ function certifyVehicle({ vehicle, siteCapKw, certifiedFloorKw, now, deadlineAt,
 // one the benchmark measures (single source of truth).
 // Deterministic: every ordering breaks ties on sessionId.
 function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizon, now, acceptanceAware = false }) {
+  // Clamped at the boundary: an untrusted horizon/cadence falls back to the
+  // documented defaults instead of sizing the allocation arrays below.
+  dtMin = clampDtMin(dtMin);
+  horizon = clampHorizon(horizon);
   const grid = intervalGrid(now, dtMin, horizon);
   const dtH = dtMin / 60;
   const prices = priceSeries(grid.ticks);
@@ -411,6 +430,10 @@ module.exports = {
   DEFAULT_INTERVAL_MIN,
   DEFAULT_HORIZON,
   DEFAULT_SESSION_KWH,
+  HORIZON_MAX,
+  DT_MIN_ALLOWED,
+  clampHorizon,
+  clampDtMin,
   intervalGrid,
   acceptanceFactor,
   absorbedByVehicle,

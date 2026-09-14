@@ -228,8 +228,10 @@ function planSite(store, siteId, opts = {}) {
   const siteIdN = Number(siteId);
   const mode = store.getControlMode(siteIdN);
   const t0 = Date.now();
-  const dtMin = opts.dtMin || model.DEFAULT_INTERVAL_MIN;
-  const horizon = opts.horizon || model.DEFAULT_HORIZON;
+  // Clamped (2026-09-14 hardening): horizon/dtMin are experiment knobs, not
+  // allocation sizes — untrusted values fall back to the documented defaults.
+  const dtMin = model.clampDtMin(opts.dtMin);
+  const horizon = model.clampHorizon(opts.horizon);
 
   // 1) Sense + estimate, with the requirement/deadline/floor resolvers (opts may
   //    override for experiments; the production route uses the store-derived ones).
@@ -300,6 +302,10 @@ function planSite(store, siteId, opts = {}) {
 // chargingRateUnit 'W'. Envelope clamping happens HERE and at the gateway —
 // defense in depth: compiled profile can never exceed the asset cap.
 function compileToProfiles(store, siteIdN, decision, solved, dtMin, horizon) {
+  // Same clamp as the solver: the compiled profile's shape follows the plan's
+  // horizon, so an untrusted value must not size this allocation either.
+  dtMin = model.clampDtMin(dtMin);
+  horizon = model.clampHorizon(horizon);
   const capRaw = store.siteCapKw(siteIdN);
   const byCp = new Map();
   for (const [sid, arr] of Object.entries(solved.schedule)) {

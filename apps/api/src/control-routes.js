@@ -4,6 +4,7 @@
 'use strict';
 const express = require('express');
 const { authRequired, roles } = require('./middleware/auth');
+const { makeLimiter } = require('./middleware/security');
 const { oraStatus } = require('./errors');
 const control = require('./control/controller');
 const smartCharging = require('./ocpp/smart-charging');
@@ -11,12 +12,18 @@ const smartCharging = require('./ocpp/smart-charging');
 module.exports = function controlRoutes(store, registry, log) {
   const r = express.Router();
   const safe = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+  // Tiered control-plane limiter (see middleware/security.js): every mutating
+  // control route authorizes and several actuate hardware — rate-limit each one
+  // explicitly at 30/min/user in addition to the global per-role throttle.
+  // (Plan/certify bodies pass through model.clampHorizon/clampDtMin downstream,
+  // so untrusted horizon/cadence values can never size an allocation.)
+  const controlLimiter = makeLimiter({ key: 'ctl', limit: 30 });
+  const writeLimited = [authRequired, roles('ADMIN'), controlLimiter];
 
   // ---- grid assets (electrical hierarchy) — ADMIN ----
   r.post(
     '/stations/:id/grid-assets',
-    authRequired,
-    roles('ADMIN'),
+    ...writeLimited,
     safe(async (req, res) => {
       try {
         const asset = store.upsertGridAsset(Number(req.params.id), req.body, req.user.id);
@@ -43,8 +50,7 @@ module.exports = function controlRoutes(store, registry, log) {
   // Second-person approval of a PENDING cap reduction (four-eyes rule, N.1).
   r.post(
     '/grid-assets/:id/approve',
-    authRequired,
-    roles('ADMIN'),
+    ...writeLimited,
     safe(async (req, res) => {
       try {
         const asset = store.approveGridAsset(Number(req.params.id), req.user.id);
@@ -58,8 +64,7 @@ module.exports = function controlRoutes(store, registry, log) {
   // ---- control mode — ADMIN (default OFF until receipts exist) ----
   r.post(
     '/control/mode',
-    authRequired,
-    roles('ADMIN'),
+    ...writeLimited,
     safe(async (req, res) => {
       try {
         const out = store.setControlMode(
@@ -79,6 +84,7 @@ module.exports = function controlRoutes(store, registry, log) {
     '/control/plan/:siteId',
     authRequired,
     roles('OPERATOR', 'ADMIN'),
+    controlLimiter,
     safe(async (req, res) => {
       const siteId = Number(req.params.siteId);
       if (!store.stations.get(siteId))
@@ -121,6 +127,7 @@ module.exports = function controlRoutes(store, registry, log) {
     '/control/sessions/:id/certify',
     authRequired,
     roles('OPERATOR', 'ADMIN'),
+    controlLimiter,
     safe(async (req, res) => {
       try {
         res.json(control.certifySession(store, req.params.id, req.body || {}));
@@ -201,8 +208,7 @@ module.exports = function controlRoutes(store, registry, log) {
   );
   r.post(
     '/ops/dead-letters/:id/resolve',
-    authRequired,
-    roles('ADMIN'),
+    ...writeLimited,
     safe(async (req, res) => {
       try {
         const d = store.resolveDeadLetter(
@@ -220,8 +226,7 @@ module.exports = function controlRoutes(store, registry, log) {
   // ---- direct profile ops (diagnostics; envelope still governs SetChargingProfile) ----
   r.post(
     '/control/cp/:cpId/clear-profile',
-    authRequired,
-    roles('ADMIN'),
+    ...writeLimited,
     safe(async (req, res) => {
       const cp = store.cps.get(Number(req.params.cpId));
       if (!cp) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'charge point' } });
