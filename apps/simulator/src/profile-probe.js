@@ -30,12 +30,15 @@ ws.on('message', (raw) => {
   if (action === 'SetChargingProfile') {
     const p = payload.csChargingProfiles;
     const periods = p?.chargingSchedule?.chargingSchedulePeriods || [];
-    // Log shape-validated markers, not raw wire values (js/log-injection): the
-    // profile content itself is receipted in the API decision payload + sha256.
-    const okNum = (v) => (typeof v === 'number' && Number.isFinite(v) ? 'ok' : 'missing');
-    console.log(
-      `[probe] RECEIVED SetChargingProfile id=${okNum(p?.chargingProfileId)} periods=${periods.length} firstLimit=${okNum(periods[0]?.limit)}W duration=${okNum(p?.chargingSchedule?.duration)}s`
-    );
+    // Log a shape verdict only — no wire-derived value reaches the log line
+    // (js/log-injection). The profile content itself is receipted in the API
+    // decision payload + payload sha256.
+    const shapeOk =
+      typeof p?.chargingProfileId === 'number' &&
+      periods.length > 0 &&
+      typeof periods[0]?.limit === 'number' &&
+      typeof p?.chargingSchedule?.duration === 'number';
+    console.log(`[probe] RECEIVED SetChargingProfile shape=${shapeOk ? 'ok' : 'unexpected'} — replying Accepted`);
     ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
     setTimeout(() => {
       console.log('CLOSED-LOOP-OK');
