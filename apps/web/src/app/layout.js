@@ -23,7 +23,10 @@ const SITE = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
 
 export const metadata = {
   metadataBase: new URL(SITE),
-  title: 'VoltHub CSMS',
+  title: {
+    default: 'VoltHub CSMS — certainty is a database property',
+    template: '%s — VoltHub CSMS',
+  },
   description:
     'Two-engine EV charging management — Oracle 23ai money path, TimescaleDB telemetry, OCPP 1.6J gateway — race-tested in CI.',
   alternates: { canonical: '/' },
@@ -35,6 +38,11 @@ export const metadata = {
     url: '/',
     siteName: 'VoltHub CSMS',
   },
+  twitter: {
+    card: 'summary',
+    title: 'VoltHub CSMS',
+    description: 'Oracle money-path + TimescaleDB telemetry + OCPP 1.6J — race-tested in CI',
+  },
 };
 
 export default function RootLayout({ children }) {
@@ -45,18 +53,36 @@ export default function RootLayout({ children }) {
           Skip to content
         </a>
         <header className="topbar">
-          <Link href="/" className="brand" aria-label="VoltHub CSMS home">
-            VOLT<b>HUB</b>
-          </Link>
-          <Nav />
-          <span style={{ marginLeft: 'auto' }} className="micro">
-            <Link href="/login">login</Link> · <Link href="/profile">profile</Link>
-          </span>
+          <div className="topbar-in">
+            <Link href="/" className="brand" aria-label="VoltHub CSMS home">
+              VOLT<b>HUB</b>
+            </Link>
+            <Nav />
+            <span className="end">
+              <Link href="/login">Log in</Link>
+              <Link href="/profile">Profile</Link>
+            </span>
+          </div>
         </header>
         <main id="main">{children}</main>
-        <footer style={{ borderTop: '1px solid var(--hair)', marginTop: 48, padding: '20px 24px' }} className="micro">
-          VOLTHUB CSMS · ORACLE OLTP + TIMESCALEDB TELEMETRY · SIMULATED CHARGERS, PREPAID WALLET (NO CARD DATA) ·
-          BENCHMARKS: SEE docs/perf.md (MEASURED ONLY) · OPENAPI AT /api/v1/docs
+        <footer className="sitefooter">
+          <div className="sitefooter-in micro">
+            <span>
+              VOLT<b>HUB</b> CSMS
+            </span>
+            <span>ORACLE OLTP + TIMESCALEDB TELEMETRY</span>
+            <span>
+              SIMULATED CHARGERS · PREPAID WALLET (NO CARD DATA, EVER) · <Link href="/login">demo logins</Link>
+            </span>
+            <span>
+              BENCHMARKS: MEASURED ONLY — <code className="num">docs/perf.md</code>
+            </span>
+            <span className="grow">
+              <a href="https://github.com/humoge7502/VoltHub-CSMS">source</a> ·{' '}
+              <a href="https://humoge7502.github.io/VoltHub-CSMS/">docs site</a>
+            </span>
+            <span>MIT</span>
+          </div>
         </footer>
       </body>
     </html>

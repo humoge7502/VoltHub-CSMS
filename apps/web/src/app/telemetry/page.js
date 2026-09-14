@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { api, Line, Heatmap, PageState } from '../../lib/ui';
+import { api, Line, Heatmap, PageState, PageHead, StationPicker } from '../../lib/ui';
 
 export default function Telemetry() {
   const [st, setSt] = useState([]);
@@ -43,35 +43,27 @@ export default function Telemetry() {
   }, [sel]);
   return (
     <div className="wrap">
-      <div className="micro">OPERATOR · DA3 · GAP-FILLED 5M CURVE + 7×24 HEATMAP</div>
-      <h1 className="display" style={{ fontSize: '2.4rem' }}>
-        Telemetry
-      </h1>
-      <label className="micro" htmlFor="tl-station">
-        STATION
-      </label>
-      <select
-        id="tl-station"
-        aria-label="Station"
-        value={sel || ''}
-        onChange={(e) => setSel(Number(e.target.value))}
-        style={{ maxWidth: 320, margin: '12px 0' }}
-      >
-        {st.map((s) => (
-          <option key={s.station_id} value={s.station_id}>
-            {s.name}
-          </option>
-        ))}
-      </select>
+      <PageHead
+        eyebrow="OPERATOR · DA3 PIPELINE · 10 s REFRESH"
+        title="Telemetry"
+        lede="Five-minute load curve and the 7×24 utilization heatmap, read from continuous aggregates when TimescaleDB is wired."
+      />
+      <StationPicker id="tl-station" stations={st} value={sel} onChange={setSel} />
       <PageState loading={loading && !st.length} error={err} onRetry={loadStations}>
-        <div className="card">
-          <div className="micro">LOAD CURVE · CAGG-BACKED WHEN TS_HOST IS SET, ELSE LOCAL ROLLUP</div>
-          <Line pts={curve} h={200} />
-        </div>
-        <div className="card" style={{ marginTop: 16 }}>
-          <div className="micro">UTILIZATION HEATMAP · STATE EVENTS</div>
+        <section className="card" style={{ marginTop: 'var(--sp-4)' }}>
+          <div className="sec-h" style={{ marginBottom: 'var(--sp-3)' }}>
+            <h2 style={{ fontSize: '1rem' }}>Load curve</h2>
+            <p>kW per 5-minute bucket — cagg-backed when TS_HOST is set, local rollup otherwise.</p>
+          </div>
+          <Line pts={curve} h={200} id="tl" />
+        </section>
+        <section className="card" style={{ marginTop: 'var(--sp-4)' }}>
+          <div className="sec-h" style={{ marginBottom: 'var(--sp-3)' }}>
+            <h2 style={{ fontSize: '1rem' }}>Utilization heatmap</h2>
+            <p>Sessions per hour across the last 7 days — hover a cell for the count.</p>
+          </div>
           <Heatmap grid={heat} />
-        </div>
+        </section>
       </PageState>
     </div>
   );

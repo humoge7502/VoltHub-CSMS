@@ -1,17 +1,21 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { api, Pill, Line, Toasts, toast, kwh, inr } from '../../../lib/ui';
+import { api, Pill, Line, Toasts, toast, inr, ConfirmDialog } from '../../../lib/ui';
 
 export default function LiveSession() {
   // Next 16: dynamic-route params come from useParams(), not the page props.
   const params = useParams();
   const [d, setD] = useState(null);
   const [msg, setMsg] = useState('');
+  const [confirmStop, setConfirmStop] = useState(false);
   const id = params.id;
   const load = () =>
     api(`/sessions/${id}/live`)
-      .then(setD)
+      .then((x) => {
+        setD(x);
+        setMsg('');
+      })
       .catch((e) => setMsg(e.message));
   useEffect(() => {
     load();
@@ -22,9 +26,11 @@ export default function LiveSession() {
     return (
       <div className="wrap">
         <Toasts />
-        <div className="skel" style={{ height: 220 }} aria-busy="true" aria-label="Loading session" />
+        <div className="skel" style={{ height: 60, maxWidth: 280 }} />
+        <div className="skel" style={{ height: 120, marginTop: 12 }} />
+        <div className="skel" style={{ height: 200, marginTop: 12 }} />
         {msg && (
-          <p className="err" role="alert">
+          <p className="err" role="alert" style={{ marginTop: 12 }}>
             {msg}
           </p>
         )}
@@ -32,7 +38,7 @@ export default function LiveSession() {
     );
   const { session: s, live } = d;
   const stop = async () => {
-    if (!window.confirm('Stop charging?')) return;
+    setConfirmStop(false);
     try {
       await api(`/sessions/${s.session_id}/remote-stop`, { method: 'POST' });
       toast('Charge stopped');
@@ -68,14 +74,16 @@ export default function LiveSession() {
   return (
     <div className="wrap" aria-live="polite">
       <Toasts />
-      <div className="micro">LIVE SESSION · {s.connector_ref}</div>
-      <h1 className="display num" style={{ fontSize: '3rem' }}>
-        {live.energy_kwh.toFixed(2)} <span style={{ fontSize: '1.2rem' }}>kWh</span>
-      </h1>
-      <div style={{ margin: '8px 0' }}>
-        <Pill s={s.state} /> <Pill s={s.billing_state === 'UNBILLED' ? 'DUE' : 'PAID'} />
-      </div>
-      <div className="grid cards">
+      <header className="rise">
+        <div className="micro">LIVE SESSION · {s.connector_ref} · 5 s POLL</div>
+        <h1 className="display num" style={{ fontSize: 'clamp(2.4rem, 6vw, 4rem)', margin: 'var(--sp-3) 0 0' }}>
+          {live.energy_kwh.toFixed(2)} <span style={{ fontSize: '0.35em', color: 'var(--tx2)' }}>kWh</span>
+        </h1>
+        <div style={{ display: 'flex', gap: 8, marginTop: 'var(--sp-3)' }}>
+          <Pill s={s.state} /> <Pill s={s.billing_state === 'UNBILLED' ? 'DUE' : 'PAID'} />
+        </div>
+      </header>
+      <div className="grid cards" style={{ marginTop: 'var(--sp-5)' }}>
         <div className="card kpi">
           <div className="micro">Power</div>
           <div className="v num live-dot">{live.power_kw ?? '—'} kW</div>
@@ -91,13 +99,16 @@ export default function LiveSession() {
           <div className="v num">{inr(live.est_cost)}</div>
         </div>
       </div>
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="micro">POWER TRACE · 5s TICKS</div>
-        <Line pts={live.ticks.map((t) => ({ avg_kw: t.power_kw }))} />
-      </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+      <section className="card" style={{ marginTop: 'var(--sp-4)' }}>
+        <div className="sec-h" style={{ marginBottom: 'var(--sp-3)' }}>
+          <h2 style={{ fontSize: '1rem' }}>Power trace</h2>
+          <p>One tick per MeterValues frame — the same event the billing engine sees.</p>
+        </div>
+        <Line pts={live.ticks.map((t) => ({ avg_kw: t.power_kw }))} id="trace" />
+      </section>
+      <div style={{ display: 'flex', gap: 8, marginTop: 'var(--sp-4)', flexWrap: 'wrap' }}>
         {['PREPARING', 'CHARGING', 'SUSPENDED'].includes(s.state) && (
-          <button className="btn danger" onClick={stop}>
+          <button className="btn danger" onClick={() => setConfirmStop(true)}>
             Stop charging
           </button>
         )}
@@ -118,10 +129,20 @@ export default function LiveSession() {
         )}
       </div>
       {msg && (
-        <p className="err" role="alert">
+        <p className="err" role="alert" style={{ marginTop: 'var(--sp-3)' }}>
           {msg}
         </p>
       )}
+      <ConfirmDialog
+        open={confirmStop}
+        eyebrow="REMOTE STOP"
+        title="Stop this charge?"
+        body="The gateway sends RemoteStopTransaction to the charge point. The session settles at the metered total."
+        confirmLabel="Stop charging"
+        danger
+        onConfirm={stop}
+        onCancel={() => setConfirmStop(false)}
+      />
     </div>
   );
 }
