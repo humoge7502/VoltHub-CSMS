@@ -147,6 +147,26 @@ function certifyVehicle({ vehicle, siteCapKw, certifiedFloorKw, now, deadlineAt,
   };
 }
 
+// Acceptance-ENVELOPE scheduling (AES), ADR-0015. The allocator above the taper knee
+// was the failure E3 published (42.6% shortfall on the target-95% family): the promise
+// (certifyVehicle) was taper-aware, but the allocator was not, so it planned energy the
+// vehicle physically cannot accept once SoC passes the CC-CV knee. Plan-time feasibility
+// and realised feasibility therefore disagreed, and the disagreement was invisible in
+// every planned metric.
+//
+// AES makes the allocator consume the SAME acceptance curve the certifier and the
+// experiment already share (one physics model, three consumers). Two properties follow
+// by construction, and both are pinned by tests (E4 H0/H1):
+//   * below the knee acceptanceFactor == 1, so AES is *bit-identical* to the
+//     power-based allocator — the fix cannot regress the compliant case;
+//   * above the knee per-slot deliverability falls as SoC rises, so front-loading is
+//     optimal for feasibility, which is exactly what makes a flat certificate floor
+//     honour-able.
+// Gate: opted into explicitly (`acceptanceAware`), default off, so the committed
+// E1b/E3 receipts stay regenerable from their own scripts (ADR-0013). The production
+// controller opts in (FCHCC_ACCEPTANCE_AWARE, default on) and records which
+// allocator produced each decision row (see controller.js `solver`).
+
 // Deterministic schedule assembler. Three ordered passes, each with a stated job:
 //
 //   Pass 1 — certified floors: a certificate is a protocol-backed promise, so it is
@@ -164,7 +184,7 @@ function certifyVehicle({ vehicle, siteCapKw, certifiedFloorKw, now, deadlineAt,
 // reference upper bound in benchmarks (ADR-0013), and the shipped solver is the
 // one the benchmark measures (single source of truth).
 // Deterministic: every ordering breaks ties on sessionId.
-function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizon, now }) {
+function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizon, now, acceptanceAware = false }) {
   const grid = intervalGrid(now, dtMin, horizon);
   const dtH = dtMin / 60;
   const prices = priceSeries(grid.ticks);
@@ -180,6 +200,43 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
   );
   const need = new Map(vehicles.map((v) => [v.sessionId, Math.max(0, v.remainingKwh)]));
   const x = new Map(vehicles.map((v) => [v.sessionId, Array(horizon).fill(0)]));
+
+  // ---- AES: acceptance-envelope state (ADR-0015) -----------------------------
+  // The planning SoC reference is the vehicle's own arrival/declared SoC when known
+  // (`startSoc` from the twin, `socRef` from the controller's conservative estimate).
+  // Using the conservative reference is the safe direction: the allocator then plans
+  // LESS deliverability than the vehicle has, so a plan built on it is achievable.
+  const planningSoc = (v) => {
+    if (!acceptanceAware || !(Number(v.batteryKwh) > 0)) return null;
+    const ref = v.socRef != null ? Number(v.socRef) : v.startSoc != null ? Number(v.startSoc) : null;
+    return ref == null || !Number.isFinite(ref) ? null : Math.max(0, Math.min(1, ref));
+  };
+  // SoC immediately before slot t, replayed from what is already committed to this
+  // vehicle. Recomputed per lookup (O(horizon), horizon is 24) so pass 1 and pass 2
+  // each see the true state at their own t instead of a pointer that only one pass can
+  // own. Deterministic: a pure function of the current row.
+  const socBefore = (v, t) => {
+    const ref = planningSoc(v);
+    if (ref == null) return null;
+    const row = x.get(v.sessionId);
+    let soc = ref;
+    for (let i = 0; i < t; i++) {
+      const ask = row[i] || 0;
+      if (ask <= 1e-12) continue;
+      const absorbed = Math.min(ask, v.maxKw * acceptanceFactor(soc) * dtH);
+      soc = Math.min(1, soc + absorbed / v.batteryKwh);
+    }
+    return soc;
+  };
+  // Energy this vehicle can physically accept in slot t, given the schedule so far.
+  // Falls back to the nameplate per-slot energy when the battery state is unknown —
+  // i.e. exactly the pre-AES behaviour, never a guess.
+  const acceptanceKwh = (v, t) => {
+    const cap = v.maxKw * dtH;
+    const soc = socBefore(v, t);
+    if (soc == null) return cap;
+    return Math.max(0, Math.min(cap, v.maxKw * acceptanceFactor(soc) * dtH));
+  };
   const siteCapPerT = siteCapKw === Infinity ? Infinity : siteCapKw * dtH;
   const cpCapPerT = new Map([...cpCaps].map(([cpId, cap]) => [cpId, cap * dtH]));
   const certified = new Map(vehicles.map((v) => [v.sessionId, v.certifiedFloorKw || 0]));
@@ -208,7 +265,8 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
   const av = (sid) => arrivalSlot.get(sid) ?? 0;
   const give = (v, t, kwh) => {
     if (t < av(v.sessionId) || t >= dl(v.sessionId)) return 0;
-    const amount = Math.max(0, Math.min(kwh, roomAt(t, v.cpId), need.get(v.sessionId)));
+    const deliverable = acceptanceAware ? acceptanceKwh(v, t) : kwh;
+    const amount = Math.max(0, Math.min(kwh, deliverable, roomAt(t, v.cpId), need.get(v.sessionId)));
     if (amount <= 1e-9) return 0;
     x.get(v.sessionId)[t] += amount;
     need.set(v.sessionId, need.get(v.sessionId) - amount);
@@ -220,6 +278,9 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
     const floor = certified.get(v.sessionId) || 0;
     if (floor <= 0) continue;
     const perT = Math.min(floor, v.maxKw) * dtH;
+    // A floor is a promise, so it is front-loaded within the window: acceptance is
+    // non-increasing in SoC, so the earliest slots carry the most deliverability and a
+    // flat floor is therefore honoured from the front (ADR-0015).
     for (let t = av(v.sessionId); t < dl(v.sessionId) && need.get(v.sessionId) > 1e-9; t++) give(v, t, perT);
   }
 
@@ -254,7 +315,15 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
         if (movable <= 1e-9) break;
         // Never move energy into an interval that already holds a vehicle's floor-
         // protected allocation beyond its own cap: roomAt() is the single truth.
-        const moved = Math.min(movable, roomAt(tCheap, v.cpId));
+        // AES adds the second truth a power-based check cannot see: the vehicle's own
+        // acceptance in the DESTINATION slot. Moving energy later (a cheaper late-night
+        // band) can put it where the taper will not absorb it, which is precisely how a
+        // price pass silently breaks a promise. Only the acceptance-limited headroom is
+        // movable; below the knee this reduces to the pre-AES bound exactly.
+        const acceptanceRoom = acceptanceAware
+          ? Math.max(0, acceptanceKwh(v, tCheap) - (x.get(v.sessionId)[tCheap] || 0))
+          : movable;
+        const moved = Math.min(movable, roomAt(tCheap, v.cpId), acceptanceRoom);
         if (moved <= 1e-9) continue;
         x.get(v.sessionId)[tExp] -= moved;
         x.get(v.sessionId)[tCheap] += moved;
@@ -269,6 +338,16 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
   const peak = Math.max(0, ...grid.ticks.map((_t, i) => sumSite(i) / dtH));
   const unmet = [...need.values()].reduce((a, b) => a + b, 0);
   const delivered = [...x.values()].reduce((a, arr) => a + arr.reduce((p, q) => p + q, 0), 0);
+  // Plan-time DELIVERABILITY (AES only): what a compliant charger will actually absorb
+  // under the acceptance curve. Reported beside delivered_kwh so a caller can tell a plan
+  // that LOOKS feasible from one that IS feasible without re-simulating the physics —
+  // the distinction whose absence produced the E3 taper failure (ADR-0015).
+  let absorbable = null;
+  if (acceptanceAware) {
+    let sum = 0;
+    for (const v of vehicles) sum += absorbedByVehicle(v, x.get(v.sessionId), dtH, planningSoc(v));
+    absorbable = +sum.toFixed(4);
+  }
   return {
     schedule: Object.fromEntries([...x].map(([sid, arr]) => [sid, arr.map((k) => +k.toFixed(4))])),
     metrics: {
@@ -277,6 +356,9 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
       unmet_kwh: +unmet.toFixed(4),
       delivered_kwh: +delivered.toFixed(4),
       shifted_kwh: +shiftedKwh.toFixed(4),
+      // Emitted ONLY for the acceptance-aware allocator: a legacy receipt must regenerate
+      // byte-for-byte from its own script (ADR-0013), and these fields are AES-only.
+      ...(acceptanceAware ? { absorbable_kwh: absorbable, acceptance_aware: true } : {}),
       deadline_slots: Object.fromEntries([...deadlineSlot].map(([sid, s2]) => [sid, s2 === Infinity ? null : s2])),
       arrival_slots: Object.fromEntries([...arrivalSlot]),
       horizon,
@@ -307,12 +389,31 @@ function shouldReplan({ certificates, enforcementTicks, toleranceKw, hysteresisM
   return { replan: false, reason: 'WITHIN_TOLERANCE' };
 }
 
+// Energy a compliance-respecting vehicle actually absorbs from an allocation row, under
+// the same CC-CV curve the certifier and the twin use. The single definition of
+// "planned energy" that a feasible plan is allowed to claim (ADR-0015).
+function absorbedByVehicle(vehicle, row, dtH, socRef) {
+  if (!(Number(vehicle.batteryKwh) > 0) || socRef == null) {
+    return (row || []).reduce((a, b) => a + (Number(b) || 0), 0);
+  }
+  let soc = socRef;
+  let sum = 0;
+  for (let t = 0; t < (row || []).length; t++) {
+    const ask = Number(row[t]) || 0;
+    const absorbed = Math.max(0, Math.min(ask, vehicle.maxKw * acceptanceFactor(soc) * dtH));
+    sum += absorbed;
+    soc = Math.min(1, soc + absorbed / vehicle.batteryKwh);
+  }
+  return sum;
+}
+
 module.exports = {
   DEFAULT_INTERVAL_MIN,
   DEFAULT_HORIZON,
   DEFAULT_SESSION_KWH,
   intervalGrid,
   acceptanceFactor,
+  absorbedByVehicle,
   estimateVehicles,
   certifyVehicle,
   solveSchedule,

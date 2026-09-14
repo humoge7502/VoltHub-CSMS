@@ -22,6 +22,10 @@ const DEFAULT_MARGIN_KWH = 2; // mirrors FCHCC_MARGIN_KWH
 function certifyAndSchedule(scenario, opts = {}) {
   const reserve = opts.reserveFraction == null ? DEFAULT_RESERVE : opts.reserveFraction;
   const marginKwh = opts.marginKwh == null ? DEFAULT_MARGIN_KWH : opts.marginKwh;
+  // ADR-0015: false = the pre-AES power-based allocator (what the committed E1b/E3
+  // receipts measured), true = acceptance-envelope scheduling (what the controller
+  // ships). The experiment carries BOTH so the difference is attributable.
+  const acceptanceAware = !!opts.acceptanceAware;
   const usableCapKw = scenario.siteCapKw * (1 - reserve);
   const order = [...scenario.vehicles].sort((a, b) => a.sessionId - b.sessionId);
   const certs = [];
@@ -61,6 +65,7 @@ function certifyAndSchedule(scenario, opts = {}) {
     dtMin: scenario.dtMin,
     horizon: scenario.horizon,
     now: scenario.gridStart,
+    acceptanceAware,
   });
   return { schedule: solved.schedule, metrics: solved.metrics, certs, usableCapKw };
 }
@@ -123,7 +128,11 @@ function calibration(scenario, certs, realizedSchedule, ids) {
 }
 
 // Score every strategy on one scenario under identical physics.
-function scoreAll(scenario, { betaPerKw = 10, reserveFraction, marginKwh } = {}) {
+// `aesArm` is an opt-in, NOT a default: E1b and E3 are pre-registered against the
+// power-based allocator, and their committed receipts must regenerate byte-for-byte from
+// their own scripts (ADR-0013). The AES comparison lives in E4, which passes aesArm: true
+// and gets both arms on the same population; every earlier experiment is untouched.
+function scoreAll(scenario, { betaPerKw = 10, reserveFraction, marginKwh, aesArm = false } = {}) {
   const ctrl = certifyAndSchedule(scenario, { reserveFraction, marginKwh });
   const promisedIds = ctrl.certs.filter((c) => c.admitted).map((c) => c.sessionId);
   const requested = {
@@ -132,6 +141,10 @@ function scoreAll(scenario, { betaPerKw = 10, reserveFraction, marginKwh } = {})
     price_blind_edf: baselines.priceGreedyEdf(scenario),
     uncontrolled: baselines.uncontrolled(scenario),
   };
+  // Same certificates, same population, same physics — only the allocator differs, which
+  // is what makes the AES delta an attributable effect rather than a confound.
+  const ctrlAes = aesArm ? certifyAndSchedule(scenario, { reserveFraction, marginKwh, acceptanceAware: true }) : null;
+  if (ctrlAes) requested.controller_aes = ctrlAes.schedule;
   const strategies = {};
   const calibrationByStrategy = {};
   for (const [name, req] of Object.entries(requested)) {
@@ -159,6 +172,20 @@ function scoreAll(scenario, { betaPerKw = 10, reserveFraction, marginKwh } = {})
     promised_ids: promisedIds,
     usable_cap_kw: +ctrl.usableCapKw.toFixed(3),
     planner_metrics: ctrl.metrics,
+    ...(ctrlAes
+      ? {
+          // The AES plan's own deliverability claim vs what physics then delivered.
+          // Plan-honesty (claim == outcome) is the property ADR-0015 exists to restore, so
+          // it is measured directly rather than inferred from the cost table.
+          planner_metrics_aes: ctrlAes.metrics,
+          plan_honesty: {
+            aes_claim_kwh: ctrlAes.metrics.absorbable_kwh,
+            aes_delivered_kwh: strategies.controller_aes.delivered_kwh,
+            power_claim_kwh: ctrl.metrics.delivered_kwh,
+            power_delivered_kwh: strategies.controller.delivered_kwh,
+          },
+        }
+      : {}),
     cost_lower_bound_energy_units: lowerBound.energy_cost_units,
   };
 }
@@ -175,13 +202,14 @@ function scoreAll(scenario, { betaPerKw = 10, reserveFraction, marginKwh } = {})
 // so aggregation is unaffected by removing an array-valued field.
 function compactRow(row) {
   for (const s of Object.values(row.strategies || {})) delete s.per_slot_kwh;
-  if (row.planner_metrics) {
-    delete row.planner_metrics.per_slot_kwh;
+  for (const key of ['planner_metrics', 'planner_metrics_aes']) {
+    if (!row[key]) continue;
+    delete row[key].per_slot_kwh;
     // The per-session arrival/departure slot maps are scenario INPUTS, not results — they
     // are regenerated exactly from the row's seed — and they were the single largest
     // field in the artefact.
-    delete row.planner_metrics.arrival_slots;
-    delete row.planner_metrics.deadline_slots;
+    delete row[key].arrival_slots;
+    delete row[key].deadline_slots;
   }
   return row;
 }

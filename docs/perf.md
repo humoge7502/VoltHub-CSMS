@@ -84,11 +84,13 @@ retention windows. Compression ratio is NOT claimed: the 7-day compression polic
 not triggered for the synthetic data, so `hypertable_compression_stats` reports no
 compressed bytes — nothing compressed, nothing claimed.
 
-## Measured — E1b/E3: shipped solver, generative twin (2026-09-13)
+## Measured — E1b/E3/E6: shipped solver, generative twin (2026-09-13, E6 2026-09-14)
 
-Scripts: `bench/e1b-cost.js` (200 seeds × 2 arms) and `bench/e3-deadline.js`
-(100 seeds × 3 load levels × 2 SoC families). Receipts: `bench/results/e1b-cost.json`,
-`bench/results/e3-deadline.json`. Workload: `apps/simulator/src/twin.js` (deterministic
+Scripts: `bench/e1b-cost.js` (200 seeds × 2 arms), `bench/e3-deadline.js`
+(100 seeds × 3 load levels × 2 SoC families) and `bench/e6-taper.js` (E3's ladder + a paired
+`controller_aes` arm). Receipts: `bench/results/e1b-cost.json`,
+`bench/results/e3-deadline.json`, `bench/results/e6-taper.json`. Workload:
+`apps/simulator/src/twin.js` (deterministic
 arrivals, battery/SoC, CC-CV acceptance, ToU prices, non-compliant chargers). Scoring:
 `apps/simulator/src/offline.js` — every strategy is scored on the same population and
 under identical actuator physics.
@@ -154,6 +156,55 @@ earlier receipt of this family suggested: re-anchoring the scenario moved ρ = 0
 "significantly worse" to "indistinguishable", and the honest statement is the latter. The
 fix is a scheduler that models acceptance end-to-end, which is a _new_ pre-registered
 experiment (E6), not an edit to these results (ADR-0013).
+
+### E6 — the repair, measured (2026-09-14)
+
+Script `bench/e6-taper.js`, receipt `bench/results/e6-taper.json`, mechanism ADR-0015.
+E6 is **additive**: E3 above remains the committed pre-fix record and is not edited. E6 runs
+the same ladder with a paired `controller_aes` arm (acceptance-envelope scheduling), scored
+on the same population by the same harness.
+
+Hypotheses declared before running: **H0** below the knee AES ≡ power-based (Δdelivered 0,
+Δcost 0); **H1** taper-binding shortfall ≤ 5%; **H2** AES keeps the deadline advantage over
+static-cap (paired CI excludes 0); **H3** AES cost/kWh ≤ static-cap; **H4** the AES plan's
+own claim equals realised physics. All five PASS.
+
+**The failure repaired — target 95% SoC (the family where the taper binds):**
+
+| ρ   | shortfall (power-based → AES) | max shortfall kWh | deadline miss (power → AES) | static-cap miss | cost/kWh (AES vs static) |
+| --- | ----------------------------- | ----------------- | --------------------------- | --------------- | ------------------------ |
+| 0.9 | **42.62% → 2.36%**            | 2.516 → 2.427     | **56.6% → 15.7%**           | 55.2%           | 0.8982 vs 0.9573         |
+| 1.2 | **40.67% → 1.66%**            | 2.516 → 2.168     | **52.9% → 13.6%**           | 65.8%           | 0.8564 vs 0.8962         |
+
+Paired deltas over 100 seeds (ρ = 0.9): AES − power-based **+12.19 kWh delivered**
+(95% CI 11.58–12.84) at **+4.74 total cost units** (CI 4.47–5.01); AES − static-cap
+deadline-miss rate **−0.3988** (CI −0.4252 to −0.372). AES delivers ~12 kWh more per
+site-day, spends marginally more absolute energy cost to do it, and **lowers cost per kWh
+delivered** (0.8982 vs the legacy 0.9049): feasibility is bought with energy that was
+previously planned and never delivered, not with money.
+
+**Plan honesty — the defect and the fix in one number (ρ = 0.9, 100 seeds):**
+
+| allocator   | plan claims   | physics delivers | gap              |
+| ----------- | ------------- | ---------------- | ---------------- |
+| power-based | 93,573.79 kWh | 92,293.53 kWh    | **1,280.27 kWh** |
+| AES         | 93,512.75 kWh | 93,512.74 kWh    | **0.011 kWh**    |
+
+At ρ = 1.2 the power-based gap is 781.90 kWh against an AES gap of −0.003 kWh. The legacy
+planner was not slightly optimistic: it **claimed ~1.3 MWh per 100-seed run that the
+vehicles physically could not absorb**, and every planned metric was blind to it.
+
+**No regression, exactly — base family (target 80% SoC):** H0 PASS at ρ = 0.6/0.9/1.2 —
+Δdelivered 0, Δcost 0, identical schedules. On the compliant fleet every printed metric
+(cost/kWh, peak, jain, deadline-miss) is unchanged to the last digit; the change is
+invisible below the taper knee, which is why it is safe to ship (pinned by A1/A1b in
+`apps/api/test/control-aes.js`).
+
+**Honest trade-offs:** AES absolute total cost is ~0.6% higher because it delivers 1.3% more
+energy; fairness is essentially unchanged (jain 0.8676 vs 0.8682 at ρ = 0.9); and
+`uncontrolled` still keeps deadlines better than any planner because it charges flat-out —
+the controller's claim remains cost, peak and plan honesty, not deadline superiority over
+brute force.
 
 Also honest: on the promised population, `uncontrolled` keeps deadlines better than the
 controller (4.9% vs 6.9%) because it front-loads at maximum rate. The controller wins on

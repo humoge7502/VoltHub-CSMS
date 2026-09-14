@@ -19,6 +19,13 @@ const TARGET_SOC = Number(process.env.FCHCC_TARGET_SOC || 0.8);
 // Certificate replan cadence bound (minutes): hysteresis that stops a site from
 // replanning on every meter tick once deviation is detected.
 const DEFAULT_HYSTERESIS_MIN = Number(process.env.FCHCC_HYSTERESIS_MIN || 5);
+// Acceptance-envelope scheduling (ADR-0015): the allocator consumes the same CC-CV
+// acceptance curve the certifier and the twin already share, so plan-time feasibility
+// equals realised feasibility. Default ON for the shipped controller — a promise and a
+// plan that disagree about physics is the defect, not the configuration. Set
+// FCHCC_ACCEPTANCE_AWARE=0 to reproduce the pre-ADR-0015 power-based allocator (the
+// ablation arm in bench/e4-taper.js).
+const ACCEPTANCE_AWARE = process.env.FCHCC_ACCEPTANCE_AWARE !== '0';
 
 function priceSeriesFactory(store, planId) {
   // ToU price path from the tariff resolver; falls back to flat 1.0 when the
@@ -252,6 +259,7 @@ function planSite(store, siteId, opts = {}) {
   //    THIS function — one solver, one truth).
   const cpCaps = new Map();
   for (const v of vehicles) if (!cpCaps.has(v.cpId)) cpCaps.set(v.cpId, capRaw);
+  const acceptanceAware = opts.acceptanceAware == null ? ACCEPTANCE_AWARE : !!opts.acceptanceAware;
   const solved = model.solveSchedule({
     vehicles,
     siteCapKw,
@@ -260,6 +268,7 @@ function planSite(store, siteId, opts = {}) {
     dtMin,
     horizon,
     now: t0,
+    acceptanceAware,
   });
 
   // 5) Persist the decision (append-only) with full provenance.
@@ -274,7 +283,10 @@ function planSite(store, siteId, opts = {}) {
       certifications,
     }),
     bounds_hash,
-    solver: opts.solver || 'fchcc-edf-priceshift',
+    // The audit row names the allocator that produced it: a decision made with a
+    // taper-blind allocator must be distinguishable from one made with AES, or a
+    // receipt cannot say which mechanism was under test (ADR-0013/0015).
+    solver: opts.solver || `fchcc-edf-priceshift${acceptanceAware ? '-aes' : ''}`,
     runtime_ms: +(Date.now() - t0).toFixed(2),
     state_version: store.outbox.length,
   });
@@ -406,4 +418,5 @@ module.exports = {
   DEFAULT_MARGIN_KWH,
   TARGET_SOC,
   DEFAULT_HYSTERESIS_MIN,
+  ACCEPTANCE_AWARE,
 };

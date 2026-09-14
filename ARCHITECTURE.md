@@ -76,8 +76,13 @@ cap is a hope).
 
 Certification runs **before** scheduling and is graded **after** it: the promise is a
 persisted row, the plan must honour its floor, the acks are correlated, and metered kW
-is compared against the schedule in force. Where the promise is not yet kept — target SoC
-above the CC-CV knee — the benchmark says so (ADR-0014, `docs/perf.md`).
+is compared against the schedule in force. Where the promise was not kept — target SoC
+above the CC-CV knee, where the allocator planned energy the battery could not absorb —
+the benchmark said so (ADR-0014, `docs/perf.md`), and **ADR-0015 fixes it**: the allocator
+now consumes the same acceptance curve as the certifier and the twin (`acceptanceFactor`,
+one definition, three consumers), so plan-time and realised feasibility cannot disagree.
+Measured in E6: shortfall 42.6% → 2.36%, deadline miss 56.6% → 15.7%, plan-honesty gap
+1,280 kWh → 0.011 kWh, and **bit-identical schedules below the knee** (H0).
 
 ## Where it deliberately stops (scale exits, not features)
 
