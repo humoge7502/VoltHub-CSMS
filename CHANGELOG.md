@@ -4,6 +4,144 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **BUG-051 (P1, live): the worker's internal channel was throttled by the public
+  per-IP ANON tier.** `throttle` is mounted at the app root, so its `/internal/*`
+  exclusion — added precisely because "the relay starves on 429s" — tested
+  `req.path`, which there is `/api/v1/internal/outbox` and never matched. The worker
+  polls three internal endpoints every 2 s (~90 req/min, one IP, no JWT) and was
+  capped at 60/min: **74 of 120** relays were rejected in a measured probe, the
+  outbox stopped draining and Timescale telemetry went stale. Observed live on the
+  compose stack as an endless `outbox poll 429 — backing off` log with **85 unacked
+  events**. `isInternalPath()` now matches the full URL and exempts the channel from
+  every tier (the global throttle _and_ the router barriers). After the fix the same
+  stack drained the entire backlog on the next 2 s cycle (`relayed=85`, outbox lag
+  **85 → 0**, `meter_tick` 59 → 71, zero 429s). Regression: `RL-7`
+  (`apps/api/test/ratelimit.js`), red against the pre-fix check.
+- **BUG-050 (P1, live): `reservation_pkg.expire_stale` never released the connector
+  it held.** Expiry flipped only the reservation, while the local store also released
+  the connector — so the two engines disagreed on bookability (ADR-0005) and, because
+  `hydrate()` re-reads Oracle on boot, the charge point stayed **unbookable forever**:
+  `start_session` on a `RESERVED` connector requires a `BOOKED` reservation for it,
+  and the reservation is `EXPIRED`. Found live: connectors `1:1`, `2:1` and `9:1`
+  stuck `RESERVED` with only `EXPIRED`/`CANCELLED` windows on them. The procedure now
+  releases the hold exactly as `cancel_reservation` does (and sets the V004 guard
+  identifier explicitly instead of relying on a session that happened to run another
+  package call). Verified red→green on live Oracle, and gated by the new **INV-12**
+  invariant (a `RESERVED` connector must be held by a `BOOKED` reservation) in
+  `db/oracle/invariants.sql` + the local-store mirror in `test/sql/run-invariants.js`.
+- **The web image could not be pointed at a non-localhost API.** `next.config.js`
+  inlines `NEXT_PUBLIC_API_BASE` at **build** time, but `apps/web/Dockerfile` never
+  set it and compose only set it at runtime — so every built image shipped pointing at
+  `http://localhost:4000/api/v1` and the documented Caddy/TLS deployment
+  (`app.example` + `api.example`) could not be built at all. The Dockerfile now takes
+  `NEXT_PUBLIC_API_BASE` / `NEXT_PUBLIC_SITE_URL` as build args, compose passes them
+  from the environment, and the value is verified to land in the client bundle
+  (built with a sentinel origin and grepped out of `.next/static`).
+- **A root `.env` was silently ignored by every compose command.** Compose's project
+  directory is the compose file's directory (`infra/`), so the `cp .env.example .env`
+  step DEPLOY.md §1 prescribes had no effect: the stack booted with the hardcoded dev
+  `JWT_SECRET` and no overrides. Measured: `docker compose -f
+infra/docker-compose.yml config` renders `JWT_SECRET: dev-only-32-byte-secret-…`
+  with a root `.env` present, and the real value with `--env-file .env`. DEPLOY.md
+  (all commands), README, CONTRIBUTING and a comment on the compose `api` service now
+  say so. Note `--env-file` feeds interpolation only, which is what keeps the
+  services' explicit `ORACLE_HOST: oracle` / `TS_HOST: timescale` wiring intact.
+- **The simulator's two most likely failures were unreadable.** (1) The gateway
+  upgrades the socket and then closes it with OCPP `4401`/`4404`, which the simulator
+  never handled — an auth refusal surfaced 8 s later as a bare `ocpp timeout
+BootNotification`, hiding the cause (the demo DB's admin-provisioned charge points
+  carry random secrets, not the `dev-<identity>` the simulator assumes). It now names
+  the close code, the likely cause and the two remedies. (2) Re-running `--provision`
+  against a database that already had the fleet pushed nothing into `cps` and died
+  with `Cannot read properties of undefined (reading 'connector_ref')`; an existing
+  charge point is now reused (verified: a real session `tx=118` ran on the reused
+  fleet).
+- **The FastAPI sidecar booted through a deprecated hook.** `@app.on_event("startup")`
+  is removed in current FastAPI and emitted a `DeprecationWarning` on every boot and
+  every test that imported the app; it is now a lifespan handler (verified by running
+  the lifespan directly: `model_loaded = True`). pytest warnings: 3 → 1 (the remaining
+  one is the environment's own pynvml notice).
+- **The Oracle-backed contract suite failed on any database that was not freshly
+  seeded.** `test/run.js` looked for a free connector on `stations[0]` only, so on a
+  used compose stack it aborted with `need an AVAILABLE connector` while 18 connectors
+  sat free elsewhere. It now searches every station. Also: the bill/pay assertions
+  carry the response body in their message, so a rare failure names its cause instead
+  of printing a bare `500 == 201`.
+- **The router barriers did not key on the identity they documented.** The
+  barriers introduced by the CodeQL pass are mounted ahead of `authRequired`, so
+  `req.user` was always `undefined` when the key generator ran: every caller on one
+  host shared a single `…:ip:<addr>` bucket while the comment claimed "30/min per
+  user". Bucket identity now comes from `verifiedClaims()` — the signature-verified
+  `sub` (the same SEC-006 rule the global throttle uses), falling back to the
+  IPv6-safe `ipKeyGenerator` — so minting extra tokens no longer buys extra budget.
+  Pinned red→green by `RL-2` (`apps/api/test/ratelimit.js`), which fails against the
+  pre-fix `req.user?.id ?? ip` key.
+- **The same barrier config was copy-pasted into three routers.** It is now one
+  `routerBarrier({ key, limit, message })` in `middleware/security.js`, and the
+  token verification inside `throttle()` collapsed into the same `verifiedClaims()`
+  helper — one definition of "who is this caller", which is what the two must agree
+  on.
+- **Removed the dead `getStore()` boot path** (`db/index.js`: never called, 0%
+  covered, and a duplicate of the hydrate/seed/fallback logic `server.js` now runs
+  through `upgradeStore()`) — a second truth that could only rot silently. ADR-0005's
+  seam line names the real one.
+- **Corrected the barrier comments to match Express semantics.** A mounted router's
+  middleware runs _before_ route matching, so the `routes.js` barrier is a
+  whole-`/api/v1` envelope that counts `extended.js` and `control-routes.js` paths
+  too; the per-router "separate budget" wording was wrong (pinned by `RL-3`).
+
+### Added
+
+- **INV-12: a `RESERVED` connector must be held by a `BOOKED` reservation**
+  (`db/oracle/invariants.sql` + the local-store mirror in `test/sql/run-invariants.js`,
+  so the count of CI-gated checks is now **12**). This is the invariant BUG-050
+  violated; it is the only check that can catch an engine _disagreement_, because the
+  local store was always correct — which is exactly why the Oracle mode of the runner
+  matters.
+- **`.env.example` now documents every deployment-relevant variable the first-party
+  code reads** (14 were missing, including `TRUST_PROXY` — which DEPLOY.md requires
+  behind Caddy — plus the OCPP, AI-sidecar, pool-cap and control-loop knobs), with the
+  real defaults taken from the code rather than guessed.
+- **DEPLOY.md §5 documents the AI sidecar** (how to run it, that it is optional, and
+  that the API degrades to `503 AI_UNAVAILABLE` rather than fabricating a forecast),
+  and §3's migration range is corrected to the globbed reality (V001–V007,
+  T001–T003).
+- **CONTRIBUTING's testing ladder gains a rate-limit rung**, with a note that it is the
+  only suite that runs with limiting on, plus the rule to mount `routerBarrier()` on a
+  new authorizing router instead of copying a limiter config.
+- **`apps/api/test/ratelimit.js` — the rate-limit tier's first executable evidence
+  (8 pins, run with limiting ON).** Every other suite sets `RATE_LIMIT_OFF=1`, so the
+  throttles and barriers were the only security controls in the repo that no test
+  could show firing. It pins: the barrier trips at its tier with a typed 429 +
+  `Retry-After` + draft-7 headers; **buckets are per user, not per IP** (the bug
+  above); the whole-API envelope is shared across routers; the control plane is the
+  one strictly stricter tier (30/min, and it runs _ahead_ of authorization);
+  `RATE_LIMIT_OFF` is read per request; bucket identity is the verified subject
+  (tampered/absent tokens fall to the IP key, never a caller-chosen one); the login
+  tier trips at 10/min per IP; and the internal worker channel is exempt from every
+  tier while the public tier on the same IP still fires (BUG-051). Wired into
+  `npm test` and both CI jobs.
+- **Control-plane HTTP contract tests** (`test/run.js`): dead-letter triage
+  (list + `resolve` — 422 on a bad action, 404 on an unknown letter, lowercase action
+  accepted) and the profile diagnostics (`clear-profile`, `composite-schedule` — 404
+  for an unknown charge point, the typed 409 `CP_OFFLINE` for a disconnected one,
+  never a 500). These routes had no HTTP-level test at all.
+- **Observability contract tests** (`test/run.js`): `/metrics` must be well-formed
+  Prometheus text (HELP + TYPE + numeric sample per metric), its gauges must equal the
+  live store (outbox depth, sessions, connected charge points, pool) and its counter
+  must advance between scrapes; `/health` and `/health/deep` must report the real
+  engine verdict and a `process_started_at` that is never in the future.
+
+### Changed
+
+- Instrumented coverage: **65.66% → 69.18% lines** — `observability.js` 22.6% →
+  93.5%, `middleware/security.js` 67.9% → 93.4%, `control-routes.js` 56.9% → 71.0%.
+  A side effect of testing claims that were already being made, not a target: the
+  DB-backed modules (`oracle.js`, worker loop) stay where they are, because their
+  evidence is the `db-tests`/compose jobs, not a unit-test percentage.
+
 ## [1.6.0] — 2026-09-15
 
 ### Added
