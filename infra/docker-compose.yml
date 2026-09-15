@@ -55,7 +55,13 @@ services:
       # DEPLOY.md §1: a root .env is NOT read by compose (project dir is infra/) —
       # pass `--env-file .env` or this silently falls back to the dev secret.
       JWT_SECRET: ${JWT_SECRET:-dev-only-32-byte-secret-0123456789}
-      WEB_ORIGIN: http://localhost:3000,http://localhost:3120
+      # CORS allow-list for the web console. Extend via .env (--env-file) when the
+      # console is served from a tunnel/prod origin (DEPLOY.md §2) — e.g.
+      # WEB_ORIGIN=https://app.example.com,http://localhost:3000
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000,http://localhost:3120}
+      # Trust proxy headers so per-IP throttles see real clients behind a reverse
+      # proxy/tunnel (DEPLOY.md §2, BUG-023). Opt-in: unset = direct exposure.
+      TRUST_PROXY: ${TRUST_PROXY:-}
       SEED_PROFILE: demo
       # Load-testing toggle (bench/README.md): set 1 only for k6 runs — the
       # 60 req/min throttle would otherwise count the whole k6 fleet as one IP.

@@ -107,3 +107,22 @@ the service rejects callers without `x-internal`.
 Laptop compose is the graded path: `docker compose -f infra/docker-compose.yml up --build`
 (one command, seeded demo data). If Oracle/Timescale containers fail, the API still boots
 (`local-fallback` mode, honestly reported by `/health`) — demo the contract, not the engine.
+
+## 8. Share a public demo link (no VM, no DNS)
+
+To let anyone open the console from the internet while the stack runs on one machine:
+
+```bash
+bash scripts/share-demo.sh
+```
+
+The script boots the compose stack, runs two cloudflared quick tunnels **as Docker
+containers** (web `:3000`, API `:4000` — they survive logout and auto-restart), repoints
+the web build at the public API origin (`NEXT_PUBLIC_API_BASE` is baked at build time),
+health-checks both, and prints shareable `https://<random>.trycloudflare.com` links.
+
+- Free, HTTPS included, no ports opened (outbound-only tunnel), no Cloudflare account needed.
+- `scripts/share-demo.sh --stop` tears the tunnels down; URLs change on each rerun —
+  for a permanent name, create a **named tunnel** (free plan) or move to the VM path in §1–2.
+- The script sets `TRUST_PROXY=1` and extends `WEB_ORIGIN` in `.env` for you (both now
+  interpolate through compose), so per-IP throttles keep working behind the tunnel.
