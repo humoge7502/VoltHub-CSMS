@@ -4,6 +4,104 @@ Evidence discipline: **EXECUTED** (ran in this repo's environment) vs
 **STRONGLY INFERRED** (CI config verified line-by-line; execution on runners)
 vs **PENDING** (blocked here; exact command given). No claim without a receipt.
 
+## GUARD-2026-09-15 — the connector guard was open, and V006 undid the expiry fix (EXECUTED)
+
+Two defects found by probing the live Oracle directly rather than reading the SQL. Both are
+gated now, so neither can return through a source edit.
+
+### BUG-052 — the BR-07 guard was open for the life of a pooled connection
+
+`trg_connector_guard` allows a `connector.status` write only while
+`SYS_CONTEXT('USERENV','CLIENT_IDENTIFIER')` is `ocpp-gw` or `pkg:<owner>`, and the packages
+set that identity **without ever clearing it**. It is session-scoped, so the allowance survived
+the call. Measured on the live database (a single SQL\*Plus session, so the connection is the
+only variable):
+
+| step                                 | identifier                         | direct `UPDATE connector` |
+| ------------------------------------ | ---------------------------------- | ------------------------- |
+| fresh session                        | `<NULL>`                           | **refused** `ORA-20801`   |
+| after `reservation_pkg.expire_stale` | `pkg:reservation_pkg.expire_stale` | **ALLOWED**               |
+
+So the guard was correct in isolation and defeated in practice. A second consequence fell out
+of the same leak: `reservation_pkg.cancel_reservation` never set the identity itself, and on a
+fresh session was **refused** (`ORA-20801`, reproduced with a reservation booked by one session
+and cancelled by another) — it had been passing only because some earlier procedure on the same
+pooled connection left the identity behind.
+
+**Fix:** one `guard_pkg.set_status()` (`db/oracle/V003__packages.sql`) is now the only place a
+package writes `connector.status`. It marks, writes, and clears on every exit path (including a
+raise out of the `UPDATE`). Nine direct `UPDATE connector` statements and nine `SET_IDENTIFIER`
+calls are down to one each; `cancel_reservation` marks explicitly.
+
+### BUG-053 — V006 silently reverted BUG-050 on every fresh migration
+
+BUG-050 (expiry released the reservation but not the connector) was fixed in V003 — but V006
+replaces the `reservation_pkg` body wholesale, and packages have no partial replacement, so on a
+fully migrated database V006's body wins. Reproduced: applying V006 to the live database dropped
+the release (a probe for `UPDATE CONNECTOR … AVAILABLE` in `USER_SOURCE` went 2 → 1), and the
+functional probe then showed it:
+
+```
+booked 1:2 -> connector=RESERVED
+after expire_stale(stale=1): reservation=EXPIRED connector=RESERVED
+VERDICT: LEAK — expiry did not release the hold
+```
+
+**Fix:** the release exists in **both** bodies; V006's header now states that its sections 1–2
+are the final definition of those packages.
+
+### The gate (EXECUTED, red→green, idempotent)
+
+`node test/sql/run-invariants.js` grew static checks plus behavioural probes — a 0-rows SELECT
+cannot express either bug, and name-based reads needed `OUT_FORMAT_OBJECT` while DML
+`RETURNING INTO` needed a PL/SQL block (its OUT binds come back as a one-element array; the
+first cut of these probes passed vacuously because of both).
+
+- **Red, against the pre-fix SQL** (`git stash`, reapply V003/V004/V006, run):
+  `GUARD-META-1` lists all 9 identity sites · `GUARD-META-2` lists all 9 direct writes ·
+  `GUARD-META-3` fires for **both** V003 and V006 · `GUARD-ORACLE-4` reports the hold leaking ·
+  `INV-12` reports the resulting `RESERVED without BOOKED reservation` row. Exit 1.
+- **Green, after the fix**, against a **freshly migrated + seeded** database (volume removed,
+  `up -d`, `SEED_DB=1 bash scripts/migrate.sh`): all 12 invariants 0 rows, all four guard
+  probes pass, `guard-oracle-4: expiry released connector 1:1`. Exit 0.
+- **Idempotent:** three consecutive runs green, leaving zero residue — the probe provisions its
+  own `vehicle` (the seed ships none) and deletes its own rows, so `vehicle=0`, `reservation=0`,
+  `connector=16` are unchanged after the run.
+
+### The rest of the stack, on that fresh database (EXECUTED)
+
+- `SEED_DB=1 bash scripts/migrate.sh` applied V001–V007 + the seed with no errors; Timescale
+  T001–T003 applied through the container (this host has no `psql`, so the script's honest
+  "psql not installed" note is what a host without a client sees).
+- API boot: first attempt `NJS-518 … service freepdb1 is not registered` →
+  `mode: local-fallback` (the documented degrade, before migrations ran), then after the
+  restart `oracle adapter online (write-through)` → `mode: oracle`, `/health/deep` `status: ok`,
+  `outbox_lag: 0`, `errors_total: 0`.
+- `STORE=oracle npm run test -w apps/api` **36/36**; `STORE=oracle npm run test:race` **2/2**;
+  security 17 · ratelimit 8 · xlayer 4 · ocpp-remote 2 · gateway-close 6 · control 16 · ai 6.
+  Control-plane E2E **41/41** against the live stack.
+- Product path: a real OCPP session through the gateway on a freshly provisioned charge point
+  (`[sim:SOAK-1-fleet] charging tx=7/8`), relayed by the worker — Timescale `meter_tick` **0 → 48**
+  for **8** Oracle sessions / 51 meter readings, and the `/internal/*` channel stayed at 200
+  throughout (no 429s).
+- Local gate: prettier clean · eslint `--max-warnings 0` clean · `npm test` green (api 36 · relay 7
+  · sim 2 · security 17 · **ratelimit 8** · xlayer 4 · ocpp 6+2 · control 16 · AES 6 · AI 6 ·
+  twin 12 · invariants 12 · OpenAPI drift + snapshot OK).
+
+### Observed, not fixed (stated plainly)
+
+- **Mixing in-process `STORE=oracle` suites with the running container can surface a raw
+  `ORA-00001`.** Both allocate `cp_id` from an in-memory counter, so a CP created by the test
+  process is invisible to the container's hydrated store; the next container-side insert of that
+  id collides (`PK_CONNECTOR … (CP_ID:9, CONNECTOR_NO:1) already exists` — CP 9 was `VH-5-CP1`,
+  created by the contract suite). Restarting the API re-hydrates and provisioning works again.
+  This is inherent to the single-writer design (one authoritative in-memory store per process),
+  not a code defect — but the collision is reported as a 500 carrying the driver's text rather
+  than a typed conflict, and that is left as-is rather than masking real unique-constraint bugs.
+- **The V004 role layer is skipped when migrations run as the schema owner** (the default here),
+  so the guard trigger is the binding enforcement for `connector.status`. Recorded in
+  SECURITY.md under BR-07.
+
 ## LIVE-STACK-2026-09-15 — the whole thing, on real engines (EXECUTED)
 
 **The P2V-01/02/03 blocker has cleared on this host** (that section says a local

@@ -6,6 +6,39 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ### Fixed
 
+- **BUG-053 (P1, durable): V006 silently reverted BUG-050, so a freshly migrated
+  database had the unbookable-charger defect back.** `V006__fk_native.sql` replaces the
+  `reservation_pkg` and `charge_session_pkg` bodies wholesale (packages have no partial
+  replacement), so the expiry-hold release added to V003 never reached the object a
+  fresh `migrate.sh` ends up with — V006 is applied last and wins. Reproduced on live
+  Oracle: after applying V006, `expire_stale` flipped the window to `EXPIRED` and left
+  the connector `RESERVED` (only V003's body released it). The release now exists in
+  **both** bodies, V006's header states plainly that its sections 1–2 are the final
+  definition, and the gate asserts the end state on a fully migrated database — so this
+  class of "two copies drifted" bug fails the build instead of shipping.
+- **BUG-052 (P1, live): the `trg_connector_guard` allow-list was open for the whole
+  life of a pooled connection, so BR-07 (connector status only via the gateway/packages)
+  was not actually enforced.** The guard accepts a write only while `CLIENT_IDENTIFIER`
+  is `ocpp-gw` or `pkg:<owner>`, and the packages set that identity — but never cleared
+  it, and it is _session_-scoped. Measured on live Oracle 23ai: a fresh session was
+  correctly refused with `ORA-20801`, and the **same** session allowed a direct
+  `UPDATE connector` immediately after `reservation_pkg.expire_stale` ran, because the
+  identity was still `pkg:reservation_pkg.expire_stale`. Every package connector write
+  now goes through one `guard_pkg.set_status()`, which opens the identity for exactly
+  one statement and closes it on every exit path (including a raise out of the UPDATE),
+  and the nine direct `UPDATE connector` statements plus nine `SET_IDENTIFIER` calls are
+  down to one each. Two consequences: `reservation_pkg.cancel_reservation` had been
+  passing the guard **only** because of that leak (a fresh session was refused — also
+  reproduced), and the identity can no longer be inherited by unrelated later DML.
+- **The rate-limit tier and the guard now have executable evidence, not comments.**
+  `test/sql/run-invariants.js` gained behavioural probes that drive the real procedures
+  and assert outcomes (a 0-rows SELECT cannot express either bug), on top of static
+  source checks: `GUARD-META-1/2` (the guard identity is set only by `guard_pkg`, and
+  `connector.status` is written only by `guard_pkg.set_status`) and `GUARD-META-3`
+  (both `V003` and `V006` release the hold on expiry). Red-validated: against the
+  pre-fix SQL the gate reports the 9 leaked identifier sites, the 9 direct writes, the
+  missing release in both files, `GUARD-ORACLE-4` (hold leaked) and `INV-12`; green
+  after the fix, idempotent across three consecutive runs with zero residue.
 - **BUG-051 (P1, live): the worker's internal channel was throttled by the public
   per-IP ANON tier.** `throttle` is mounted at the app root, so its `/internal/*`
   exclusion — added precisely because "the relay starves on 429s" — tested
@@ -94,6 +127,20 @@ BootNotification`, hiding the cause (the demo DB's admin-provisioned charge poin
 
 ### Added
 
+- **`guard_pkg` (V003) — the only place a package writes `connector.status`.**
+  `set_status(owner, cp, conn, to, from)` marks, writes, and clears, on every exit path;
+  `mark`/`clear` are the only remaining `DBMS_SESSION.SET_IDENTIFIER` calls in
+  `db/oracle/`. This is what makes the V004 allow-list a real gate rather than a
+  formality (BUG-052).
+- **Oracle behaviour probes in the invariants gate** (run in the `db-tests` job against
+  a migrated, seeded database): the guard refuses a direct connector write on a fresh
+  session _and_ immediately after a procedure that wrote one; booking + cancellation
+  still pass on a session with no leaked identity; and expiry releases the hold. The
+  probe provisions its own `vehicle` (the seed ships none) and deletes its own rows, so
+  it is self-sufficient and leaves no drift.
+- **A local-store mirror of the expiry probe**, so ADR-0005's "the two engines agree"
+  claim is checked on the fast path too, plus the static guard checks above — all in
+  `node test/sql/run-invariants.js` (local mode, no database needed).
 - **INV-12: a `RESERVED` connector must be held by a `BOOKED` reservation**
   (`db/oracle/invariants.sql` + the local-store mirror in `test/sql/run-invariants.js`,
   so the count of CI-gated checks is now **12**). This is the invariant BUG-050
@@ -141,6 +188,11 @@ BootNotification`, hiding the cause (the demo DB's admin-provisioned charge poin
   A side effect of testing claims that were already being made, not a target: the
   DB-backed modules (`oracle.js`, worker loop) stay where they are, because their
   evidence is the `db-tests`/compose jobs, not a unit-test percentage.
+- **`db/oracle/README.md` object inventory corrected**: V003 now reads 8 packages
+  (it lists `guard_pkg`) and `invariants.sql` is 12 CI-gated checks, not 11.
+- **SECURITY.md documents how BR-07 is actually enforced** — the V004 allow-list, the
+  per-statement identity, and what it deliberately does not cover (a database owner can
+  still set an identity and write directly; this guards the application paths).
 
 ## [1.6.0] — 2026-09-15
 
