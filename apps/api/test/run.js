@@ -43,8 +43,14 @@ async function main() {
   let res;
   await t('reserve connector (BOOKED)', async () => {
     const { j } = await api('/stations');
-    const c = j.stations[0].connectors.find((x) => x.status === 'AVAILABLE');
-    assert.ok(c, 'need an AVAILABLE connector');
+    // Search EVERY station, not just the first. The durable engine keeps real state
+    // across runs (reservations, sessions, faults, holds), so "stations[0] has a free
+    // connector" is only true on a freshly seeded database — the `db-tests` job
+    // provisions fresh, a developer's compose stack does not, and the suite failed
+    // with `need an AVAILABLE connector` on a used Oracle while 18 connectors sat
+    // free on other sites.
+    const c = j.stations.flatMap((s) => s.connectors || []).find((x) => x.status === 'AVAILABLE');
+    assert.ok(c, 'need at least one AVAILABLE connector across all stations');
     global.__c = c;
     const s = new Date(Date.now() + 20 * 60000).toISOString(),
       e = new Date(Date.now() + 60 * 60000).toISOString();
@@ -117,15 +123,19 @@ async function main() {
     assert.equal(r, 'TICK_REJECTED'); // terminal session rejects ticks
   });
   await t('bill exactly once + wallet pay', async () => {
+    // Assertion messages carry the response body: this is the durable path (bill_session
+    // runs as an Oracle package) and a bare `500 == 201` tells you nothing about which
+    // band/PK/mirror step failed. Observed once on a live Oracle and never reproduced in
+    // 6 runs — if it recurs, the body names the cause.
     const b = await api(`/sessions/${sess.session_id}/bill`, { method: 'POST', headers: H() });
-    assert.equal(b.status, 201);
+    assert.equal(b.status, 201, `bill failed: ${JSON.stringify(b.j)}`);
     const b2 = await api(`/sessions/${sess.session_id}/bill`, { method: 'POST', headers: H() });
-    assert.equal(b2.status, 409); // no double-bill (BR-10)
+    assert.equal(b2.status, 409, `double-bill guard: ${JSON.stringify(b2.j)}`); // no double-bill (BR-10)
     const inv = b.j.invoice.invoice_id;
     const p = await api(`/invoices/${inv}/pay`, { method: 'POST', headers: H() });
-    assert.equal(p.status, 201);
+    assert.equal(p.status, 201, `pay failed: ${JSON.stringify(p.j)}`);
     const p2 = await api(`/invoices/${inv}/pay`, { method: 'POST', headers: H() });
-    assert.equal(p2.status, 409); // no double-pay (R4)
+    assert.equal(p2.status, 409, `double-pay guard: ${JSON.stringify(p2.j)}`); // no double-pay (R4)
   });
   await t("pay: foreign driver cannot pay someone else's invoice (BUG-028)", async () => {
     // Fresh driver with their own wallet; inv belongs to the first test user.
@@ -729,6 +739,159 @@ async function main() {
     // Cleanup so later suites don't inherit the synthetic rows.
     s.users.delete(4544);
     s.wallets.delete(4544);
+  });
+
+  await t('control-plane HTTP contract: triage + profile diagnostics are typed, scoped, 404-clean', async () => {
+    // The control suite (test/control.js) pins the LOOP against the store directly;
+    // these routes — dead-letter triage and the profile diagnostics (clear-profile,
+    // composite-schedule) — had no HTTP-level test at all. Every branch here is an
+    // error path a console can hit, so "typed, never a 500" is the claim under test.
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+    });
+    assert.ok(adm.j.accessToken);
+    const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
+
+    // RBAC first: the control surface is staff-only, reads included.
+    assert.equal((await api('/control/decisions', { headers: H() })).status, 403);
+    assert.equal((await api('/ops/dead-letters', { headers: H() })).status, 403);
+
+    // History reads answer with arrays (empty is fine, `undefined` is not).
+    const dec = await api('/control/decisions', { headers: AH });
+    assert.equal(dec.status, 200);
+    assert.ok(Array.isArray(dec.j.decisions));
+    const certs = await api('/control/certificates', { headers: AH });
+    assert.equal(certs.status, 200);
+    assert.ok(Array.isArray(certs.j.certificates));
+    // Unknown ids are 404 in the standard envelope, never a 500.
+    assert.equal((await api('/control/decisions/999999', { headers: AH })).status, 404);
+    assert.equal((await api('/control/certificates/999999', { headers: AH })).status, 404);
+
+    // Dead-letter triage: create one the way the pipeline does, then walk the actions.
+    const letter = store.deadLetter({
+      eventRef: `http-contract-${Date.now()}`,
+      kind: 'PROFILE_PUSH',
+      reasonCode: 'ENVELOPE_REJECTED',
+      detail: 'route contract test',
+    });
+    const listed = await api('/ops/dead-letters', { headers: AH });
+    assert.ok(
+      listed.j.letters.some((l) => l.letter_id === letter.letter_id),
+      'an OPEN letter must be listed'
+    );
+    const badAction = await api(`/ops/dead-letters/${letter.letter_id}/resolve`, {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({ action: 'NOPE' }),
+    });
+    assert.equal(badAction.status, 422);
+    assert.equal(badAction.j.error.code, 'GRID_ASSET_INVALID');
+    assert.equal(
+      (
+        await api('/ops/dead-letters/999999/resolve', {
+          method: 'POST',
+          headers: AH,
+          body: JSON.stringify({ action: 'DISMISSED' }),
+        })
+      ).status,
+      404,
+      'resolving an unknown letter is 404, not a silent success'
+    );
+    // Lowercase is accepted deliberately (the route uppercases) — pin it so a future
+    // "tighten validation" change cannot turn a working console call into a 422.
+    const resolved = await api(`/ops/dead-letters/${letter.letter_id}/resolve`, {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({ action: 'replayed' }),
+    });
+    assert.equal(resolved.status, 200);
+    assert.equal(resolved.j.letter.status, 'REPLAYED');
+
+    // Profile diagnostics: unknown CP is 404 (an id problem), disconnected CP is the
+    // typed 409 CP_OFFLINE (a transport problem) — conflating them hides real outages.
+    assert.equal(
+      (await api('/control/cp/999999/clear-profile', { method: 'POST', headers: AH, body: JSON.stringify({}) })).status,
+      404
+    );
+    assert.equal((await api('/control/cp/999999/composite-schedule', { headers: AH })).status, 404);
+    const cpId = [...store.cps.keys()][0];
+    const clear = await api(`/control/cp/${cpId}/clear-profile`, {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({}),
+    });
+    assert.equal(clear.status, 409);
+    assert.equal(clear.j.error.code, 'CP_OFFLINE');
+    const gcs = await api(`/control/cp/${cpId}/composite-schedule`, { headers: AH });
+    assert.equal(gcs.status, 409);
+    assert.equal(gcs.j.error.code, 'CP_OFFLINE');
+  });
+
+  await t('observability: /metrics exposes a well-formed, live Prometheus exposition', async () => {
+    // observability.js is the one surface Grafana scrapes and the README advertises as
+    // a real metrics endpoint, yet nothing asserted it. A scraper that silently gets
+    // malformed text (or a frozen counter) is worse than no dashboard: it looks healthy.
+    const first = await fetch(`${B}/metrics`);
+    assert.equal(first.status, 200);
+    // Express appends its own charset, so match the Prometheus version parameter
+    // wherever it lands rather than pinning the exact header string.
+    assert.match(first.headers.get('content-type') || '', /^text\/plain;.*version=0\.0\.4$/);
+    const body = await first.text();
+    // Every metric must carry both HELP and TYPE, and a numeric sample line.
+    for (const name of [
+      'volthub_requests_total',
+      'volthub_errors_total',
+      'volthub_latency_p95_ms',
+      'volthub_outbox_depth',
+      'volthub_ocpp_online',
+      'volthub_sessions_total',
+      'volthub_oracle_connected',
+    ]) {
+      assert.match(body, new RegExp(`# HELP ${name} `), `${name} needs a HELP line`);
+      assert.match(body, new RegExp(`# TYPE ${name} (counter|gauge)`), `${name} needs a TYPE line`);
+      assert.match(body, new RegExp(`^${name} \\d+$`, 'm'), `${name} needs a numeric sample`);
+    }
+    // Gauges must reflect the live store, not a static template.
+    const sample = (n) => Number((body.match(new RegExp(`^${n} (\\d+)$`, 'm')) || [])[1]);
+    assert.equal(sample('volthub_outbox_depth'), store.outbox.filter((e) => !e.processed_at).length);
+    assert.equal(sample('volthub_sessions_total'), store.sessions.size);
+    assert.equal(
+      sample('volthub_ocpp_online'),
+      [...store.cps.values()].filter((c) => c.status === 'ONLINE').length,
+      'ocpp_online must count connected charge points'
+    );
+    assert.equal(sample('volthub_oracle_connected'), store._pool ? 1 : 0);
+    // The counter advances between scrapes (res.on('finish') → observe()).
+    const before = sample('volthub_requests_total');
+    assert.ok(before > 0, 'traffic from this suite must be counted');
+    const second = await (await fetch(`${B}/metrics`)).text();
+    assert.ok(
+      Number((second.match(/^volthub_requests_total (\d+)$/m) || [])[1]) > before,
+      'the request counter must advance between scrapes'
+    );
+  });
+
+  await t('observability: /health + /health/deep report the real engine verdict, not a claim', async () => {
+    const live = await api('/health');
+    assert.equal(live.status, 200);
+    assert.equal(live.j.status, 'ok');
+    assert.equal(live.j.mode, store._mode || 'local');
+    assert.equal(live.j.outbox_lag, store.outbox.filter((e) => !e.processed_at).length);
+    // Monitoring distinguishes "restarted just now" from "degraded for an hour" only
+    // if this timestamp is real and not in the future.
+    const started = Date.parse(live.j.process_started_at);
+    assert.ok(Number.isFinite(started), 'process_started_at must parse');
+    assert.ok(started <= Date.now(), 'process_started_at cannot be in the future');
+
+    const deep = await api('/health/deep');
+    assert.equal(deep.status, 200, 'a local profile is not degraded');
+    assert.equal(deep.j.checks.oracle, store._pool ? 'connected' : 'local-store');
+    assert.equal(
+      deep.j.checks.timescale,
+      process.env.TS_HOST ? 'configured (see worker relay-timescale)' : 'local-rollup'
+    );
+    assert.equal(typeof deep.j.checks.outbox_lag, 'number');
   });
 
   await t('BUG-044: listen defers to the store-upgrade promise but still binds + fires the callback', async () => {
