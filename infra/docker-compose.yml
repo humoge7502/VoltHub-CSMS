@@ -52,6 +52,8 @@ services:
       ORACLE_USER: volthub
       ORACLE_PASSWORD: volthub_dev_pwd
       TS_HOST: timescale
+      # DEPLOY.md §1: a root .env is NOT read by compose (project dir is infra/) —
+      # pass `--env-file .env` or this silently falls back to the dev secret.
       JWT_SECRET: ${JWT_SECRET:-dev-only-32-byte-secret-0123456789}
       WEB_ORIGIN: http://localhost:3000,http://localhost:3120
       SEED_PROFILE: demo
@@ -85,10 +87,19 @@ services:
     restart: unless-stopped
 
   web:
-    build: { context: .., dockerfile: apps/web/Dockerfile }
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      # NEXT_PUBLIC_* is baked into the browser bundle here, not at runtime — set it in
+      # .env (with --env-file) to point a real deployment at its public API origin.
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:4000/api/v1}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
     container_name: volthub-web
     environment:
-      NEXT_PUBLIC_API_BASE: http://localhost:4000/api/v1
+      # Runtime copy: the server-rendered pages read it too, but the browser bundle uses
+      # the build arg above. Changing this alone requires a rebuild to take effect.
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:4000/api/v1}
     ports: ['3000:3000']
     depends_on: [api]
     restart: unless-stopped

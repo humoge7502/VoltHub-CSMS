@@ -148,7 +148,9 @@ npm install
 npm run dev:api &                      # seeded demo data, /api/v1/health
 cd apps/web && npm install && npm run dev
 
-# 2) full stack (Oracle 23ai + TimescaleDB containers)
+# 2) full stack (Oracle 23ai + TimescaleDB containers) — works with no .env at all
+#    If you created a root .env (see DEPLOY.md), pass it or it is silently ignored:
+#      docker compose --env-file .env -f infra/docker-compose.yml up --build
 docker compose -f infra/docker-compose.yml up --build
 
 # 3) races + tests + coverage
