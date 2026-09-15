@@ -45,7 +45,9 @@ cd apps/web && npm install && npm run dev   # console :3000
 
 # 2) full profile — real Oracle 23ai + TimescaleDB containers.
 docker compose -f infra/docker-compose.yml up --build
-# provisioning goes through scripts/migrate.sh (V001–V006, T001–T002, seed)
+# provisioning goes through scripts/migrate.sh (globbed V001–V007, T001–T003, seed)
+# If you have a root .env, add `--env-file .env` — compose's project dir is infra/,
+# so a root .env is otherwise ignored (DEPLOY.md §1 has the measured detail).
 ```
 
 Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` /
@@ -60,6 +62,7 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` /
 | Contract tests      | `npm run test -w apps/api`              | REST lifecycle, RBAC, state machine, idempotency     |
 | Race suite          | `npm run test:race -w apps/api`         | exactly one winner under parallel double-reserve/pay |
 | Security suite      | `node apps/api/test/security.js`        | authn/authz regressions (SEC- register)              |
+| Rate-limit tier     | `node apps/api/test/ratelimit.js`       | every tier fires, keyed per user (limiting **on**)   |
 | Cross-layer         | `node apps/api/test/xlayer.js`          | store↔API parity (local vs Oracle semantics)         |
 | Gateway close-race  | `node apps/api/test/gateway-close.js`   | stale-socket deregister bug stays dead (BUG-021)     |
 | DB-backed suites    | `STORE=oracle npm run test -w apps/api` | real row locks, packages, guard trigger              |
@@ -70,6 +73,12 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` /
 If you touched anything money-adjacent, run the race suite against Oracle too —
 the in-process mutex and Oracle row locks are different engines, and the gap has
 bitten before.
+
+Note on throttling: every other suite sets `RATE_LIMIT_OFF=1` (limits make ordinary
+assertions flaky), so the rate-limit tier is the only place limits are observed
+to fire. If you change a window, a tier, or a key, run that suite — and if you add
+an authorizing router, mount `routerBarrier()` from `middleware/security.js` rather
+than copying a limiter config, so "who is this caller" stays one definition.
 
 ## Ground rules (enforced by review, not just CI)
 

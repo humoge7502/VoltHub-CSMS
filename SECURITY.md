@@ -39,6 +39,18 @@
   Proxy awareness (BUG-023): `req.ip` trusts proxy headers only when `TRUST_PROXY` is set
   (opt-in, `1` = one hop or a value like `loopback` for same-host Caddy) — without it the
   per-IP login throttle would see one IP behind the documented Caddy deploy profile.
+- Rate-limit tiers (`middleware/security.js`, `server.js` — verify from code, not from this
+  file): the **global per-role throttle** (60/min DRIVER, 120/min OPERATOR|ADMIN, override via
+  `RATE_LIMIT_USER`) is the binding limit, and every authorizing router additionally mounts a
+  `routerBarrier()` keyed by the same verified `sub` (SEC-006) with an IPv6-safe IP fallback.
+  Be precise about what that buys: the barriers sit **at or above** the global tier, so they are
+  a backstop plus a defense-in-depth net — not a new cap on normal traffic. The control plane is
+  the one strictly stricter tier (**30/min per user**) because those routes actuate hardware.
+  Login is its own **10/min per-IP** tier, and `/internal/*` is excluded from the public throttle
+  (the relay polls it every 2 s and is token-gated). `RATE_LIMIT_OFF=1` bypasses every tier for
+  load tests. Pinned by `apps/api/test/ratelimit.js` (RL-1..RL-6), which is the one suite that
+  runs with limiting **on** — everywhere else it is off, which is why this tier went unverified
+  until then.
 - Audit: `LOGIN_SUCCESS`/`LOGIN_FAIL`/`REGISTER`/`LOGOUT`/`TOPUP`/`REFRESH_REUSE` are audit-logged
   (autonomous-txn in prod via `AUDIT_PKG`).
 - Transport/storage: TLS via Caddy in deploy; no card data ever (wallet ledger only);

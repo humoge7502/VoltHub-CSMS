@@ -31,12 +31,19 @@ const {
   clearRefreshCookie,
   REFRESH_COOKIE,
 } = require('./middleware/auth');
-const { checkLoginThrottle } = require('./middleware/security');
+const { checkLoginThrottle, routerBarrier } = require('./middleware/security');
 const { oraStatus } = require('./errors');
 
 module.exports = function routes(store) {
   const r = express.Router();
   const safe = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+  // Router-wide barrier (CodeQL hardening). Because this router is mounted first under
+  // /api/v1 and Express runs a mounted router's middleware before route matching, this
+  // is the WHOLE-API envelope: extended.js and control-routes.js paths are counted here
+  // too (pinned by RL-3 in test/ratelimit.js). 120/min/user is the operator tier, so the
+  // global per-role throttle in server.js stays the binding limit for drivers; see
+  // middleware/security.js routerBarrier() for exactly what this does and does not cap.
+  r.use(routerBarrier({ key: 'api', limit: 120 }));
 
   // ---- auth ----
   r.post(
