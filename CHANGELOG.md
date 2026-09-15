@@ -4,6 +4,25 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-09-15
+
+### Added
+
+- **`scripts/share-demo.sh` — one command gives the running stack a public, shareable
+  HTTPS link.** Boots the compose stack, runs two cloudflared quick tunnels **as Docker
+  containers** (web `:3000`, API `:4000` — durable, `--restart unless-stopped`; plain
+  background processes die with the session), repoints the web build at the public API
+  origin (`NEXT_PUBLIC_API_BASE` is baked at build time), health-checks both URLs and
+  prints the links. No VM, no DNS, no ports opened; `--stop` tears the tunnels down.
+  `DEPLOY.md` §8 documents the flow and the named-tunnel/VM upgrade path for a permanent
+  URL. Supporting change: compose interpolates `TRUST_PROXY` and `WEB_ORIGIN` (opt-in,
+  defaults unchanged) so per-IP throttles keep working behind a proxy/tunnel (BUG-023)
+  and CORS can be extended for prod origins from `.env`.
+
+### Dependencies
+
+- devDependency `c8` 10.1.3 → 12.0.0 (Dependabot #19; coverage suites unaffected).
+
 ### Fixed
 
 - **BUG-053 (P1, durable): V006 silently reverted BUG-050, so a freshly migrated
