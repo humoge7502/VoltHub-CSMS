@@ -97,17 +97,37 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
   END;
 
   PROCEDURE expire_stale(p_rows OUT NUMBER) IS
-    CURSOR c_stale IS SELECT reservation_id FROM reservation
+    CURSOR c_stale IS SELECT reservation_id, connector_ref FROM reservation
       WHERE status = 'BOOKED' AND start_at < SYSTIMESTAMP - INTERVAL '15' MINUTE
       FOR UPDATE SKIP LOCKED;
     TYPE t_ids IS TABLE OF NUMBER;
+    TYPE t_refs IS TABLE OF VARCHAR2(72);
     v_ids t_ids;
+    v_refs t_refs;
   BEGIN
-    OPEN c_stale; FETCH c_stale BULK COLLECT INTO v_ids LIMIT 500; CLOSE c_stale;
+    -- V004 guard: mark package-owned connector writes (create_reservation does the same).
+    -- Without it the trg_connector_guard allow-list rejects the release below on any
+    -- connection that never ran another reservation procedure.
+    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:reservation_pkg.expire_stale'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    OPEN c_stale; FETCH c_stale BULK COLLECT INTO v_ids, v_refs LIMIT 500; CLOSE c_stale;
     p_rows := NVL(v_ids.COUNT, 0);
     IF p_rows > 0 THEN
       FORALL i IN 1..v_ids.COUNT
         UPDATE reservation SET status = 'EXPIRED' WHERE reservation_id = v_ids(i);
+      -- BUG-050: an expired window must RELEASE its connector, exactly like
+      -- cancel_reservation does. Expiry used to flip only the reservation, so Oracle
+      -- kept connector.status='RESERVED' while the local store released it — the two
+      -- engines disagreed on bookability (ADR-0005), and because hydrate() reads Oracle
+      -- on boot the charge point went unbookable permanently: start_session on a
+      -- RESERVED connector demands a BOOKED reservation for it, and the reservation is
+      -- EXPIRED. Observed live: connectors 1:1, 2:1 and 9:1 stuck RESERVED with only
+      -- EXPIRED/CANCELLED windows on them. INV-12 now gates it.
+      FOR i IN 1..v_ids.COUNT LOOP
+        UPDATE connector SET status = 'AVAILABLE', last_state_change_at = SYSTIMESTAMP
+         WHERE cp_id = TO_NUMBER(REGEXP_SUBSTR(v_refs(i), '^[^:]+'))
+           AND connector_no = TO_NUMBER(REGEXP_SUBSTR(v_refs(i), '[^:]+$'))
+           AND status = 'RESERVED';
+      END LOOP;
       COMMIT;
     END IF;
   END;

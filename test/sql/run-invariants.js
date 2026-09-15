@@ -1,6 +1,6 @@
 // SQL invariant runner (BUG-009 fix): executes checks, not a health-probe print.
 // Modes:
-//  - local (default): boots an ephemeral API and evaluates the 11 invariants in
+//  - local (default): boots an ephemeral API and evaluates the 12 invariants in
 //    db/oracle/invariants.sql against the live local store (same predicates in JS).
 //  - oracle (ORACLE_HOST set + oracledb installed): runs invariants.sql statements
 //    against Oracle; any returned row => FAIL (exit 1 with offending rows).
@@ -103,6 +103,18 @@ function localChecks(store) {
     else if (!store.connectors.get(`${s.cp_id}:${s.connector_no}`))
       fails.push(`INV-11 session ${s.session_id} dangling pair ${s.cp_id}:${s.connector_no}`);
   }
+  // 12. BUG-050: a RESERVED connector must be held by a BOOKED reservation. This is the
+  // invariant the Oracle package violated: expire_stale() flipped the reservation to
+  // EXPIRED without releasing the connector, so the hold leaked. The local store always
+  // released it, which is exactly why only the ORACLE mode of this runner could catch it.
+  {
+    const held = new Set(
+      [...store.reservations.values()].filter((r) => r.status === 'BOOKED').map((r) => r.connector_ref)
+    );
+    for (const [ref, c] of store.connectors) {
+      if (c.status === 'RESERVED' && !held.has(ref)) fails.push(`INV-12 leaked connector hold: ${ref}`);
+    }
+  }
   return fails;
 }
 
@@ -183,17 +195,17 @@ async function main() {
   await new Promise((r) => server.listen(Number(process.env.PORT), r));
   try {
     const fails = localChecks(store);
-    // Also assert the SQL file defines the same 11 checks (drift guard).
+    // Also assert the SQL file defines the same 12 checks (drift guard).
     const sql = fs.readFileSync(path.join(__dirname, '..', '..', 'db', 'oracle', 'invariants.sql'), 'utf8');
     const count = (sql.match(/\bSELECT\b/gi) || []).length;
-    // File uses SELECT per check (some wrapped); require >= 11 SELECTs.
-    if (count < 11) fails.push(`INV-META: invariants.sql defines ${count} SELECTs, expected >= 11`);
+    // File uses SELECT per check (some wrapped, INV-11 is a 4-way UNION); require >= 12.
+    if (count < 12) fails.push(`INV-META: invariants.sql defines ${count} SELECTs, expected >= 12`);
     if (fails.length) {
       console.error('INVARIANTS FAIL (local):\n' + fails.join('\n'));
       process.exitCode = 1;
     } else
       console.log(
-        `invariants: local 11 checks × ${store.sessions.size} sessions / ${store.reservations.size} reservations — 0 rows — OK`
+        `invariants: local 12 checks × ${store.sessions.size} sessions / ${store.reservations.size} reservations — 0 rows — OK`
       );
   } finally {
     server.close();
