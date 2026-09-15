@@ -26,7 +26,7 @@ const seedProfile = process.env.SEED_PROFILE || 'demo';
 // the tick dedupe: every real tick on a fresh session read `{deduped:true}` against a
 // ghost seq number and never flipped PREPARING→CHARGING. With ORACLE_HOST set the store
 // now starts EMPTY, hydrates to exactly what Oracle owns, and seeds only when the DB is
-// genuinely empty (the same rule db/index.js getStore documents).
+// genuinely empty (the rule db/index.js:upgradeStore() implements).
 if (!process.env.ORACLE_HOST && seedProfile !== 'empty') seedStore(store, seedProfile);
 
 // Oracle upgrade (B2G-007: sourced through db/index.js:upgradeStore() — the ADR-0005
