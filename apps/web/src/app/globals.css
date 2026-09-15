@@ -298,9 +298,23 @@ a {
   padding: 8px 10px;
   border-radius: var(--r-s);
 }
-.topbar .end a:hover {
+.topbar .end a:hover,
+.topbar .end button.linklike:hover {
   color: var(--tx);
   background: var(--s2);
+}
+/* header sign-out is a button that must look like its <a> siblings */
+.topbar .end button.linklike {
+  appearance: none;
+  background: none;
+  border: 0;
+  color: var(--tx2);
+  font: inherit;
+  text-decoration: none;
+  font-weight: 500;
+  padding: 8px 10px;
+  border-radius: var(--r-s);
+  cursor: pointer;
 }
 
 /* compact the wide nav before it collapses into the drawer */
@@ -377,6 +391,16 @@ a {
   .drawer .end a {
     color: var(--tx2);
     font-weight: 500;
+  }
+  .drawer .end button.linklike {
+    appearance: none;
+    background: none;
+    border: 0;
+    color: var(--tx2);
+    font: inherit;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
   }
 }
 
