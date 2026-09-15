@@ -17,3 +17,6 @@ apps/ai/reports/gpu-locks/
 apps/ai/.venv/
 __pycache__/
 .pytest_cache/
+
+# local scratch (not for submission)
+VoltHub-CSMS_Master_Transformation_Blueprint.docx

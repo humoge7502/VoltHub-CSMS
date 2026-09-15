@@ -37,6 +37,10 @@ Needs a Playwright browser once: `npx playwright install chromium` (uses
 
 ## Notes / gotchas (learned the hard way)
 
+- **Boot-probing:** the capture boot-probes candidate charge points with the
+  demo dev secret (`dev-<identity>`) and skips any that refuse — the live feed
+  also lists stations provisioned via the admin surface, whose secrets are
+  generated. Don't assume `pick = stations[0]` works.
 - The second demo session must run on a **different charge point** than the
   first. Two sockets under one OCPP identity trip the gateway's
   duplicate-connection guard (`OCPP 1.6J §4`), which closes the first socket —
