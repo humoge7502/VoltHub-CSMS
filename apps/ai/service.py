@@ -14,6 +14,7 @@ import json
 import math
 import os
 import statistics
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,7 +25,17 @@ HERE = Path(__file__).resolve().parent
 REPORTS = HERE / "reports"
 AI_TOKEN = os.environ.get("AI_TOKEN", "dev-internal")
 
-app = FastAPI(title="VoltHub AI", version="1.0.0", docs_url=None, redoc_url=None)
+# Lifespan handler instead of the deprecated `@app.on_event("startup")` (removed in
+# current FastAPI; it emitted a DeprecationWarning on every boot and on every test
+# that imported the app). `_load_model` is defined below but resolved at startup
+# time, not at import time — a broken artifact still cannot kill the sidecar.
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _load_model()
+    yield
+
+
+app = FastAPI(title="VoltHub AI", version="1.0.0", docs_url=None, redoc_url=None, lifespan=_lifespan)
 _MODEL = {"pt": None, "loaded": False, "error": None}
 
 
@@ -33,7 +44,6 @@ def _auth(x_internal: str | None) -> None:
         raise HTTPException(status_code=401, detail="bad internal token")
 
 
-@app.on_event("startup")
 def _load_model() -> None:
     path = REPORTS / "model.pt"
     if not path.exists():
