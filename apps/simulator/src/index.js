@@ -34,11 +34,36 @@ async function api(path, opts = {}) {
   return j;
 }
 let uid = 0;
+// The gateway UPGRADES the socket and then closes it with an OCPP application code
+// (4401 bad Basic auth / 4404 unknown identity) rather than refusing the handshake.
+// Both the connect promise (close before open) and ocppCall's timeout (close after open —
+// the common case) must report that, or the refusal surfaces 8 s later as a generic
+// `ocpp timeout BootNotification` that hides the cause.
+function ocppCloseError(identity, code, reason) {
+  const why = String(reason || '').trim();
+  if (code === 4401)
+    return new Error(
+      `gateway closed ${identity} with 4401 — bad Basic auth. The simulator assumes the secret is ` +
+        '`dev-<identity>`, which is true only for charge points it provisioned itself. Pass ' +
+        `--provision (recommended), or set OCPP_SECRET_${identity} (or OCPP_SECRET) to the real secret — ` +
+        'admin-provisioned charge points receive a random one.'
+    );
+  if (code === 4404)
+    return new Error(
+      `gateway closed ${identity} with 4404 — unknown charge point identity (not provisioned on this CSMS).`
+    );
+  return new Error(`gateway closed ${identity}: ${code} ${why}`.trim());
+}
+
 function ocppCall(ws, action, payload) {
   return new Promise((resolve, reject) => {
     const id = String(++uid);
     ws.send(call(id, action, payload));
-    const t = setTimeout(() => reject(new Error('ocpp timeout ' + action)), 8000);
+    const t = setTimeout(() => {
+      // A socket the CSMS already closed explains the silence better than "timeout".
+      if (ws._ocppClose) return reject(ws._ocppClose);
+      reject(new Error('ocpp timeout ' + action));
+    }, 8000);
     const h = (raw) => {
       try {
         const m = JSON.parse(String(raw));
@@ -77,6 +102,12 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
   await new Promise((r, j) => {
     ws.on('open', r);
     ws.on('error', j);
+    // Remember the close reason for ocppCall below; reject here too so a refusal that
+    // lands BEFORE 'open' fails immediately instead of waiting out the 8 s timeout.
+    ws.on('close', (code, reason) => {
+      ws._ocppClose = ocppCloseError(identity, code, reason);
+      j(ws._ocppClose); // no-op once 'open' has already resolved
+    });
   });
   // B2G-009: honor inbound CSMS→CP CALLs (RemoteStop/Start). Answers CALLRESULT so the
   // gateway's fire-and-forget send is observable in tests; RemoteStop ends metering early.
@@ -203,6 +234,15 @@ async function main() {
   // connectors, not identity collisions.
   const cps = [];
   if (args.provision) {
+    const findProvisionedConnector = async (stationId, identity) => {
+      try {
+        const { connectors } = await api(`/stations/${stationId}/connectors/live`);
+        const c = connectors.find((x) => x.ocpp_identity === identity);
+        return c ? { connector_ref: c.connector_ref, ocpp_identity: identity } : null;
+      } catch {
+        return null;
+      }
+    };
     const adm = await api('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
@@ -220,7 +260,15 @@ async function main() {
         });
         cps.push({ connector_ref: `${charge_point.cp_id}:1`, ocpp_identity: identity });
       } catch (e) {
-        console.log(`[sim] provision ${identity} skipped: ${e.message}`);
+        // Already provisioned by an earlier run: REUSE it. The sim creates its fleet with
+        // `auth_secret: dev-<identity>`, so reconnecting is expected; merely skipping left
+        // `cps` empty and the run died with a bare `Cannot read properties of undefined
+        // (reading 'connector_ref')` — the second run of `--provision` always failed.
+        const existing = await findProvisionedConnector(sid, identity);
+        if (existing) {
+          cps.push(existing);
+          console.log(`[sim] provision ${identity} already exists — reusing it`);
+        } else console.log(`[sim] provision ${identity} skipped: ${e.message}`);
       }
     }
     console.log(`[sim] provisioned ${cps.length} charge points on station ${sid}`);
