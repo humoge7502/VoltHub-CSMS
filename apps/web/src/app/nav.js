@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { SessionLinks } from './session-links';
 
 // Two experiences, one language (§31 of the masterplan): driver surfaces first,
 // operator surfaces grouped behind a labelled cluster.
@@ -79,10 +80,7 @@ export function Nav() {
           {OPERATOR.map(([href, label]) => (
             <NavLink key={href} href={href} label={label} path={path} />
           ))}
-          <span className="end">
-            <Link href="/login">Log in</Link>
-            <Link href="/profile">Profile</Link>
-          </span>
+          <SessionLinks className="end" />
         </nav>
       )}
     </>

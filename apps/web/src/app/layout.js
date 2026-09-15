@@ -2,6 +2,7 @@ import './globals.css';
 import Link from 'next/link';
 import { Inter, Space_Grotesk, IBM_Plex_Mono } from 'next/font/google';
 import { Nav } from './nav';
+import { SessionLinks } from './session-links';
 
 // Self-hosted fonts (next/font): removes the render-blocking fonts.googleapis.com
 // round-trip and lets CSP drop the Google font origins entirely.
@@ -58,10 +59,7 @@ export default function RootLayout({ children }) {
               VOLT<b>HUB</b>
             </Link>
             <Nav />
-            <span className="end">
-              <Link href="/login">Log in</Link>
-              <Link href="/profile">Profile</Link>
-            </span>
+            <SessionLinks className="end" />
           </div>
         </header>
         <main id="main">{children}</main>
