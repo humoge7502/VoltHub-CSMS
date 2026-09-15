@@ -55,9 +55,10 @@
 </p>
 
 <p align="center">
+  <img src="docs/screenshots/home.png" alt="Grid Current home — editorial hero with live gateway state" width="46%">
   <img src="docs/screenshots/dashboard.png" alt="Operations dashboard" width="46%">
-  <img src="docs/screenshots/live-session.png" alt="Live charge session" width="46%">
   <br>
+  <img src="docs/screenshots/live-session.png" alt="Live charge session" width="46%">
   <img src="docs/screenshots/telemetry.png" alt="Telemetry load curve" width="46%">
   <img src="docs/screenshots/invoice.png" alt="Itemized invoice" width="46%">
   <br>
@@ -160,7 +161,7 @@ Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@
 
 ## Status & releases
 
-- Current release: **[v1.5.0](https://github.com/humoge7502/VoltHub-CSMS/releases)** — tagged releases carry notes extracted from [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog / SemVer).
+- Current release: **[v1.6.0](https://github.com/humoge7502/VoltHub-CSMS/releases)** — tagged releases carry notes extracted from [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog / SemVer).
 - Engineering history is fully auditable: conventional-commit breadcrumbs (`fix(oracle): …`, `ci(e2e): …`) — including the failures and their fixes.
 - Roadmap notes (OCPP 2.0.1 migration path, scale exits): [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`docs/masterplan/18-da-plans-and-roadmap.md`](docs/masterplan/18-da-plans-and-roadmap.md).
 

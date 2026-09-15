@@ -98,20 +98,27 @@ if (require.main === module) {
     console.log(`[worker] relay -> ${API} (2s loop)`);
     // Graceful shutdown (BUG-022 companion): SIGTERM ends the loop after the
     // current cycle — replay is idempotent (ack-after-COMMIT + dedupe), so stopping
-    // mid-batch loses nothing. A 10 s failsafe keeps the drain inside compose's
-    // stop_grace_period even if a poll hangs (HTTP is bounded at 5 s anyway).
+    // mid-batch loses nothing. A 10 s failsafe armed ONLY when draining begins keeps
+    // a hung poll inside compose's stop_grace_period (HTTP is bounded at 5 s anyway).
+    // BUG-0xx fix: the failsafe used to be armed at boot, which force-exited the
+    // worker ~10 s after every start — compose restart-looped it and each boot
+    // relayed a batch, masking the bug while bloating restart counts.
     let stop = false;
-    const failsafe = setTimeout(() => {
-      console.error('[worker] drain timeout — forcing exit');
-      process.exit(0);
-    }, 10000);
-    failsafe.unref?.();
+    const armFailsafe = () => {
+      const failsafe = setTimeout(() => {
+        console.error('[worker] drain timeout — forcing exit');
+        process.exit(0);
+      }, 10000);
+      failsafe.unref?.();
+    };
     process.on('SIGTERM', () => {
       console.log('[worker] SIGTERM — draining');
       stop = true;
+      armFailsafe();
     });
     process.on('SIGINT', () => {
       stop = true;
+      armFailsafe();
     });
     while (!stop) {
       try {

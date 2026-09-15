@@ -4,6 +4,66 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-09-15
+
+### Added
+
+- **ADR-0015 acceptance-envelope scheduling (E6).** The allocator consumes the
+  same acceptance curve as the certifier and the twin (`acceptanceFactor` — one
+  definition, three consumers), so plan-time and realised feasibility cannot
+  disagree. Measured (100 paired seeds/level): charging shortfall **42.6% →
+  2.36%**, deadline miss **56.6% → 15.7%**, plan-honesty gap **1,280 kWh →
+  0.011 kWh**, with bit-identical schedules below the knee (H0). Receipts in
+  `bench/results/e6-taper.json`; protocol in `docs/perf.md`.
+- **Acceptance-envelope contract test** (`apps/api/test/control-aes.js`, wired
+  into `npm test`): AES is unit-identical to the power-based allocator below
+  the knee, honest above it, and every certificate promise is deliverable by
+  an AES schedule.
+- **Grid Current web redesign** (all 17 routes): server-rendered editorial home
+  with a live `/health` island; driver/operator navigation split with a
+  keyboard-friendly mobile drawer; native `<dialog>` replaces every
+  `window.confirm`/`prompt`; new `PageHead`/`Section`/`Statband`/`EmptyState`/
+  `StationPicker` primitives; keyboard-accessible map pins and connector
+  tiles; responsive table wrappers; per-route metadata titles; expanded design
+  tokens (spacing, motion, z-index, tinted elevation) with full
+  `prefers-reduced-motion` coverage. Zero new frontend dependencies; API
+  contracts, CSP, and polling cadences unchanged. Home page is now statically
+  prerendered (fast LCP).
+- **Submission documentation sets** under `docs/`: startup product thesis,
+  research paper, patent invention disclosure, recruitment portfolio.
+
+### Fixed
+
+- **Worker drain failsafe armed at boot (restart loop).** The relay's 10 s
+  drain failsafe was armed unconditionally at process start, force-exiting the
+  worker ~10 s after every boot; compose restarted it and each boot relayed a
+  batch, masking the bug while inflating restart counts. The failsafe is now
+  armed only when a shutdown signal arrives.
+- **Control-plane rate limiting (CodeQL ×15).** The whole control surface now
+  sits behind a canonical `express-rate-limit` router barrier (30/min per
+  user, per-IP backstop, `RATE_LIMIT_OFF` honored) — every authorizing route,
+  reads included, carries an explicit recognized limiter.
+- **User-controlled allocation bounds (CodeQL ×2).** Untrusted plan/certify
+  `horizon`/`dtMin` values are clamped to the documented allow-list
+  (`model.clampHorizon`/`clampDtMin`) before they can size solver allocations;
+  benchmark direct-call contracts unchanged.
+- **Log injection in the profile probe (CodeQL ×1).** The closed-loop probe
+  logs a boolean shape verdict only — no wire-derived values reach the log.
+- **Screenshot capture hardening.** Boot-probes candidates and skips charge
+  points whose secrets were admin-generated (`dev-<identity>` no longer
+  assumed); compose `WEB_ORIGIN` now also allows the documented capture
+  console port (`:3120`).
+
+### Security
+
+- CodeQL alert count on `main`: **0** (down from 18). All 12 required checks
+  green; durable control-plane E2E passes on the compose stack.
+
+### Docs
+
+- README + docs-site screenshot strip re-recorded against the Grid Current
+  console (real stack, real OCPP session, `home.png` + `discover.png` added).
+
 ### Added (control loop closed end-to-end — the actuate/verify stages are now real)
 
 - **The plan cycle now CERTIFIES before it schedules.** `control/controller.js` resolves
@@ -179,7 +239,7 @@ property 'station' of undefined`. `POST /admin/stations` and `POST /admin/charge
   them). Formatting of `apps/api/test/run.js` restored to pass the
   `format:check` gate.
 
-### Changed (apps/web)
+### Changed (apps/web — pre-redesign accessibility/SEO pass, folded into the 1.6.0 redesign)
 
 - **Fonts self-hosted via `next/font`** (Inter, Space Grotesk 500/700,
   IBM Plex Mono 400/500 — same faces/weights as before). Removes the

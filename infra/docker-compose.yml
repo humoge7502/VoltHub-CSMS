@@ -53,7 +53,7 @@ services:
       ORACLE_PASSWORD: volthub_dev_pwd
       TS_HOST: timescale
       JWT_SECRET: ${JWT_SECRET:-dev-only-32-byte-secret-0123456789}
-      WEB_ORIGIN: http://localhost:3000
+      WEB_ORIGIN: http://localhost:3000,http://localhost:3120
       SEED_PROFILE: demo
       # Load-testing toggle (bench/README.md): set 1 only for k6 runs — the
       # 60 req/min throttle would otherwise count the whole k6 fleet as one IP.

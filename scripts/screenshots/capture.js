@@ -46,6 +46,61 @@ function ocppCall(ws, action, payload) {
   });
 }
 
+// Try to boot one candidate charge point with the demo dev secret. The live feed
+// also lists stations provisioned via the admin surface, whose secrets are
+// generated (not dev-<identity>) — those get skipped here instead of failing the
+// whole capture. Resolves the open socket (with keep-alive attached) or null.
+function tryBoot(candidate) {
+  return new Promise((resolve) => {
+    const identity = candidate.ocpp_identity;
+    const ws = new WebSocket(`${WS}/ocpp/${identity}`, {
+      headers: { Authorization: `Basic ${Buffer.from(`${identity}:dev-${identity}`).toString('base64')}` },
+    });
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      if (ok) resolve(ws);
+      else {
+        try {
+          ws.terminate();
+        } catch {}
+        resolve(null);
+      }
+    };
+    const t = setTimeout(() => finish(false), 8000);
+    ws.on('open', () => {
+      ws.send(
+        JSON.stringify([2, 'b1', 'BootNotification', { chargePointVendor: 'VoltHub', chargePointModel: 'VH-DC60' }])
+      );
+    });
+    ws.on('message', (raw) => {
+      try {
+        const m = JSON.parse(String(raw));
+        if (!Array.isArray(m)) return;
+        if (m[0] === 3 && m[1] === 'b1' && m[2]?.status === 'Accepted') {
+          clearTimeout(t);
+          finish(true);
+        }
+        if (m[0] === 4) {
+          clearTimeout(t);
+          finish(false);
+        }
+        // Keep-alive: answer any inbound CSMS CALLs.
+        if (m[0] === 2) ws.send(JSON.stringify([3, m[1], { status: 'Accepted' }]));
+      } catch {}
+    });
+    ws.on('error', () => {
+      clearTimeout(t);
+      finish(false);
+    });
+    ws.on('close', () => {
+      clearTimeout(t);
+      finish(false);
+    });
+  });
+}
+
 async function main() {
   // Cleanup: stop leftover live sessions from prior partial runs (admin bypasses ownership).
   const adminLogin = await api('/auth/login', {
@@ -74,28 +129,21 @@ async function main() {
     const { connectors } = await api(`/stations/${s.station_id}/connectors/live`);
     connectors.forEach((c) => live.push(c));
   }
-  const pick = live.find((c) => c.status === 'AVAILABLE' && c.ocpp_identity);
-  if (!pick) throw new Error('no AVAILABLE connector with identity');
+  // First live session: boot-probe candidates until one accepts (demo-secret CPs only).
+  const candidates = live.filter((c) => c.status === 'AVAILABLE' && c.ocpp_identity);
+  let ws = null;
+  let pick = null;
+  for (const cand of candidates) {
+    ws = await tryBoot(cand);
+    if (ws) {
+      pick = cand;
+      break;
+    }
+    console.log(`skipping ${cand.ocpp_identity} (boot/auth failed — generated secret?)`);
+  }
+  if (!pick) throw new Error('no AVAILABLE connector accepted BootNotification');
   const [, connNo] = pick.connector_ref.split(':').map(Number);
-  const identity = pick.ocpp_identity;
-  const secret = `dev-${identity}`;
 
-  // Real OCPP charge point session.
-  const ws = new WebSocket(`${WS}/ocpp/${identity}`, {
-    headers: { Authorization: `Basic ${Buffer.from(`${identity}:${secret}`).toString('base64')}` },
-  });
-  await new Promise((res, rej) => {
-    ws.on('open', res);
-    ws.on('error', rej);
-  });
-  // Keep-alive: answer any inbound CSMS CALLs.
-  ws.on('message', (raw) => {
-    try {
-      const m = JSON.parse(String(raw));
-      if (Array.isArray(m) && m[0] === 2) ws.send(JSON.stringify([3, m[1], { status: 'Accepted' }]));
-    } catch {}
-  });
-  await ocppCall(ws, 'BootNotification', { chargePointVendor: 'VoltHub', chargePointModel: 'VH-DC60' });
   await ocppCall(ws, 'StatusNotification', { connectorId: connNo, status: 'Available', errorCode: 'NoError' });
   await ocppCall(ws, 'Authorize', { idTag: tag });
   const { transactionId } = await ocppCall(ws, 'StartTransaction', {
@@ -121,28 +169,19 @@ async function main() {
     });
   for (let i = 1; i <= 3; i++) await meter(i);
 
-  // A second, completed+billed session so /invoices has a fresh row for this driver.
-  // Full OCPP cycle on another connector so the session is COMPLETED (billable).
   // Second session must run on a DIFFERENT charge point — two sockets sharing one OCPP identity
   // would trip the gateway duplicate-connection guard and kill the first session's socket.
-  const avail2 = live.find((c) => c.status === 'AVAILABLE' && c.ocpp_identity !== pick.ocpp_identity);
+  let ws2 = null;
+  let avail2 = null;
+  for (const cand of candidates.filter((c) => c.ocpp_identity !== pick.ocpp_identity)) {
+    ws2 = await tryBoot(cand);
+    if (ws2) {
+      avail2 = cand;
+      break;
+    }
+  }
+  if (!avail2) throw new Error('no second AVAILABLE connector accepted BootNotification');
   const [, no2] = avail2.connector_ref.split(':').map(Number);
-  const ws2 = new WebSocket(`${WS}/ocpp/${avail2.ocpp_identity}`, {
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${avail2.ocpp_identity}:dev-${avail2.ocpp_identity}`).toString('base64')}`,
-    },
-  });
-  await new Promise((res, rej) => {
-    ws2.on('open', res);
-    ws2.on('error', rej);
-  });
-  ws2.on('message', (raw) => {
-    try {
-      const m = JSON.parse(String(raw));
-      if (Array.isArray(m) && m[0] === 2) ws2.send(JSON.stringify([3, m[1], { status: 'Accepted' }]));
-    } catch {}
-  });
-  await ocppCall(ws2, 'BootNotification', { chargePointVendor: 'VoltHub', chargePointModel: 'VH-DC60' });
   await ocppCall(ws2, 'Authorize', { idTag: tag });
   const started2 = await ocppCall(ws2, 'StartTransaction', {
     connectorId: no2,
