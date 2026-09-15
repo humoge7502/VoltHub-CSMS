@@ -39,6 +39,34 @@
   Proxy awareness (BUG-023): `req.ip` trusts proxy headers only when `TRUST_PROXY` is set
   (opt-in, `1` = one hop or a value like `loopback` for same-host Caddy) — without it the
   per-IP login throttle would see one IP behind the documented Caddy deploy profile.
+- Rate-limit tiers (`middleware/security.js`, `server.js` — verify from code, not from this
+  file): the **global per-role throttle** (60/min DRIVER, 120/min OPERATOR|ADMIN, override via
+  `RATE_LIMIT_USER`) is the binding limit, and every authorizing router additionally mounts a
+  `routerBarrier()` keyed by the same verified `sub` (SEC-006) with an IPv6-safe IP fallback.
+  Be precise about what that buys: the barriers sit **at or above** the global tier, so they are
+  a backstop plus a defense-in-depth net — not a new cap on normal traffic. The control plane is
+  the one strictly stricter tier (**30/min per user**) because those routes actuate hardware.
+  Login is its own **10/min per-IP** tier, and `/internal/*` is excluded from **every** tier
+  (the relay polls it every 2 s and is token-gated). `RATE_LIMIT_OFF=1` bypasses every tier for
+  load tests. Pinned by `apps/api/test/ratelimit.js` (RL-1..RL-7), which is the one suite that
+  runs with limiting **on** — everywhere else it is off, which is why this tier went unverified
+  until then.
+- Connector state (BR-07): `connector.status` is writable only through the OCPP gateway or a
+  PL/SQL package. `trg_connector_guard` (`db/oracle/V004__triggers_grants.sql`) accepts the write
+  only while `SYS_CONTEXT('USERENV','CLIENT_IDENTIFIER')` is `ocpp-gw` or `pkg:<owner>`. That
+  context is **session**-scoped, so every package write goes through a single
+  `guard_pkg.set_status()` (`db/oracle/V003__packages.sql`), which opens the identity for exactly
+  one statement and clears it on every exit path (including a raise out of the `UPDATE`). Before
+  that (BUG-052) the packages set the identity and never cleared it, so a pooled connection
+  stayed able to write `connector.status` directly for the rest of its life — measured on live
+  Oracle 23ai: a fresh session was refused with `ORA-20801` while the same session was allowed
+  the identical `UPDATE` right after `reservation_pkg.expire_stale` ran. `cancel_reservation`
+  had in fact been relying on that leak to pass the guard at all. **What this does not cover:**
+  the database owner can always set an identity and write directly — the guard constrains the
+  application's paths, and it is the least-privilege role in this section that constrains the
+  app's grants (that role layer is skipped when migrations run as the schema owner; see the note
+  in V004). Gated by `GUARD-META-1/2/3` plus the Oracle behaviour probes in
+  `test/sql/run-invariants.js`.
 - Audit: `LOGIN_SUCCESS`/`LOGIN_FAIL`/`REGISTER`/`LOGOUT`/`TOPUP`/`REFRESH_REUSE` are audit-logged
   (autonomous-txn in prod via `AUDIT_PKG`).
 - Transport/storage: TLS via Caddy in deploy; no card data ever (wallet ledger only);
@@ -49,7 +77,8 @@
 `VOLTHUB_APP_ROLE`: SELECT on business tables; INSERT/UPDATE only where justified; **no DELETE
 anywhere**; no direct UPDATE on `connector.status` / `wallet_account.balance` / `wallet_ledger` /
 `audit_log` / `meter_reading` — money-path writes go through `EXECUTE` on packages only
-(`db/oracle/V004__triggers_grants.sql`).
+(`db/oracle/V004__triggers_grants.sql`). `connector.status` is enforced twice: by the grant here
+and, independently, by `trg_connector_guard` + `guard_pkg` — see the BR-07 bullet above.
 
 ## Demo credentials
 

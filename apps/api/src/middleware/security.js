@@ -1,9 +1,13 @@
-// Helmet-lite security headers + per-role request throttle.
+// Helmet-lite security headers + the rate-limit tiers: the global per-role request
+// throttle, the per-IP login tier, and the per-surface router barriers.
 // Masterplan §30/§32: 60 req/min DRIVER, 120 OPERATOR/ADMIN (sliding 60s window).
-// Bypass with RATE_LIMIT_OFF=1 (tests). Counts per authenticated user, else IP.
+// Bypass with RATE_LIMIT_OFF=1 (tests). Counts per authenticated user, else IP —
+// bucket identity is the VERIFIED subject in all three tiers (verifiedClaims below).
+// Evidence: apps/api/test/ratelimit.js (the one suite that runs with limiting on).
 // SEC-009: minimal CSP (no inline-script reliance in API; web layer adds its own).
 'use strict';
 const jwt = require('jsonwebtoken');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 // BUG-036: import the auth module's secret() instead of re-hardcoding the dev
 // default — the throttle previously kept its own copy of the literal, so a future
 // change to the dev secret would silently desync the two verifiers.
@@ -20,6 +24,18 @@ function securityHeaders(req, res, next) {
     res.setHeader('strict-transport-security', 'max-age=31536000; includeSubDomains');
   }
   next();
+}
+
+// Is this request on the worker's internal channel (`/internal/*`)?
+// BUG-051: the throttle is mounted at the APP ROOT, so `req.path` there is the full
+// '/api/v1/internal/outbox' — the old `req.path.startsWith('/internal')` never matched,
+// so the public per-IP ANON tier (60/min) throttled the relay instead. The worker polls
+// three internal endpoints every 2 s (~90 req/min from one IP) and starved on 429s: the
+// outbox stopped draining and Timescale telemetry went stale. Match the full URL so the
+// exclusion works whether the middleware runs at the app or inside a router.
+function isInternalPath(req) {
+  const path = String(req.originalUrl || req.url || '').split('?')[0];
+  return path.startsWith('/internal') || /^\/api\/v\d+\/internal(\/|$)/.test(path);
 }
 
 const windows = new Map(); // key -> [timestamps]
@@ -60,6 +76,22 @@ function sweepIdle(now = Date.now()) {
   }
 }
 
+// SEC-006: bucket identity comes from the SIGNATURE-VERIFIED token, never from the raw
+// header — a forged, tampered or expired bearer token degrades to the IP bucket instead
+// of letting the caller choose its own key. Single source of truth for both the global
+// per-role throttle and the router barriers below (they must agree on who a caller is).
+function verifiedClaims(req) {
+  const h = req.headers.authorization || '';
+  if (!h.startsWith('Bearer ')) return null;
+  try {
+    // B2G-010: pin the algorithm at every verify site (no `alg: none` / RS256 confusion).
+    const p = jwt.verify(h.slice(7), jwtSecret(), { algorithms: ['HS256'] });
+    return { role: p.role || 'DRIVER', sub: p.sub ?? null };
+  } catch {
+    return null;
+  }
+}
+
 // Tiered route limiters (2026-09-14 CodeQL hardening): the control plane's
 // mutating routes (grid caps, mode flips, plan cycles, dead-letter resolves)
 // authorize on every call and actuate real hardware, so they get their own
@@ -90,29 +122,55 @@ setInterval(() => {
   } catch {}
 }, 60000).unref?.();
 
+// Router barriers (2026-09-14/15 CodeQL hardening). Every authorizing surface
+// (routes.js, extended.js, control-routes.js) mounts one of these ahead of its
+// handlers, so no route in the API reaches a handler without a recognized limiter
+// in front of it. Buckets are keyed by the SEC-006 identity — the verified `sub`
+// when the token is valid, else the IPv6-safe IP (ipKeyGenerator collapses IPv6
+// /64s so one client cannot rotate addresses past the cap).
+//
+// Honest scope, because a security control that overstates itself is worse than none:
+// the global per-role throttle in server.js is still the binding limit (60/min DRIVER,
+// 120/min OPERATOR|ADMIN). These barriers sit AT OR ABOVE that tier, so they are a
+// backstop for surfaces the global tier does not key, and a defense-in-depth net if the
+// middleware order ever changes — not a new cap on normal traffic. The control plane is
+// the one stricter tier (30/min) because those routes actuate real hardware.
+//
+// `limit` is the per-window cap, `key` namespaces the bucket so two barriers on the
+// same surface never collide, `message` lets the stricter tier say why it fired.
+function routerBarrier({ key, limit, message }) {
+  return rateLimit({
+    windowMs: 60_000,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const sub = verifiedClaims(req)?.sub;
+      return sub != null ? `${key}:u:${sub}` : `${key}:ip:${ipKeyGenerator(req.ip)}`;
+    },
+    // BUG-051: the internal worker channel is never subject to user-facing tiers — the
+    // same exclusion the global throttle below applies (and, before the fix, failed to).
+    skip: (req) => process.env.RATE_LIMIT_OFF === '1' || isInternalPath(req),
+    handler: (req, res) => {
+      res.setHeader('retry-after', '60');
+      res.status(429).json({ error: { code: 'RATE_LIMITED', message: message || `slow down: ${limit} req/min` } });
+    },
+  });
+}
+
 function throttle(req, res, next) {
   if (process.env.RATE_LIMIT_OFF === '1') return next();
   // /internal/* is the worker channel: token-gated (SEC-007 constant-time compare) and
   // polled every 2s (outbox + station-map + expire ≈ 90 req/min) — the public per-IP
-  // throttle must not apply, or the relay starves on 429s.
-  if (req.path.startsWith('/internal')) return next();
+  // throttle must not apply, or the relay starves on 429s. BUG-051: this check used to
+  // test `req.path` from the app root (where it is '/api/v1/internal/...' and never
+  // matched), so the exclusion existed in prose but not in effect — see isInternalPath().
+  if (isInternalPath(req)) return next();
   // SEC-006: tier only from signature-verified claims. Unverified/forged tokens get ANON tier.
   // Order note: throttle runs before authRequired, so we verify (not decode) here read-only.
-  let role = 'ANON';
-  let sub = null;
-  const h = req.headers.authorization || '';
-  if (h.startsWith('Bearer ')) {
-    try {
-      const p = jwt.verify(h.slice(7), jwtSecret(), {
-        algorithms: ['HS256'],
-      });
-      role = p.role || 'DRIVER';
-      sub = p.sub ?? null;
-    } catch {
-      role = 'ANON';
-      sub = null;
-    }
-  }
+  const claims = verifiedClaims(req);
+  const role = claims ? claims.role : 'ANON';
+  const sub = claims ? claims.sub : null;
   const limit = Number(process.env.RATE_LIMIT_USER || (role === 'DRIVER' || role === 'ANON' ? 60 : 120));
   // SEC-006: key by verified sub when available, else IP — distinct tokens for one user share a bucket.
   const id = sub != null ? `u:${sub}` : `ip:${req.ip}`;
@@ -134,6 +192,8 @@ module.exports = {
   throttle,
   checkLoginThrottle,
   makeLimiter,
+  routerBarrier,
+  _verifiedClaims: verifiedClaims,
   _windows: windows,
   _sweepIdle: sweepIdle,
   _loginWindows: loginWindows,

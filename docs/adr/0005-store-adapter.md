@@ -15,8 +15,9 @@ built against that surface, so the surface _is_ the port.
   `stopSession/resolveBandPrice/billSession/payInvoice` + Maps for reads).
 - Adapters: `store.js` (local test double, documented as such) and `db/oracle.js`
   (write-through Oracle package calls over a hydrated local read-cache).
-- Seam: `db/index.js:getStore()` + background upgrade in `server.js`
-  (`store._mode`: `local` → `oracle-connecting` → `oracle` | `local-fallback`).
+- Seam: `db/index.js:upgradeStore()`, awaited by the `listen` wrapper in `server.js`
+  before the port binds (`store._mode`: `local` → `oracle-connecting` → `oracle` |
+  `local-fallback`).
 - Error contract unchanged: `db/errors.js:oraStatus/fromDriver` maps driver
   `ORA-xxxxx` to the same HTTP statuses, so `201/409/402` behavior is identical.
 

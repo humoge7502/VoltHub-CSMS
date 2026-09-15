@@ -4,11 +4,19 @@
 const express = require('express');
 const spec = require('./docs');
 const { authRequired, roles } = require('./middleware/auth');
+const { routerBarrier } = require('./middleware/security');
 const { oraStatus } = require('./errors');
 
 module.exports = function extended(store) {
   const r = express.Router();
   const safe = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+  // Router-wide barrier (CodeQL hardening — the admin and AI routes here all authorize).
+  // Every request that reaches this router has already passed the whole-API envelope in
+  // routes.js, so this bucket counts the same traffic a second time: it is belt-and-
+  // braces for the case where that barrier is reordered or dropped, and it keeps a
+  // recognized limiter on these authorizing routes for static analysis. It is NOT a
+  // separate budget for traffic — see middleware/security.js routerBarrier().
+  r.use(routerBarrier({ key: 'ext', limit: 120 }));
 
   r.get('/docs', (req, res) => res.json(spec));
 

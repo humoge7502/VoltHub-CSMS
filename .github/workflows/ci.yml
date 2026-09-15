@@ -49,6 +49,10 @@ jobs:
       - run: npm run test:race -w apps/api
       - run: node apps/worker/test/relay.test.js
       - run: node apps/api/test/security.js
+      # The throttles/barriers cannot be exercised by the suites above (they all set
+      # RATE_LIMIT_OFF=1), so this suite is the executable evidence for the whole
+      # rate-limit tier — run with limiting ON, per-user keying pinned.
+      - run: node apps/api/test/ratelimit.js
       - run: node apps/api/test/xlayer.js
       - run: node apps/api/test/ocpp-remote.js
       - run: node apps/api/test/gateway-close.js
@@ -147,7 +151,7 @@ jobs:
         run: npm run test:race -w apps/api
       - name: Security + cross-layer suites
         env: { ORACLE_HOST: '' }
-        run: node apps/api/test/security.js && node apps/api/test/xlayer.js && node apps/api/test/ocpp-remote.js && node apps/api/test/gateway-close.js && node apps/api/test/control.js && node apps/api/test/ai.js
+        run: node apps/api/test/security.js && node apps/api/test/ratelimit.js && node apps/api/test/xlayer.js && node apps/api/test/ocpp-remote.js && node apps/api/test/gateway-close.js && node apps/api/test/control.js && node apps/api/test/ai.js
       - name: DB-backed suites (STORE=oracle — adapter write-through)
         run: STORE=oracle npm run test -w apps/api && STORE=oracle npm run test:race -w apps/api
       - name: Invariants gate (real runner — 0 rows or red)

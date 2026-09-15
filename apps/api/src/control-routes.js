@@ -3,9 +3,8 @@
 // mode is OFF — actuation is opt-in per site until receipts exist.
 'use strict';
 const express = require('express');
-const { rateLimit } = require('express-rate-limit');
 const { authRequired, roles } = require('./middleware/auth');
-const { makeLimiter } = require('./middleware/security');
+const { makeLimiter, routerBarrier } = require('./middleware/security');
 const { oraStatus } = require('./errors');
 const control = require('./control/controller');
 const smartCharging = require('./ocpp/smart-charging');
@@ -13,24 +12,14 @@ const smartCharging = require('./ocpp/smart-charging');
 module.exports = function controlRoutes(store, registry, log) {
   const r = express.Router();
   const safe = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-  // Tiered control-plane limiters: 30/min per user (req.user is set by
-  // authRequired on every route here) via the canonical express-rate-limit,
-  // plus a per-IP tier as defense in depth. The global per-role throttle still
-  // applies upstream; this tier is the hardware-actuation backstop.
+  // Tiered control-plane limiters: 30/min per user — the one tier STRICTER than the
+  // global per-role throttle, because these routes flip grid caps and push charging
+  // profiles at real hardware — plus a per-IP tier as defense in depth for probing of
+  // the surface. Buckets are keyed by the verified `sub` (SEC-006), so an operator
+  // cannot escape the tier by minting extra tokens.
   // Plan/certify bodies pass through model.clampHorizon/clampDtMin downstream,
   // so untrusted horizon/cadence values can never size an allocation.
-  const controlLimiter = rateLimit({
-    windowMs: 60_000,
-    limit: 30,
-    standardHeaders: 'draft-7',
-    legacyHeaders: false,
-    keyGenerator: (req) => `ctl:u:${req.user?.id ?? 'anon'}`,
-    skip: () => process.env.RATE_LIMIT_OFF === '1',
-    handler: (req, res) => {
-      res.setHeader('retry-after', '60');
-      res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'slow down: 30 req/min' } });
-    },
-  });
+  const controlLimiter = routerBarrier({ key: 'ctl', limit: 30, message: 'slow down: 30 req/min' });
   const ipLimiter = makeLimiter({ key: 'ctl-ip', limit: 30 });
   // Router-wide control-plane barrier: every route on this surface authorizes,
   // and several actuate hardware or expose enforcement telemetry, so the whole

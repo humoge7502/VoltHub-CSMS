@@ -4,6 +4,252 @@ Evidence discipline: **EXECUTED** (ran in this repo's environment) vs
 **STRONGLY INFERRED** (CI config verified line-by-line; execution on runners)
 vs **PENDING** (blocked here; exact command given). No claim without a receipt.
 
+## GUARD-2026-09-15 — the connector guard was open, and V006 undid the expiry fix (EXECUTED)
+
+Two defects found by probing the live Oracle directly rather than reading the SQL. Both are
+gated now, so neither can return through a source edit.
+
+### BUG-052 — the BR-07 guard was open for the life of a pooled connection
+
+`trg_connector_guard` allows a `connector.status` write only while
+`SYS_CONTEXT('USERENV','CLIENT_IDENTIFIER')` is `ocpp-gw` or `pkg:<owner>`, and the packages
+set that identity **without ever clearing it**. It is session-scoped, so the allowance survived
+the call. Measured on the live database (a single SQL\*Plus session, so the connection is the
+only variable):
+
+| step                                 | identifier                         | direct `UPDATE connector` |
+| ------------------------------------ | ---------------------------------- | ------------------------- |
+| fresh session                        | `<NULL>`                           | **refused** `ORA-20801`   |
+| after `reservation_pkg.expire_stale` | `pkg:reservation_pkg.expire_stale` | **ALLOWED**               |
+
+So the guard was correct in isolation and defeated in practice. A second consequence fell out
+of the same leak: `reservation_pkg.cancel_reservation` never set the identity itself, and on a
+fresh session was **refused** (`ORA-20801`, reproduced with a reservation booked by one session
+and cancelled by another) — it had been passing only because some earlier procedure on the same
+pooled connection left the identity behind.
+
+**Fix:** one `guard_pkg.set_status()` (`db/oracle/V003__packages.sql`) is now the only place a
+package writes `connector.status`. It marks, writes, and clears on every exit path (including a
+raise out of the `UPDATE`). Nine direct `UPDATE connector` statements and nine `SET_IDENTIFIER`
+calls are down to one each; `cancel_reservation` marks explicitly.
+
+### BUG-053 — V006 silently reverted BUG-050 on every fresh migration
+
+BUG-050 (expiry released the reservation but not the connector) was fixed in V003 — but V006
+replaces the `reservation_pkg` body wholesale, and packages have no partial replacement, so on a
+fully migrated database V006's body wins. Reproduced: applying V006 to the live database dropped
+the release (a probe for `UPDATE CONNECTOR … AVAILABLE` in `USER_SOURCE` went 2 → 1), and the
+functional probe then showed it:
+
+```
+booked 1:2 -> connector=RESERVED
+after expire_stale(stale=1): reservation=EXPIRED connector=RESERVED
+VERDICT: LEAK — expiry did not release the hold
+```
+
+**Fix:** the release exists in **both** bodies; V006's header now states that its sections 1–2
+are the final definition of those packages.
+
+### The gate (EXECUTED, red→green, idempotent)
+
+`node test/sql/run-invariants.js` grew static checks plus behavioural probes — a 0-rows SELECT
+cannot express either bug, and name-based reads needed `OUT_FORMAT_OBJECT` while DML
+`RETURNING INTO` needed a PL/SQL block (its OUT binds come back as a one-element array; the
+first cut of these probes passed vacuously because of both).
+
+- **Red, against the pre-fix SQL** (`git stash`, reapply V003/V004/V006, run):
+  `GUARD-META-1` lists all 9 identity sites · `GUARD-META-2` lists all 9 direct writes ·
+  `GUARD-META-3` fires for **both** V003 and V006 · `GUARD-ORACLE-4` reports the hold leaking ·
+  `INV-12` reports the resulting `RESERVED without BOOKED reservation` row. Exit 1.
+- **Green, after the fix**, against a **freshly migrated + seeded** database (volume removed,
+  `up -d`, `SEED_DB=1 bash scripts/migrate.sh`): all 12 invariants 0 rows, all four guard
+  probes pass, `guard-oracle-4: expiry released connector 1:1`. Exit 0.
+- **Idempotent:** three consecutive runs green, leaving zero residue — the probe provisions its
+  own `vehicle` (the seed ships none) and deletes its own rows, so `vehicle=0`, `reservation=0`,
+  `connector=16` are unchanged after the run.
+
+### The rest of the stack, on that fresh database (EXECUTED)
+
+- `SEED_DB=1 bash scripts/migrate.sh` applied V001–V007 + the seed with no errors; Timescale
+  T001–T003 applied through the container (this host has no `psql`, so the script's honest
+  "psql not installed" note is what a host without a client sees).
+- API boot: first attempt `NJS-518 … service freepdb1 is not registered` →
+  `mode: local-fallback` (the documented degrade, before migrations ran), then after the
+  restart `oracle adapter online (write-through)` → `mode: oracle`, `/health/deep` `status: ok`,
+  `outbox_lag: 0`, `errors_total: 0`.
+- `STORE=oracle npm run test -w apps/api` **36/36**; `STORE=oracle npm run test:race` **2/2**;
+  security 17 · ratelimit 8 · xlayer 4 · ocpp-remote 2 · gateway-close 6 · control 16 · ai 6.
+  Control-plane E2E **41/41** against the live stack.
+- Product path: a real OCPP session through the gateway on a freshly provisioned charge point
+  (`[sim:SOAK-1-fleet] charging tx=7/8`), relayed by the worker — Timescale `meter_tick` **0 → 48**
+  for **8** Oracle sessions / 51 meter readings, and the `/internal/*` channel stayed at 200
+  throughout (no 429s).
+- Local gate: prettier clean · eslint `--max-warnings 0` clean · `npm test` green (api 36 · relay 7
+  · sim 2 · security 17 · **ratelimit 8** · xlayer 4 · ocpp 6+2 · control 16 · AES 6 · AI 6 ·
+  twin 12 · invariants 12 · OpenAPI drift + snapshot OK).
+
+### Observed, not fixed (stated plainly)
+
+- **Mixing in-process `STORE=oracle` suites with the running container can surface a raw
+  `ORA-00001`.** Both allocate `cp_id` from an in-memory counter, so a CP created by the test
+  process is invisible to the container's hydrated store; the next container-side insert of that
+  id collides (`PK_CONNECTOR … (CP_ID:9, CONNECTOR_NO:1) already exists` — CP 9 was `VH-5-CP1`,
+  created by the contract suite). Restarting the API re-hydrates and provisioning works again.
+  This is inherent to the single-writer design (one authoritative in-memory store per process),
+  not a code defect — but the collision is reported as a 500 carrying the driver's text rather
+  than a typed conflict, and that is left as-is rather than masking real unique-constraint bugs.
+- **The V004 role layer is skipped when migrations run as the schema owner** (the default here),
+  so the guard trigger is the binding enforcement for `connector.status`. Recorded in
+  SECURITY.md under BR-07.
+
+## LIVE-STACK-2026-09-15 — the whole thing, on real engines (EXECUTED)
+
+**The P2V-01/02/03 blocker has cleared on this host** (that section says a local
+Oracle/Timescale runtime was impossible because a shared disk was full). As of today:
+Docker 29.5.3 is running, `gvenzl/oracle-free:23-slim` and
+`timescale/timescaledb:2.17.2-pg16` are already pulled, and `/var/lib` has 1.5 T free
+(`/dev/sdc`, 86 % used). So every engine-dependent claim below was executed here
+rather than deferred to CI.
+
+- **The full compose stack is up and healthy (EXECUTED):** `volthub-oracle` (healthy),
+  `volthub-timescale` (healthy), `volthub-api`, `volthub-worker`, `volthub-web` — all
+  five, built from the current tree. `docker compose config` validates.
+- **The durable boot path (the seam B2G-007 touched) is armed against real Oracle:**
+  the API log shows `oracle adapter online (write-through)` with hydrated counts
+  (users 56 · stations 7 · cps 14 · connectors 22 · reservations 25 · sessions 31 ·
+  outbox 123 …), `/health` reports `mode: oracle`, `oracle: connected`,
+  `outbox_lag: 0`, `mirror_errors: 0`, and `/health/deep` returns `status: ok`.
+  Local boot was re-verified too (seeds 12 users), and `ORACLE_HOST=<unreachable>`
+  still degrades to `local-fallback` with the driver's real `NJS-503`.
+- **`db-tests`, the CI job that was never runnable here (EXECUTED ×6):**
+  `STORE=oracle npm run test -w apps/api` against the live Oracle — **36/36**, six
+  consecutive runs. **41/41** control-plane E2E steps
+  (`node test/e2e/control-plane.js`), including "no write-through mirror failures were
+  recorded" and "the audit trail carries rows written before this process started
+  (durable hydrate)". **invariants: oracle 12/12, 0 rows** (real SQL, including the new
+  INV-12).
+- **BUG-050 found, fixed, and gated (EXECUTED).** `reservation_pkg.expire_stale`
+  released no connector: live Oracle held `1:1`, `2:1`, `9:1` in `RESERVED` with only
+  `EXPIRED`/`CANCELLED` reservations on them — chargers permanently unbookable, since
+  `hydrate()` restores that state on every boot. **Red:** the new INV-12 reported all
+  three. **Green:** a functional test through the package
+  (`3:1 AVAILABLE → book → RESERVED → backdate → expire_stale → AVAILABLE`,
+  reservation `EXPIRED`) passed after the fix; the three leaked holds were repaired
+  and the invariant then returned 0 rows. The repair path also documents the V004 guard
+  contract: a plain `UPDATE connector …` as the schema owner is rejected (-20801)
+  unless the session declares `pkg:*`.
+- **BUG-051 found, fixed, and gated (EXECUTED).** The worker log showed an endless
+  `outbox poll 429 — backing off` with **85 unacked outbox events** and Timescale
+  stuck at 59 `meter_tick` rows. A probe against the running API showed the **54th**
+  request to `/api/v1/internal/outbox` returning 429 with
+  `message: slow down: 60 req/min` + `x-ratelimit-limit: 60` and **no** draft-7
+  `ratelimit` header — i.e. the global ANON per-IP tier, not the router barrier. Cause:
+  the `/internal/*` exclusion tested `req.path` at the app root, where it is
+  `/api/v1/internal/…`. **Red:** `RL-7` measured **74 of 120** relays rejected before
+  the fix. **Green:** 0/120 after, the worker drained the whole backlog on the next
+  cycle (`relayed=85`), outbox lag **85 → 0**, `meter_tick` **59 → 71**, and a fresh
+  30 s window contains **zero** 429s.
+- **The telemetry pipeline end-to-end (EXECUTED):** the simulator drove a real OCPP
+  1.6J session (`tx=117`) against the gateway, the API wrote it through to Oracle, the
+  worker relayed it and Timescale gained 12 ticks. Steady state: `relayed=1..3
+lag_probe=ok` on every cycle, no 429s.
+- **The web tier is deployable (EXECUTED):** with the new build args, an image built
+  with `NEXT_PUBLIC_API_BASE=https://api.example.test/api/v1` contains
+  `api.example.test` inside `.next/static` (before the fix the value was inlined as
+  `localhost:4000` at build time and no runtime setting could change it). The default
+  image serves `/`, `/login`, `/discover`, `/telemetry`, `/robots.txt` and
+  `/sitemap.xml`, all **200**.
+- **The `.env` trap measured (EXECUTED):** with a root `.env`,
+  `docker compose -f infra/docker-compose.yml config` renders
+  `JWT_SECRET: dev-only-32-byte-secret-0123456789` and `RATE_LIMIT_OFF: "0"`; with
+  `--env-file .env` it renders the real `JWT_SECRET` and `RATE_LIMIT_OFF: "1"`. Every
+  documented command now passes the flag.
+- **Simulator failure modes (EXECUTED):** `--scenario normal` against an
+  admin-provisioned charge point now reports `gateway closed VH-11-CP1 with 4401 — bad
+Basic auth …` with both remedies (was: a bare `ocpp timeout BootNotification`), and
+  re-running `--provision` on a database that already has the fleet reuses it and runs
+  a real session `tx=118` (was: `Cannot read properties of undefined (reading
+'connector_ref')`).
+- **Also executed:** AI sidecar `pytest` **8 passed, 1 skipped**, deprecation warnings
+  **3 → 1** (the deprecated `@app.on_event` is gone; the remaining warning is the
+  environment's own pynvml notice); `npm audit` **0 findings** on the root lockfile
+  (dev and prod) and the web lockfile; `node --check` on all **91** first-party JS
+  files; `next build` 19 routes.
+- **Local gate (EXECUTED):** lint clean (`--max-warnings 0`) · prettier clean
+  (`--check .`) · `npm test` green — relay 7 · api **36** · sim 2 · security 17 ·
+  ratelimit **8** · xlayer 4 · ocpp-remote 2 · gateway-close 6 · control 16 ·
+  control-aes 6 · ai 6 · twin 12 · **invariants 12 local**, 0 rows · drift
+  `spec=66 routes~70` · snapshot in sync · race **2/2**.
+- **Honest limits of this receipt.** (1) One run of the Oracle contract suite failed
+  `POST /sessions/:id/bill` with a 500 immediately after the package body was replaced
+  and a repair transaction committed; it did not reproduce in **6** later runs, and the
+  assertion now prints the response body so the next occurrence names its cause. An
+  ORA-04068 (stale package state) explanation was **tested and rejected**. (2) The V004
+  guard's allow-list is satisfied by a _session-scoped_ identifier that is never
+  cleared, so a pooled connection that has run any package procedure can later update
+  `connector.status` — a real hardening item, left as-is rather than changing seven PL/SQL
+  package bodies unverified. (3) The demo database now carries this session's test rows
+  (registered drivers, reservations, `SOAK-*` fleets); reset with
+  `docker compose -f infra/docker-compose.yml down -v && bash scripts/migrate.sh
+&& SEED_DB=1 bash scripts/migrate.sh && docker compose … up -d`.
+
+## RATE-LIMIT-TRUTH-2026-09-15 — the tier the docs described, actually enforced (EXECUTED)
+
+Two claims were being made about rate limiting that the code did not honour, and
+the tier had no test that could contradict either of them.
+
+- **The bug (found by reading, confirmed by the fix's own test):** the router barriers
+  added for the CodeQL pass sit **ahead of `authRequired`** in every router, so
+  `req.user` was always `undefined` when the key generator ran. Every caller on one
+  host therefore shared a single `…:ip:<addr>` bucket while the comments read
+  "30/min per user". Two separate users behind one NAT/office IP shared one budget; a
+  single user minting extra tokens bought nothing (the fallback keyed by IP).
+- **The fix:** `middleware/security.js` now exports `routerBarrier({ key, limit,
+message })` — one implementation replacing three copy-pasted configs — keyed by
+  `verifiedClaims(req)?.sub` (the SEC-006 signature-verified subject, the same rule
+  the global throttle uses) and falling back to the IPv6-safe `ipKeyGenerator(req.ip)`
+  key. `throttle()` was refactored onto the same `verifiedClaims()` helper, so there
+  is now one definition of "who is this caller".
+- **Red→green (EXECUTED):** the new `RL-2` case asserts that after user A exhausts its
+  bucket on a shared IP, user B's first request is still 200. The key generator was
+  temporarily reverted to the pre-fix `req.user?.id ?? ip` form and the suite was
+  re-run: **RL-2 fails** (`429 == 200` — the second user rejected by the first user's
+  bucket) and passes with the shared verified-subject key. The test catches its bug.
+- **A second wrong claim, corrected in the comments rather than defended:** `RL-3`
+  pins that the `routes.js` barrier is a **whole-`/api/v1` envelope**, not a per-router
+  budget — Express runs a mounted router's middleware _before_ route matching, so a
+  request to `/docs` (declared only in `extended.js`) is counted by the `routes.js`
+  barrier first. A one-off probe (mixed `/docs` + `/stations` requests) showed the 429
+  landing at 120 **total** `/api/v1` requests, which is what the tests now assert.
+- **New suite `apps/api/test/ratelimit.js` (7 pins, limiting ON):** tier trips with a
+  typed 429 + `Retry-After` + draft-7 headers · per-user (not per-IP) buckets · shared
+  whole-API envelope · control plane is the stricter 30/min tier and its limiter runs
+  ahead of authorization (403 until it trips) · `RATE_LIMIT_OFF` read per request, not
+  at boot · `_verifiedClaims` degrades tampered/absent tokens to the IP key · login
+  tier trips at 10/min per IP. Wired into root `npm test` and both CI jobs.
+- **Also newly covered (previously asserted nowhere):** the control-plane HTTP routes
+  (dead-letter triage + `clear-profile`/`composite-schedule` diagnostics: 422 on a bad
+  action, 404 for an unknown letter/charge point vs the typed 409 `CP_OFFLINE`, never a 500) and the observability surface (`/metrics` must be well-formed Prometheus text
+  whose gauges equal the live store and whose counter advances between scrapes;
+  `/health` + `/health/deep` must report the real engine verdict).
+- **Dead code removed (B2G-007 leftover):** `db/index.js:getStore()` was never called
+  and duplicated the boot path; deleted, and ADR-0005's seam line now names
+  `upgradeStore()`, which is what `server.js` actually awaits. Verified both boot paths
+  after the change: local boot seeds (12 users), and `ORACLE_HOST=<unreachable>` still
+  degrades to `local-fallback` with the driver's real error (`NJS-503`).
+- **Full gate (EXECUTED):** lint clean (0 problems, `--max-warnings 0`) · prettier clean
+  (`--check .`) · `npm test` green — relay **7** · api **36** (incl. the new
+  control-plane + observability contracts) · sim 2 · security **17** · ratelimit **7** ·
+  xlayer 4 · ocpp-remote 2 · gateway-close 6 · control 16 · control-aes 6 · ai 6 ·
+  twin 12 · invariants 11 local, 0 rows · drift `spec=66 routes~70` no missing paths ·
+  OpenAPI snapshot in sync. Instrumented coverage **65.66% → 69.18%** lines
+  (`observability.js` 22.6→93.5, `middleware/security.js` 67.9→93.4,
+  `control-routes.js` 56.9→71.0).
+- **DB-backed gate:** originally deferred to CI on this host (see P2V-01..03); the
+  blocker cleared later the same day and both were executed locally — see
+  **LIVE-STACK-2026-09-15** above for `STORE=oracle` 36/36, control-plane E2E 41/41 and
+  invariants 12/12 against real Oracle + Timescale.
+
 ## BUG-048 — interleaved undo truncation sparse-hole crash (EXECUTED, 2026-09-08)
 
 Observed live on the running compose stack: the worker's acks 500'd forever and

@@ -42,3 +42,12 @@ SELECT r.reservation_id AS id, 'reservation-dangling' AS src FROM reservation r
 SELECT s.session_id AS id, 'session-dangling' AS src FROM charging_session s
   LEFT JOIN connector c ON c.cp_id=s.cp_id AND c.connector_no=s.connector_no
  WHERE s.cp_id IS NOT NULL AND c.cp_id IS NULL;
+-- 12. BUG-050: a RESERVED connector must be held by a BOOKED reservation. Expiry used to
+-- flip only the reservation, leaking the hold forever (and hydrate() re-reads Oracle on
+-- boot, so the charge point stayed unbookable). Expect 0 rows:
+SELECT c.cp_id, c.connector_no, 'RESERVED without BOOKED reservation' AS why
+  FROM connector c
+ WHERE c.status = 'RESERVED'
+   AND NOT EXISTS (SELECT 1 FROM reservation r
+                    WHERE r.connector_ref = c.cp_id || ':' || c.connector_no
+                      AND r.status = 'BOOKED');
