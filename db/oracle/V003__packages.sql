@@ -6,6 +6,53 @@
 --              -208xx guards, -209xx tariffs/maintenance
 -- ============================================================================
 
+-- ======================= GUARD_PKG (V004 guard helper) ======================
+-- trg_connector_guard (V004) accepts a connector write only while CLIENT_IDENTIFIER
+-- is 'ocpp-gw' or 'pkg:<owner>' — BR-07: connector status changes go through the
+-- gateway/packages, never direct DML. That context is SESSION-scoped, so a procedure
+-- that sets it and walks away opens the guard for the entire life of a pooled
+-- connection. Measured on live Oracle 23ai: a fresh session was correctly refused
+-- with ORA-20801, but the SAME session allowed a direct `UPDATE connector` right
+-- after reservation_pkg.expire_stale had run, because its identifier was still set
+-- to 'pkg:reservation_pkg.expire_stale'. Every package-owned connector write now
+-- goes through set_status(), which opens the identity for exactly one statement and
+-- closes it on every exit path — including a raise out of the UPDATE itself.
+CREATE OR REPLACE PACKAGE guard_pkg AS
+  PROCEDURE mark(p_owner IN VARCHAR2);
+  PROCEDURE clear;
+  PROCEDURE set_status(p_owner IN VARCHAR2, p_cp IN NUMBER, p_conn IN NUMBER,
+                       p_to IN VARCHAR2, p_from IN VARCHAR2 DEFAULT NULL);
+END guard_pkg;
+/
+CREATE OR REPLACE PACKAGE BODY guard_pkg AS
+  PROCEDURE mark(p_owner IN VARCHAR2) IS
+  BEGIN
+    DBMS_SESSION.SET_IDENTIFIER('pkg:' || p_owner);
+  END;
+
+  PROCEDURE clear IS
+  BEGIN
+    DBMS_SESSION.SET_IDENTIFIER(NULL);
+  EXCEPTION WHEN OTHERS THEN NULL;  -- a failed clear must not mask the caller's error
+  END;
+
+  -- The one place a package writes connector.status. p_from implements the call
+  -- sites' "only release from this state" filters (NULL = unconditional).
+  PROCEDURE set_status(p_owner IN VARCHAR2, p_cp IN NUMBER, p_conn IN NUMBER,
+                       p_to IN VARCHAR2, p_from IN VARCHAR2 DEFAULT NULL) IS
+  BEGIN
+    mark(p_owner);
+    UPDATE connector SET status = p_to, last_state_change_at = SYSTIMESTAMP
+     WHERE cp_id = p_cp AND connector_no = p_conn
+       AND (p_from IS NULL OR status = p_from);
+    clear;
+  EXCEPTION WHEN OTHERS THEN
+    clear;   -- never leave the guard open, even if the write raised
+    RAISE;
+  END;
+END guard_pkg;
+/
+
 -- ============================ AUDIT_PKG =====================================
 CREATE OR REPLACE PACKAGE audit_pkg AUTHID DEFINER AS
   PROCEDURE log(p_actor IN NUMBER, p_entity IN VARCHAR2, p_entity_id IN VARCHAR2,
@@ -42,8 +89,6 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     v_overlap NUMBER;
     v_ref VARCHAR2(72);
   BEGIN
-    -- V004 guard: mark package-owned connector writes so trg_connector_guard allow-lists them.
-    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:reservation_pkg.create_reservation'); EXCEPTION WHEN OTHERS THEN NULL; END;
     -- BR-04: 15-120 min window, future start
     v_mins := (CAST(p_end AS DATE) - CAST(p_start AS DATE)) * 24 * 60;
     IF p_end <= p_start OR v_mins < 15 OR v_mins > 120 OR p_start < SYSTIMESTAMP - INTERVAL '1' MINUTE THEN
@@ -68,8 +113,7 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     INSERT INTO reservation (connector_ref, cp_id, connector_no, user_id, vehicle_id, start_at, end_at, status)
     VALUES (v_ref, p_cp, p_conn, p_user, p_vehicle, p_start, p_end, 'BOOKED')
     RETURNING reservation_id INTO p_res_id;
-    UPDATE connector SET status = 'RESERVED', last_state_change_at = SYSTIMESTAMP
-     WHERE cp_id = p_cp AND connector_no = p_conn;
+    guard_pkg.set_status('reservation_pkg.create_reservation', p_cp, p_conn, 'RESERVED');
     INSERT INTO outbox_event (kind, dedupe_key, payload) VALUES (
       'CONNECTOR_STATE', 'connstate:' || v_ref || ':' || p_res_id,
       JSON_OBJECT('connector_ref' VALUE v_ref, 'from' VALUE v_status,
@@ -91,8 +135,12 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     UPDATE reservation SET status = 'CANCELLED' WHERE reservation_id = p_res_id;
     v_cp := TO_NUMBER(REGEXP_SUBSTR(v_ref, '^[^:]+'));
     v_conn := TO_NUMBER(REGEXP_SUBSTR(v_ref, '[^:]+$'));
-    UPDATE connector SET status = 'AVAILABLE', last_state_change_at = SYSTIMESTAMP
-     WHERE cp_id = v_cp AND connector_no = v_conn AND status = 'RESERVED';
+    -- BUG-052: this write used to pass the guard only because of the leak above — a
+    -- reservation procedure run earlier on the same pooled connection had left
+    -- CLIENT_IDENTIFIER set. On a connection that had never run one, cancellation was
+    -- refused with ORA-20801 (reproduced on live Oracle: fresh session, this procedure,
+    -- booked reservation). It now marks explicitly, like every other package write.
+    guard_pkg.set_status('reservation_pkg.cancel_reservation', v_cp, v_conn, 'AVAILABLE', 'RESERVED');
     audit_pkg.log(p_actor, 'RESERVATION', TO_CHAR(p_res_id), 'CANCEL', v_status, 'CANCELLED');
   END;
 
@@ -105,10 +153,6 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     v_ids t_ids;
     v_refs t_refs;
   BEGIN
-    -- V004 guard: mark package-owned connector writes (create_reservation does the same).
-    -- Without it the trg_connector_guard allow-list rejects the release below on any
-    -- connection that never ran another reservation procedure.
-    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:reservation_pkg.expire_stale'); EXCEPTION WHEN OTHERS THEN NULL; END;
     OPEN c_stale; FETCH c_stale BULK COLLECT INTO v_ids, v_refs LIMIT 500; CLOSE c_stale;
     p_rows := NVL(v_ids.COUNT, 0);
     IF p_rows > 0 THEN
@@ -123,10 +167,10 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
       -- EXPIRED. Observed live: connectors 1:1, 2:1 and 9:1 stuck RESERVED with only
       -- EXPIRED/CANCELLED windows on them. INV-12 now gates it.
       FOR i IN 1..v_ids.COUNT LOOP
-        UPDATE connector SET status = 'AVAILABLE', last_state_change_at = SYSTIMESTAMP
-         WHERE cp_id = TO_NUMBER(REGEXP_SUBSTR(v_refs(i), '^[^:]+'))
-           AND connector_no = TO_NUMBER(REGEXP_SUBSTR(v_refs(i), '[^:]+$'))
-           AND status = 'RESERVED';
+        guard_pkg.set_status('reservation_pkg.expire_stale',
+          TO_NUMBER(REGEXP_SUBSTR(v_refs(i), '^[^:]+')),
+          TO_NUMBER(REGEXP_SUBSTR(v_refs(i), '[^:]+$')),
+          'AVAILABLE', 'RESERVED');
       END LOOP;
       COMMIT;
     END IF;
@@ -158,14 +202,15 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
     v_cp NUMBER := TO_NUMBER(REGEXP_SUBSTR(p_ref, '^[^:]+'));
     v_conn NUMBER := TO_NUMBER(REGEXP_SUBSTR(p_ref, '[^:]+$'));
   BEGIN
-    UPDATE connector SET status = p_to, last_state_change_at = SYSTIMESTAMP
-     WHERE cp_id = v_cp AND connector_no = v_conn;
+    -- The single choke point for every charge_session_pkg connector write, so the guard
+    -- identity is opened and closed around exactly one statement here instead of being
+    -- left set for the life of the session by transition()/start_session().
+    guard_pkg.set_status('charge_session_pkg.set_connector', v_cp, v_conn, p_to);
   END;
 
   PROCEDURE transition(p_session IN NUMBER, p_to IN VARCHAR2, p_reason IN VARCHAR2 DEFAULT NULL) IS
     v_from VARCHAR2(16); v_ref VARCHAR2(72); v_end NUMBER;
   BEGIN
-    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:charge_session_pkg.transition'); EXCEPTION WHEN OTHERS THEN NULL; END;
     SELECT state, connector_ref INTO v_from, v_ref FROM charging_session
      WHERE session_id = p_session FOR UPDATE;
     IF NOT is_legal(v_from, p_to) THEN
@@ -189,7 +234,6 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
     v_cstat VARCHAR2(16);
     v_ruser NUMBER; v_rref VARCHAR2(72); v_rstat VARCHAR2(16);
   BEGIN
-    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:charge_session_pkg.start_session'); EXCEPTION WHEN OTHERS THEN NULL; END;
     SELECT status INTO v_cstat FROM connector WHERE cp_id = p_cp AND connector_no = p_conn FOR UPDATE;
     IF v_cstat NOT IN ('AVAILABLE','RESERVED') THEN
       RAISE_APPLICATION_ERROR(-20502, 'NOT_BOOKABLE: connector ' || v_ref || ' is ' || v_cstat);
@@ -397,10 +441,7 @@ CREATE OR REPLACE PACKAGE BODY maintenance_pkg AS
       DECLARE v_cp NUMBER := TO_NUMBER(REGEXP_SUBSTR(p_ref, '^[^:]+'));
               v_cn NUMBER := TO_NUMBER(REGEXP_SUBSTR(p_ref, '[^:]+$'));
       BEGIN
-        -- V004 guard: package-owned connector writes need the pkg: identifier.
-        BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:maintenance_pkg.report_fault'); EXCEPTION WHEN OTHERS THEN NULL; END;
-        UPDATE connector SET status='FAULTED', last_state_change_at=SYSTIMESTAMP
-         WHERE cp_id=v_cp AND connector_no=v_cn;
+        guard_pkg.set_status('maintenance_pkg.report_fault', v_cp, v_cn, 'FAULTED');
       EXCEPTION WHEN NO_DATA_FOUND THEN NULL; WHEN DUP_VAL_ON_INDEX THEN NULL; END;
     END IF;
     audit_pkg.log(p_by, 'FAULT', TO_CHAR(p_fault), 'REPORT', NULL, p_code);
@@ -415,10 +456,7 @@ CREATE OR REPLACE PACKAGE BODY maintenance_pkg AS
       DECLARE v_cp NUMBER := TO_NUMBER(REGEXP_SUBSTR(v_ref, '^[^:]+'));
               v_cn NUMBER := TO_NUMBER(REGEXP_SUBSTR(v_ref, '[^:]+$'));
       BEGIN
-        -- V004 guard: package-owned connector writes need the pkg: identifier.
-        BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:maintenance_pkg.resolve_maintenance'); EXCEPTION WHEN OTHERS THEN NULL; END;
-        UPDATE connector SET status='AVAILABLE', last_state_change_at=SYSTIMESTAMP
-         WHERE cp_id=v_cp AND connector_no=v_cn AND status='FAULTED';
+        guard_pkg.set_status('maintenance_pkg.resolve_maintenance', v_cp, v_cn, 'AVAILABLE', 'FAULTED');
       EXCEPTION WHEN NO_DATA_FOUND THEN NULL; WHEN DUP_VAL_ON_INDEX THEN NULL; END;
     END IF;
     audit_pkg.log(NULL, 'MAINTENANCE_RECORD', TO_CHAR(p_record), 'RESOLVE', NULL, p_resolution);

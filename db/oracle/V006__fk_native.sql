@@ -4,6 +4,14 @@
 -- connector_ref stays as a package-computed display handle; the V005 sync
 -- triggers are retired; D-02 tariff minute modeling lands as VIRTUAL columns.
 -- Idempotent-ish: every DDL/DROP tolerates re-runs (fresh volumes + migrate.sh).
+--
+-- NOTE: sections 1 and 2 below are FULL package-body replacements, so they — not V003 —
+-- are the final definition of reservation_pkg and charge_session_pkg on a fresh
+-- migration. Any later change to those bodies must land in BOTH files; keeping them in
+-- step by hand already failed once (BUG-053: this file silently reverted V003's
+-- expiry-hold release, so a freshly migrated database had the unbookable-charger
+-- defect back). The behavioural probes in test/sql/run-invariants.js assert the
+-- end state, so a divergence like that fails the gate instead of shipping.
 -- Run: sql volthub/<pwd>@localhost/freepdb1 @V006__fk_native.sql
 -- ============================================================================
 
@@ -33,8 +41,6 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     v_overlap NUMBER;
     v_ref VARCHAR2(72);
   BEGIN
-    -- V004 guard: mark package-owned connector writes so trg_connector_guard allow-lists them.
-    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:reservation_pkg.create_reservation'); EXCEPTION WHEN OTHERS THEN NULL; END;
     -- BR-04: 15-120 min window, future start
     v_mins := (CAST(p_end AS DATE) - CAST(p_start AS DATE)) * 24 * 60;
     IF p_end <= p_start OR v_mins < 15 OR v_mins > 120 OR p_start < SYSTIMESTAMP - INTERVAL '1' MINUTE THEN
@@ -59,8 +65,7 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     INSERT INTO reservation (connector_ref, cp_id, connector_no, user_id, vehicle_id, start_at, end_at, status)
     VALUES (v_ref, p_cp, p_conn, p_user, p_vehicle, p_start, p_end, 'BOOKED')
     RETURNING reservation_id INTO p_res_id;
-    UPDATE connector SET status = 'RESERVED', last_state_change_at = SYSTIMESTAMP
-     WHERE cp_id = p_cp AND connector_no = p_conn;
+    guard_pkg.set_status('reservation_pkg.create_reservation', p_cp, p_conn, 'RESERVED');
     INSERT INTO outbox_event (kind, dedupe_key, payload) VALUES (
       'CONNECTOR_STATE', 'connstate:' || v_ref || ':' || p_res_id,
       JSON_OBJECT('connector_ref' VALUE v_ref, 'from' VALUE v_status,
@@ -82,23 +87,37 @@ CREATE OR REPLACE PACKAGE BODY reservation_pkg AS
     UPDATE reservation SET status = 'CANCELLED' WHERE reservation_id = p_res_id;
     v_cp := TO_NUMBER(REGEXP_SUBSTR(v_ref, '^[^:]+'));
     v_conn := TO_NUMBER(REGEXP_SUBSTR(v_ref, '[^:]+$'));
-    UPDATE connector SET status = 'AVAILABLE', last_state_change_at = SYSTIMESTAMP
-     WHERE cp_id = v_cp AND connector_no = v_conn AND status = 'RESERVED';
+    -- BUG-052: marks explicitly; the guard identity is session-scoped and is never left
+    -- set by another procedure (see guard_pkg in V003).
+    guard_pkg.set_status('reservation_pkg.cancel_reservation', v_cp, v_conn, 'AVAILABLE', 'RESERVED');
     audit_pkg.log(p_actor, 'RESERVATION', TO_CHAR(p_res_id), 'CANCEL', v_status, 'CANCELLED');
   END;
 
   PROCEDURE expire_stale(p_rows OUT NUMBER) IS
-    CURSOR c_stale IS SELECT reservation_id FROM reservation
+    CURSOR c_stale IS SELECT reservation_id, connector_ref FROM reservation
       WHERE status = 'BOOKED' AND start_at < SYSTIMESTAMP - INTERVAL '15' MINUTE
       FOR UPDATE SKIP LOCKED;
     TYPE t_ids IS TABLE OF NUMBER;
+    TYPE t_refs IS TABLE OF VARCHAR2(72);
     v_ids t_ids;
+    v_refs t_refs;
   BEGIN
-    OPEN c_stale; FETCH c_stale BULK COLLECT INTO v_ids LIMIT 500; CLOSE c_stale;
+    OPEN c_stale; FETCH c_stale BULK COLLECT INTO v_ids, v_refs LIMIT 500; CLOSE c_stale;
     p_rows := NVL(v_ids.COUNT, 0);
     IF p_rows > 0 THEN
       FORALL i IN 1..v_ids.COUNT
         UPDATE reservation SET status = 'EXPIRED' WHERE reservation_id = v_ids(i);
+      -- BUG-053: this release was missing here, so V006's whole-body replacement undid
+      -- BUG-050 on every fresh migration and the charge point stayed unbookable forever
+      -- (reproduced on live Oracle: after V006, expire_stale left the connector RESERVED
+      -- with only an EXPIRED window on it). The release must live in BOTH bodies; the
+      -- expiry probe in test/sql/run-invariants.js fails if either copy loses it.
+      FOR i IN 1..v_ids.COUNT LOOP
+        guard_pkg.set_status('reservation_pkg.expire_stale',
+          TO_NUMBER(REGEXP_SUBSTR(v_refs(i), '^[^:]+')),
+          TO_NUMBER(REGEXP_SUBSTR(v_refs(i), '[^:]+$')),
+          'AVAILABLE', 'RESERVED');
+      END LOOP;
       COMMIT;
     END IF;
   END;
@@ -122,14 +141,14 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
     v_cp NUMBER := TO_NUMBER(REGEXP_SUBSTR(p_ref, '^[^:]+'));
     v_conn NUMBER := TO_NUMBER(REGEXP_SUBSTR(p_ref, '[^:]+$'));
   BEGIN
-    UPDATE connector SET status = p_to, last_state_change_at = SYSTIMESTAMP
-     WHERE cp_id = v_cp AND connector_no = v_conn;
+    -- Single choke point for charge_session_pkg connector writes (see guard_pkg, V003):
+    -- the guard identity is opened and closed around this one statement.
+    guard_pkg.set_status('charge_session_pkg.set_connector', v_cp, v_conn, p_to);
   END;
 
   PROCEDURE transition(p_session IN NUMBER, p_to IN VARCHAR2, p_reason IN VARCHAR2 DEFAULT NULL) IS
     v_from VARCHAR2(16); v_ref VARCHAR2(72); v_end NUMBER;
   BEGIN
-    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:charge_session_pkg.transition'); EXCEPTION WHEN OTHERS THEN NULL; END;
     SELECT state, connector_ref INTO v_from, v_ref FROM charging_session
      WHERE session_id = p_session FOR UPDATE;
     IF NOT is_legal(v_from, p_to) THEN
@@ -153,7 +172,6 @@ CREATE OR REPLACE PACKAGE BODY charge_session_pkg AS
     v_cstat VARCHAR2(16);
     v_ruser NUMBER; v_rref VARCHAR2(72); v_rstat VARCHAR2(16);
   BEGIN
-    BEGIN DBMS_SESSION.SET_IDENTIFIER('pkg:charge_session_pkg.start_session'); EXCEPTION WHEN OTHERS THEN NULL; END;
     SELECT status INTO v_cstat FROM connector WHERE cp_id = p_cp AND connector_no = p_conn FOR UPDATE;
     IF v_cstat NOT IN ('AVAILABLE','RESERVED') THEN
       RAISE_APPLICATION_ERROR(-20502, 'NOT_BOOKABLE: connector ' || v_ref || ' is ' || v_cstat);

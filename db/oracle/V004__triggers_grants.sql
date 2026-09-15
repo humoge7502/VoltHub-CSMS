@@ -16,8 +16,13 @@ END;
 /
 
 -- BR-07: connector status only via gateway/packages. API role cannot UPDATE.
--- Gateway sets CLIENT_IDENTIFIER='ocpp-gw'; packages run as definer and set 'pkg:<proc>'.
+-- Gateway sets CLIENT_IDENTIFIER='ocpp-gw'; packages set 'pkg:<owner>' for the duration
+-- of one write through guard_pkg.set_status (V003) and then clear it.
 -- BUG-003 fix: allow-list (was: NULL identifier silently passed + only 'api:%' rejected).
+-- BUG-052: the identity must NOT outlive its statement. It is session-scoped, so a
+-- package that left it set opened this guard for the whole life of a pooled connection:
+-- measured on live Oracle, a fresh session was refused (ORA-20801) while the same
+-- session allowed a direct UPDATE immediately after a reservation procedure ran.
 CREATE OR REPLACE TRIGGER trg_connector_guard
 BEFORE UPDATE OF status ON connector FOR EACH ROW
 DECLARE v_ci VARCHAR2(64);
