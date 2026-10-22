@@ -66,10 +66,17 @@ async function main() {
   assert.ok(pc.includes(201) && pc.filter((x) => x === 409 || x === 402).length >= 1, `R4 needs 1 winner, got ${pc}`);
   console.log('R4-OK: invoice lock prevents double-pay');
   console.log('\nRace tests: 2 passed (R1 double-reserve, R4 double-pay)');
+  // STORE=oracle: the oracledb pool keeps the event loop alive, so closing the HTTP
+  // server alone let CI sit on "2 passed" forever. Close the pool too, then let Node
+  // drain naturally — a forced exit() here races libuv on Windows (UV_HANDLE_CLOSING).
+  server.closeAllConnections?.();
   await new Promise((res) => server.close(res));
+  try {
+    await store._oracle?.pool?.close(0);
+  } catch {}
   process.exitCode = 0;
 }
 main().catch((e) => {
   console.error('RACE FAIL', e.message);
-  process.exitCode = 1;
+  process.exit(1);
 });
