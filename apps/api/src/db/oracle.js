@@ -50,11 +50,18 @@ async function hydrate(local, pool) {
   const c = await pool.getConnection();
   const stats = {};
   try {
-    const q = async (sql, map, fn) => {
+    // Hydration is idempotent per table. Maps keyed by id naturally overwrite, but
+    // array projections (bands/readings/audit/lines/...) used to append on every
+    // boot: restarting the API duplicated every row into memory. `reset` runs before
+    // the first hydrated row, and only when the table actually returned rows, so an
+    // empty/unmigrated DB still falls back to the local seed.
+    const q = async (sql, map, fn, reset) => {
       try {
         const r = await c.execute(sql, [], { outFormat: driver().OUT_FORMAT_OBJECT });
-        (r.rows || []).forEach((row) => fn(row));
-        stats[map] = (r.rows || []).length;
+        const rows = r.rows || [];
+        if (reset && rows.length) reset();
+        rows.forEach((row) => fn(row));
+        stats[map] = rows.length;
       } catch (e) {
         stats[map] = `skip:${e.message.slice(0, 60)}`;
       }
@@ -131,36 +138,47 @@ async function hydrate(local, pool) {
         last_state_change_at: new Date().toISOString(),
       });
     });
-    await q('SELECT plan_id, group_id, version_no, name, currency, session_fee FROM tariff_plan', 'plans', (r) => {
-      local.plans.set(Number(r.PLAN_ID), {
-        plan_id: Number(r.PLAN_ID),
-        group_id: Number(r.GROUP_ID),
-        version_no: Number(r.VERSION_NO),
-        name: r.NAME,
-        currency: r.CURRENCY,
-        session_fee: Number(r.SESSION_FEE),
-        idle_fee_per_30min: 0,
-        active_from: '',
-        active_to: null,
-        supersedes_plan_id: null,
-        created_by: null,
-        created_at: '',
-      });
-      local.seq.plan = Math.max(local.seq.plan, Number(r.PLAN_ID));
-    });
+    await q(
+      `SELECT plan_id, group_id, version_no, name, currency, session_fee, idle_fee_per_30min,
+              active_from, active_to, supersedes_plan_id, created_by,
+              TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') c FROM tariff_plan`,
+      'plans',
+      (r) => {
+        local.plans.set(Number(r.PLAN_ID), {
+          plan_id: Number(r.PLAN_ID),
+          group_id: Number(r.GROUP_ID),
+          version_no: Number(r.VERSION_NO),
+          name: r.NAME,
+          currency: r.CURRENCY,
+          session_fee: Number(r.SESSION_FEE),
+          idle_fee_per_30min: Number(r.IDLE_FEE_PER_30MIN || 0),
+          active_from: r.ACTIVE_FROM ? new Date(r.ACTIVE_FROM).toISOString() : '',
+          active_to: r.ACTIVE_TO ? new Date(r.ACTIVE_TO).toISOString() : null,
+          supersedes_plan_id: r.SUPERSEDES_PLAN_ID != null ? Number(r.SUPERSEDES_PLAN_ID) : null,
+          created_by: r.CREATED_BY != null ? Number(r.CREATED_BY) : null,
+          created_at: r.C || '',
+        });
+        local.seq.plan = Math.max(local.seq.plan, Number(r.PLAN_ID));
+      }
+    );
     await q(
       "SELECT band_id, plan_id, day_scope, TO_CHAR(start_time, 'HH24:MI') s, TO_CHAR(end_time, 'HH24:MI') e, price_per_kwh FROM tariff_band",
       'bands',
       (r) => {
+        // Oracle stores a next-midnight close as 00:00; expose it as 24:00 so the
+        // hydrated cache matches the JS seed and never loses the last minute.
         local.bands.push({
           band_id: Number(r.BAND_ID),
           plan_id: Number(r.PLAN_ID),
           day_scope: r.DAY_SCOPE,
           start_time: r.S,
-          end_time: r.E,
+          end_time: r.E === '00:00' ? '24:00' : r.E,
           price_per_kwh: Number(r.PRICE_PER_KWH),
         });
         local.seq.band = Math.max(local.seq.band, Number(r.BAND_ID));
+      },
+      () => {
+        local.bands.length = 0;
       }
     );
     // B2G-005: hydrate the transactional world (reservations → sessions → invoices → ledger).
@@ -216,6 +234,9 @@ async function hydrate(local, pool) {
           created_at: r.C || '',
         });
         local.seq.audit = Math.max(local.seq.audit, Number(r.AUDIT_ID));
+      },
+      () => {
+        local.audit.length = 0;
       }
     );
     await q(
@@ -351,6 +372,12 @@ async function hydrate(local, pool) {
           voltage_v: r.VOLTAGE_V != null ? Number(r.VOLTAGE_V) : null,
           current_a: r.CURRENT_A != null ? Number(r.CURRENT_A) : null,
         });
+      },
+      () => {
+        local.readings.length = 0;
+        local.ticks.length = 0;
+        local._seqSeen.clear();
+        local._maxMeter.clear();
       }
     );
     await q('SELECT invoice_id, session_id, tariff_plan_id, status, total FROM invoice', 'invoices', (r) => {
@@ -380,6 +407,9 @@ async function hydrate(local, pool) {
           unit_price: r.UNIT_PRICE != null ? Number(r.UNIT_PRICE) : null,
           amount: Number(r.AMOUNT),
         });
+      },
+      () => {
+        local.lines.length = 0;
       }
     );
     await q('SELECT payment_id, invoice_id, amount, method, status, reference FROM payment', 'payments', (r) => {
@@ -409,6 +439,9 @@ async function hydrate(local, pool) {
           note: r.NOTE,
           created_at: new Date().toISOString(),
         });
+      },
+      () => {
+        local.ledgers.length = 0;
       }
     );
     await q(
@@ -442,6 +475,8 @@ async function hydrate(local, pool) {
         created_at: new Date().toISOString(),
       });
       local.seq.notif = Math.max(local.seq.notif, Number(r.NOTIFICATION_ID));
+    }, () => {
+      local.notifs.length = 0;
     });
     await q(
       'SELECT vehicle_id, user_id, nickname, make, model, battery_kwh, is_default FROM vehicle',
@@ -476,6 +511,8 @@ async function hydrate(local, pool) {
         processed_at: r.PROCESSED_AT ? new Date(r.PROCESSED_AT).toISOString() : null,
       });
       local.seq.outbox = Math.max(local.seq.outbox, id);
+    }, () => {
+      local.outbox.length = 0;
     });
     await q('SELECT key_value, status_code, response_body FROM idempotency_key', 'idem', (r) => {
       try {
@@ -727,6 +764,91 @@ function wrapWithOracle(local, pool) {
         local.users.delete(u.user_id);
         if (walletCreated) local.wallets.delete(u.user_id);
         local.audit = local.audit.filter((a) => !(a.entity_name === 'APP_USER' && a.entity_id === String(u.user_id)));
+      }
+      throw fromMirrorInsertError(e);
+    }
+  };
+
+  // Admin user suspension is auth state: mirror it or a restart silently reinstates
+  // a suspended account. 0 rows means the local row never reached Oracle; fail the
+  // call and undo the local status instead of reporting a fake success.
+  const origSetUserStatus = local.setUserStatus.bind(local);
+  local.setUserStatus = async (uid, status, actor) => {
+    const out = await origSetUserStatus(uid, status, actor);
+    try {
+      await withConnSync(async () => {
+        const r = await connExec('UPDATE app_user SET status = :st WHERE user_id = :id', {
+          st: status,
+          id: Number(uid),
+        });
+        if (r.rowsAffected !== 1) throw new Error(`app_user ${uid} not found in Oracle`);
+        await mirrorConn.commit();
+      });
+      return out;
+    } catch (e) {
+      out.user.status = out.prev;
+      throw fromMirrorInsertError(e);
+    }
+  };
+
+  // Tariff versions are money-path definitions: the plan, the supersede edge and
+  // every band must commit together with the local write. Bands accept 24:00 in the
+  // app model; Oracle TIMESTAMP cannot, so bind it as the next midnight.
+  const origCreateTariffVersion = local.createTariffVersion.bind(local);
+  local.createTariffVersion = async (args) => {
+    const out = await origCreateTariffVersion(args);
+    const { plan, bands, previousPlanId, previousActiveTo } = out;
+    const at = new Date(plan.active_from);
+    const atSql = (t) => (t === '24:00' ? '1970-01-02 00:00' : `1970-01-01 ${t}`);
+    try {
+      await withConnSync(async () => {
+        if (previousPlanId != null) {
+          const r = await connExec(
+            `UPDATE tariff_plan SET active_to = :active_to WHERE plan_id = :id AND active_to IS NULL`,
+            { active_to: at, id: previousPlanId }
+          );
+          if (r.rowsAffected !== 1) throw new Error(`previous tariff plan ${previousPlanId} not open in Oracle`);
+        }
+        await connExec(
+          `INSERT INTO tariff_plan (plan_id, group_id, version_no, name, currency, session_fee,
+             idle_fee_per_30min, active_from, active_to, supersedes_plan_id, created_by, created_at)
+           VALUES (:id, :gid, :ver, :name, :currency, :fee, 0, :active_at, NULL, :prev, :creator, SYSTIMESTAMP)`,
+          {
+            id: plan.plan_id,
+            gid: plan.group_id,
+            ver: plan.version_no,
+            name: plan.name,
+            currency: plan.currency,
+            fee: plan.session_fee,
+            active_at: at,
+            prev: previousPlanId,
+            creator: plan.created_by == null ? null : Number(plan.created_by),
+          }
+        );
+        for (const b of bands) {
+          await connExec(
+            `INSERT INTO tariff_band (band_id, plan_id, day_scope, start_time, end_time, price_per_kwh)
+             VALUES (:id, :pid, :scope, TO_TIMESTAMP(:start_ts, 'YYYY-MM-DD HH24:MI'),
+                     TO_TIMESTAMP(:end_ts, 'YYYY-MM-DD HH24:MI'), :price)`,
+            {
+              id: b.band_id,
+              pid: plan.plan_id,
+              scope: b.day_scope,
+              start_ts: atSql(b.start_time),
+              end_ts: atSql(b.end_time),
+              price: b.price_per_kwh,
+            }
+          );
+        }
+        await mirrorConn.commit();
+      });
+      return out;
+    } catch (e) {
+      local.plans.delete(plan.plan_id);
+      local.bands = local.bands.filter((b) => b.plan_id !== plan.plan_id);
+      if (previousPlanId != null) {
+        const prev = local.plans.get(previousPlanId);
+        if (prev) prev.active_to = previousActiveTo;
       }
       throw fromMirrorInsertError(e);
     }
@@ -1198,15 +1320,29 @@ function wrapWithOracle(local, pool) {
 // straight write-through. Failure raises through fromMirrorInsertError so callers
 // see the ORA band, never a silent divergence.
 function wrapControl(local, pool) {
-  const withConn = async (fn) => {
-    const c = await pool.getConnection();
-    try {
-      return await fn(c);
-    } finally {
+  // ADR-0010 mirrors share one durable ordering. Each control write is local-first
+  // (fire-and-forget), but the mirrors themselves must land in the same order as the
+  // local writes: a child grid asset can reference a parent whose INSERT is still in
+  // flight, and the Oracle monotonicity trigger then sees ORA-01403 "no data found".
+  // A promise-chain queue gives every mirror exclusive, ordered access (the same
+  // pattern BUG-042 uses for the money path).
+  let controlChain = Promise.resolve();
+  const withConn = (fn) => {
+    const run = controlChain.then(async () => {
+      const c = await pool.getConnection();
       try {
-        await c.close();
-      } catch {}
-    }
+        return await fn(c);
+      } finally {
+        try {
+          await c.close();
+        } catch {}
+      }
+    });
+    controlChain = run.then(
+      () => {},
+      () => {}
+    );
+    return run;
   };
 
   // Mirror failures were swallowed whole (`.catch(() => {})`), so a diverging control

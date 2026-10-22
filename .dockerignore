@@ -1,0 +1,16 @@
+# Build context hygiene: host dependency trees are platform-specific and must
+# never overwrite the image's own install. Without this, a Windows checkout
+# copied apps/web/node_modules (win32 swc/sharp binaries) into the Linux web
+# image and `next build` failed with a Next/SWC version mismatch.
+**/node_modules
+**/.next
+**/__pycache__
+**/.pytest_cache
+**/*.log
+.git
+.vscode
+.env
+.env.*
+qa-shot.js
+repro-bill.js
+apps/api/test/repro-race.js

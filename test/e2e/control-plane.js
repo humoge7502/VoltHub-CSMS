@@ -382,9 +382,9 @@ async function main() {
   ok('control mode returned to ADVISORY', off.status === 200 && off.j.mode === 'ADVISORY');
 
   console.log(`\nControl-plane E2E: ${pass} steps passed against ${BASE}`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 main().catch((e) => {
   console.error(`CONTROL-PLANE-E2E FAIL: ${e.message}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

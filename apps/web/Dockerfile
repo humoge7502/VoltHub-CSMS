@@ -1,7 +1,7 @@
 FROM node:22-slim
 WORKDIR /srv/web
 COPY apps/web/package.json apps/web/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 COPY apps/web ./
 # NEXT_PUBLIC_* values are INLINED into the browser bundle at build time (next.config.js
 # maps them through `env`), so they must be build args — setting them only in the

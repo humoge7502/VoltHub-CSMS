@@ -269,7 +269,7 @@ function seedStore(s, profile = 'demo') {
       plan_id: p,
       day_scope: 'ALL',
       start_time: '22:00',
-      end_time: '23:59',
+      end_time: '24:00',
       price_per_kwh: day,
     });
   });

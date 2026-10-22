@@ -66,10 +66,10 @@ async function main() {
   assert.ok(pc.includes(201) && pc.filter((x) => x === 409 || x === 402).length >= 1, `R4 needs 1 winner, got ${pc}`);
   console.log('R4-OK: invoice lock prevents double-pay');
   console.log('\nRace tests: 2 passed (R1 double-reserve, R4 double-pay)');
-  server.close();
-  process.exit(0);
+  await new Promise((res) => server.close(res));
+  process.exitCode = 0;
 }
 main().catch((e) => {
   console.error('RACE FAIL', e.message);
-  process.exit(1);
+  process.exitCode = 1;
 });

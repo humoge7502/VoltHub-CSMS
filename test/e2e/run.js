@@ -129,16 +129,16 @@ async function main() {
         group_id: 1,
         name: 'E2E vX',
         session_fee: 20,
-        bands: [{ day_scope: 'ALL', start_time: '00:00', end_time: '23:59', price_per_kwh: 23 }],
+        bands: [{ day_scope: 'ALL', start_time: '00:00', end_time: '24:00', price_per_kwh: 23 }],
       }),
     });
     assert.equal(v.status, 201);
   });
   console.log(`\nE2E: ${n} steps passed (register→reserve→charge→pay→review→triage→tariff)`);
-  server.close();
-  process.exit(0);
+  await new Promise((res) => server.close(res));
+  process.exitCode = 0;
 }
 main().catch((e) => {
   console.error('E2E FAIL', e);
-  process.exit(1);
+  process.exitCode = 1;
 });

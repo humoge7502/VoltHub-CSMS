@@ -274,13 +274,23 @@ async function main() {
     console.log(`[sim] provisioned ${cps.length} charge points on station ${sid}`);
   } else {
     // resolve per-connector OCPP identities via live feed (identity lives on charge point)
+    // Only AVAILABLE connectors are safe to drive: starting a scripted flow on an
+    // occupied/reserved connector makes StartTransaction a CALLERROR and the run die.
     for (const s of stations) {
       try {
         const { connectors } = await api(`/stations/${s.station_id}/connectors/live`);
-        connectors.forEach((c) => cps.push({ ...c, station_id: s.station_id }));
+        connectors
+          .filter((c) => c.status === 'AVAILABLE')
+          .forEach((c) => cps.push({ ...c, station_id: s.station_id }));
       } catch {}
     }
   }
+  if (!cps.length) {
+    console.error('[sim] no AVAILABLE connectors found — free one or run with --provision');
+    process.exit(2);
+  }
+  if (!args.provision && N > cps.length && SCENARIO !== 'burst')
+    console.log(`[sim] requested ${N} charger(s) but only ${cps.length} connector(s) are AVAILABLE`);
   if (SCENARIO === 'race') {
     // R1: two parallel reserves, same connector+window -> exactly 1x201 + 1x409
     const c = cps[0];

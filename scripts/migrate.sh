@@ -13,7 +13,10 @@ run_oracle_file() {
   echo "-- apply $f"
   if command -v sqlplus >/dev/null 2>&1; then
     HAD_ORACLE_CLIENT=1
-    sqlplus -S "${ORACLE_USER}/${ORACLE_PASSWORD}@${ORACLE_HOST}/${ORACLE_SERVICE}" @"$f"
+    # WHENEVER SQLERROR is required: without it sqlplus exits 0 after a failed
+    # CREATE TABLE, and the "fails loudly" gate below would be theater.
+    { echo 'WHENEVER SQLERROR EXIT SQL.SQLCODE'; cat "$f"; } |
+      sqlplus -S "${ORACLE_USER}/${ORACLE_PASSWORD}@${ORACLE_HOST}/${ORACLE_SERVICE}"
   elif command -v docker >/dev/null 2>&1; then
     HAD_ORACLE_CLIENT=1
     # Find the RUNNING Oracle container (compose name or CI service container by image).
@@ -26,7 +29,8 @@ run_oracle_file() {
     fi
     if [ -n "$cname" ]; then
       echo "   (sqlplus via docker exec ${cname})"
-      docker exec -i "$cname" sqlplus -S "${ORACLE_USER}/${ORACLE_PASSWORD}@localhost/${ORACLE_SERVICE}" < "$f"
+      { echo 'WHENEVER SQLERROR EXIT SQL.SQLCODE'; cat "$f"; } |
+        docker exec -i "$cname" sqlplus -S "${ORACLE_USER}/${ORACLE_PASSWORD}@localhost/${ORACLE_SERVICE}"
     else
       echo "   (no running Oracle container found — skipping; API runs on the local store)"
       return 1

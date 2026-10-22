@@ -6,3 +6,7 @@ infra/grafana/dashboards/*.json linguist-generated=true
 bench/results-local.json linguist-generated=true
 docs/VoltHub-CSMS-Engineering-Masterplan.pdf -linguist-detectable
 *.mmd linguist-language=Mermaid
+# Shell scripts must be LF: a CRLF checkout makes `set -o pipefail` fail under bash.
+*.sh text eol=lf
+# The OpenAPI snapshot is compared byte-for-byte by scripts/gen-openapi.js --check.
+docs/openapi.json text eol=lf

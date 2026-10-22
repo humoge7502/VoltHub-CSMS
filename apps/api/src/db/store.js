@@ -281,11 +281,14 @@ function createStore() {
   // storm must not block the event loop (same receipt as the login path). Await at
   // the route layer; the Oracle mirror wrapper is already promise-shaped.
   s.createUser = async ({ email, password, full_name, role = 'DRIVER', phone }) => {
-    for (const u of s.users.values()) if (u.email === email) throw err('DUPLICATE_EMAIL', 'email taken', 409);
+    // Email is an identity, not a display string: normalize once so Admin@x and
+    // admin@x cannot become two accounts (and so login is case-insensitive).
+    const normEmail = String(email || '').trim().toLowerCase();
+    for (const u of s.users.values()) if (String(u.email).toLowerCase() === normEmail) throw err('DUPLICATE_EMAIL', 'email taken', 409);
     const user_id = ++s.seq.user;
     const u = {
       user_id,
-      email,
+      email: normEmail,
       password_hash: await hashPasswordAsync(password),
       full_name,
       phone: phone || null,
@@ -297,8 +300,89 @@ function createStore() {
     if (role === 'DRIVER' && !s.wallets.has(user_id)) {
       s.wallets.set(user_id, { user_id, balance: 0, currency: 'INR', updated_at: new Date().toISOString() });
     }
-    s.auditLog(null, 'APP_USER', user_id, 'CREATE', null, { email, role });
+    s.auditLog(null, 'APP_USER', user_id, 'CREATE', null, { email: normEmail, role });
     return u;
+  };
+  // Admin suspend/reactivate. Kept as a store method (not an inline route mutation)
+  // so the Oracle adapter can mirror it: a suspension that only lived in the local
+  // cache would silently disappear on the next restart.
+  s.setUserStatus = async (uid, status, actor) => {
+    const u = s.users.get(Number(uid));
+    if (!u) throw err('NOT_FOUND', 'user', 404);
+    if (!['ACTIVE', 'SUSPENDED'].includes(status))
+      throw err('INVALID_STATUS', 'status must be ACTIVE|SUSPENDED', 422);
+    const prev = u.status;
+    u.status = status;
+    s.auditLog(actor, 'APP_USER', u.user_id, 'UPDATE', prev, status);
+    return { user: u, prev };
+  };
+  // Tariff versions are the money-path definition. The route used to mutate the
+  // maps directly, which meant a new version existed only in the local cache (and
+  // vanished on restart) while Oracle — the claimed durable engine — never saw it.
+  // One method, one write path: the Oracle adapter mirrors plan + bands atomically.
+  s.createTariffVersion = async ({ groupId, name, sessionFee, bands, actor }) => {
+    const group_id = Number(groupId || 1);
+    if (!Number.isInteger(group_id) || group_id < 1) throw err('INVALID_GROUP', 'group_id must be a positive integer', 422);
+    const fee = Number(sessionFee || 0);
+    if (!(fee >= 0)) throw err('INVALID_FEE', 'session_fee must be >= 0', 422);
+    const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    const endRe = /^(24:00|([01]\d|2[0-3]):([0-5]\d))$/;
+    const toMin = (t, end) => {
+      if (end && t === '24:00') return 1440;
+      const [h, m] = String(t).split(':').map(Number);
+      return h * 60 + m;
+    };
+    const input =
+      Array.isArray(bands) && bands.length
+        ? bands
+        : [{ day_scope: 'ALL', start_time: '00:00', end_time: '24:00', price_per_kwh: 22 }];
+    const seen = new Set();
+    const clean = input.map((b) => {
+      const day_scope = String(b.day_scope || 'ALL').toUpperCase();
+      if (!['ALL', 'WEEKDAY', 'WEEKEND'].includes(day_scope))
+        throw err('INVALID_BAND', 'day_scope must be ALL|WEEKDAY|WEEKEND', 422);
+      const start_time = String(b.start_time || '');
+      const end_time = String(b.end_time || '');
+      if (!timeRe.test(start_time)) throw err('INVALID_BAND', `invalid start_time ${start_time}`, 422);
+      if (!endRe.test(end_time)) throw err('INVALID_BAND', `invalid end_time ${end_time}`, 422);
+      if (toMin(end_time, true) <= toMin(start_time, false))
+        throw err('INVALID_BAND', 'end_time must be after start_time', 422);
+      const price_per_kwh = Number(b.price_per_kwh);
+      if (!(price_per_kwh > 0)) throw err('INVALID_BAND', 'price_per_kwh must be > 0', 422);
+      const slot = `${day_scope}:${start_time}`;
+      if (seen.has(slot)) throw err('INVALID_BAND', `duplicate band slot ${slot}`, 422);
+      seen.add(slot);
+      return { day_scope, start_time, end_time, price_per_kwh };
+    });
+
+    const vers = [...s.plans.values()].filter((p) => p.group_id === group_id);
+    const max = vers.reduce((m, p) => Math.max(m, p.version_no), 0);
+    const prev = vers.find((p) => p.version_no === max);
+    const previousActiveTo = prev ? prev.active_to : null;
+    const plan_id = ++s.seq.plan;
+    const plan = {
+      plan_id,
+      group_id,
+      version_no: max + 1,
+      name: String(name || `Plan v${max + 1}`).slice(0, 120),
+      currency: 'INR',
+      session_fee: fee,
+      idle_fee_per_30min: 0,
+      active_from: new Date().toISOString(),
+      active_to: null,
+      supersedes_plan_id: prev?.plan_id || null,
+      created_by: actor,
+      created_at: new Date().toISOString(),
+    };
+    s.plans.set(plan_id, plan);
+    if (prev) prev.active_to = plan.active_from;
+    const created = clean.map((b) => {
+      const row = { band_id: ++s.seq.band, plan_id, ...b };
+      s.bands.push(row);
+      return row;
+    });
+    s.auditLog(actor, 'TARIFF_PLAN', plan_id, 'VERSION', prev?.plan_id ?? null, plan.name);
+    return { plan, bands: created, previousPlanId: prev?.plan_id ?? null, previousActiveTo };
   };
   s.topup = (uid, amount) => {
     if (!(amount > 0)) throw err('INVALID_AMOUNT', 'amount > 0', 422);
@@ -647,11 +731,21 @@ function createStore() {
           (b.day_scope === 'WEEKDAY' && dow >= 1 && dow <= 5) ||
           (b.day_scope === 'WEEKEND' && (dow === 0 || dow === 6)))
     );
-    const toMin = (t) => {
+    // BUG-008 follow-up: a band may close at midnight. Oracle returns that as
+    // '00:00' (TIMESTAMP cannot hold 24:00) and older seeds stored '23:59' or
+    // '23:59:59', which left the final minute/second of the day unpriced. Treat a
+    // zero end-time as end-of-day and any near-midnight close as a full 24:00.
+    const toMin = (t, isEnd = false) => {
       const [h, m] = String(t).split(':').map(Number);
-      return h * 60 + m;
+      if (isEnd && h === 0 && (m || 0) === 0) return 1440;
+      return h * 60 + (m || 0);
     };
-    const hit = cands.find((b) => mins >= toMin(b.start_time) && mins < toMin(b.end_time));
+    const hit = cands.find((b) => {
+      const start = toMin(b.start_time);
+      let end = toMin(b.end_time, true);
+      if (end >= 1439) end = 1440; // legacy 23:59 / 23:59:59 close
+      return mins >= start && mins < end;
+    });
     if (!hit) {
       const e = new Error('NO_TARIFF_BAND');
       e.num = ORA.NO_TARIFF_BAND;

@@ -94,14 +94,17 @@ async function main() {
     const call2 = await waitFor('RemoteStartTransaction');
     assert.equal(call2[3].connectorId, connNo);
     console.log('  ocpp 2 - RemoteStartTransaction received');
-    ws.close();
+    await new Promise((res) => {
+      ws.once('close', res);
+      ws.close();
+    });
     console.log('\nOCPP remote tests: 2 passed');
   } finally {
-    server.close();
+    await new Promise((res) => server.close(res));
   }
-  process.exit(0);
+  process.exitCode = 0;
 }
 main().catch((e) => {
   console.error('OCPP-REMOTE FAIL', e);
-  process.exit(1);
+  process.exitCode = 1;
 });

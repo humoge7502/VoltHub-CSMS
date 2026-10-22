@@ -76,7 +76,10 @@ module.exports = function routes(store) {
     safe(async (req, res) => {
       // B2G-010: login tier 10/min per IP with Retry-After.
       if (!checkLoginThrottle(req, res)) return;
-      const u = [...store.users.values()].find((x) => x.email === req.body.email);
+      const loginEmail = String(req.body.email || '')
+        .trim()
+        .toLowerCase();
+      const u = [...store.users.values()].find((x) => String(x.email).toLowerCase() === loginEmail);
       // SEC-011: verify against a fixed dummy hash when the email is unknown so the
       // Argon2id cost runs on BOTH paths — response timing must not reveal whether an
       // account exists (re-measured 26 ms vs 26 ms, 0 ms gap).
@@ -903,7 +906,7 @@ module.exports = function routes(store) {
       });
       if (req.body.stationId) {
         const s = store.stations.get(Number(req.body.stationId));
-        if (s) s.operator_id = u.user_id;
+        if (s) await store.updateStation(s.station_id, { operator_id: u.user_id });
       }
       res.status(201).json({ user: pub(u) });
     })
@@ -915,12 +918,11 @@ module.exports = function routes(store) {
     safe(async (req, res) => {
       const u = store.users.get(Number(req.params.id));
       if (!u) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'user' } });
-      if (req.body.status) u.status = req.body.status;
+      if (req.body.status) await store.setUserStatus(u.user_id, req.body.status, req.user.id);
       if (req.body.stationId) {
         const s = store.stations.get(Number(req.body.stationId));
-        if (s) s.operator_id = u.user_id;
+        if (s) await store.updateStation(s.station_id, { operator_id: u.user_id });
       }
-      store.auditLog(req.user.id, 'APP_USER', u.user_id, 'UPDATE', null, { status: u.status });
       res.json({ user: pub(u) });
     })
   );
@@ -930,41 +932,15 @@ module.exports = function routes(store) {
     roles('ADMIN'),
     scopeCheck,
     safe(async (req, res) => {
-      // immutable-version rule: new version, never edit active
-      const group = Number(req.body.group_id || 1);
-      const vers = [...store.plans.values()].filter((p) => p.group_id === group);
-      const max = vers.reduce((m, p) => Math.max(m, p.version_no), 0);
-      const prev = vers.find((p) => p.version_no === max);
-      const plan_id = ++store.seq.plan;
-      const plan = {
-        plan_id,
-        group_id: group,
-        version_no: max + 1,
-        name: req.body.name || `Plan v${max + 1}`,
-        currency: 'INR',
-        session_fee: Number(req.body.session_fee || 0),
-        idle_fee_per_30min: 0,
-        active_from: new Date().toISOString(),
-        active_to: null,
-        supersedes_plan_id: prev?.plan_id || null,
-        created_by: req.user.id,
-        created_at: new Date().toISOString(),
-      };
-      store.plans.set(plan_id, plan);
-      if (prev) prev.active_to = plan.active_from;
-      (req.body.bands || [{ day_scope: 'ALL', start_time: '00:00', end_time: '23:59', price_per_kwh: 22 }]).forEach(
-        (b) => {
-          store.bands.push({
-            band_id: ++store.seq.band,
-            plan_id,
-            day_scope: b.day_scope,
-            start_time: b.start_time,
-            end_time: b.end_time,
-            price_per_kwh: Number(b.price_per_kwh),
-          });
-        }
-      );
-      store.auditLog(req.user.id, 'TARIFF_PLAN', plan_id, 'VERSION', prev?.plan_id ?? null, plan.name);
+      // Store method, not inline map mutation: the Oracle adapter mirrors the plan
+      // and its bands atomically, so a version survives a restart.
+      const { plan } = await store.createTariffVersion({
+        groupId: req.body.group_id || 1,
+        name: req.body.name,
+        sessionFee: req.body.session_fee,
+        bands: req.body.bands,
+        actor: req.user.id,
+      });
       res.status(201).json({ plan });
     })
   );
@@ -1034,19 +1010,48 @@ module.exports = function routes(store) {
     '/internal/outbox/ack',
     requireInternal,
     safe(async (req, res) => {
-      const ids = (req.body.ids || []).map(Number);
+      const ids = (req.body.ids || []).map(Number).filter(Number.isFinite);
+      const keys = (req.body.keys || []).map(String).filter(Boolean).slice(0, 500);
       ids.forEach((id) => {
         const e = store.outbox.find((x) => x.event_id === Number(id));
         if (e) e.processed_at = new Date().toISOString();
       });
       // B2G-005: also mark Oracle outbox_event processed (else that table grows unbounded).
-      if (store._pool && ids.length) {
+      // In Oracle mode the durable outbox contains rows written by the PL/SQL packages
+      // (tick:<sid>:<seq> etc.) that the JS store never emitted with the same id; the
+      // dedupe_key is the shared identity, so match on it as well as on the id.
+      if (store._pool && (ids.length || keys.length)) {
         const c = await store._pool.getConnection();
         try {
-          await c.execute(
-            `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE event_id IN (${ids.map((_, i) => `:id${i}`).join(',')})`,
-            Object.fromEntries(ids.map((v, i) => [`id${i}`, v]))
-          );
+          if (ids.length) {
+            await c.execute(
+              `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE event_id IN (${ids.map((_, i) => `:id${i}`).join(',')})`,
+              Object.fromEntries(ids.map((v, i) => [`id${i}`, v]))
+            );
+          }
+          if (keys.length) {
+            await c.execute(
+              `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE processed_at IS NULL AND dedupe_key IN (${keys.map((_, i) => `:k${i}`).join(',')})`,
+              Object.fromEntries(keys.map((v, i) => [`k${i}`, v]))
+            );
+          }
+          // Session transitions carry a wall-clock suffix in the package's key
+          // (sess:<sid>:<to>:<timestamp>) while the API's copy carries Date.now().
+          // The stable prefix is the identity, so match it by LIKE as well; otherwise
+          // those durable rows are only acknowledged on the next API boot, after the
+          // sequence positions may have drifted apart.
+          const sess = [];
+          for (const k of keys) {
+            const m = /^sess:(\d+):([A-Z_]+):/.exec(k);
+            if (m) sess.push(`sess:${m[1]}:${m[2]}:%`);
+          }
+          if (sess.length) {
+            const uniq = [...new Set(sess)].slice(0, 50);
+            await c.execute(
+              `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE processed_at IS NULL AND (${uniq.map((_, i) => `dedupe_key LIKE :p${i}`).join(' OR ')})`,
+              Object.fromEntries(uniq.map((v, i) => [`p${i}`, v]))
+            );
+          }
           await c.commit();
         } finally {
           try {

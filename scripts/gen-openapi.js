@@ -18,22 +18,26 @@ const rendered = JSON.stringify(spec, null, 2) + '\n';
 if (process.argv.includes('--check')) {
   let current = null;
   try {
-    current = fs.readFileSync(OUT, 'utf8');
+    // Git may check the snapshot out with CRLF on Windows; the spec is LF. Compare
+    // line-ending-insensitively so a clean tree is never reported as stale.
+    current = fs.readFileSync(OUT, 'utf8').replace(/\r\n/g, '\n');
   } catch {
     console.error('OPENAPI SNAPSHOT: docs/openapi.json is missing — run `npm run openapi:gen`');
-    process.exit(1);
+    process.exitCode = 1;
   }
-  if (current !== rendered) {
+  if (current != null && current !== rendered) {
     const paths = Object.keys(spec.paths || {}).length;
     console.error(
       `OPENAPI SNAPSHOT STALE: docs/openapi.json does not match src/docs.js (${paths} spec paths). ` +
         'Run `npm run openapi:gen` and commit the result.'
     );
-    process.exit(1);
+    process.exitCode = 1;
   }
-  console.log(`openapi snapshot: docs/openapi.json in sync (${Object.keys(spec.paths || {}).length} paths) — OK`);
-  process.exit(0);
+  if (current != null && current === rendered) {
+    console.log(`openapi snapshot: docs/openapi.json in sync (${Object.keys(spec.paths || {}).length} paths) — OK`);
+    process.exitCode = 0;
+  }
+} else {
+  fs.writeFileSync(OUT, rendered);
+  console.log(`openapi snapshot written: ${OUT} (${Object.keys(spec.paths || {}).length} paths)`);
 }
-
-fs.writeFileSync(OUT, rendered);
-console.log(`openapi snapshot written: ${OUT} (${Object.keys(spec.paths || {}).length} paths)`);

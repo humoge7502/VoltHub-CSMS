@@ -228,9 +228,9 @@ async function main() {
   });
 
   console.log(`\nrelay: ${pass} tests passed`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 main().catch((e) => {
   console.error('RELAY FAIL', e);
-  process.exit(1);
+  process.exitCode = 1;
 });
