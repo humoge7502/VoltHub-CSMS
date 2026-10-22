@@ -61,10 +61,17 @@ WS gateways connect to `wss://api.volthub.example/ocpp/<identity>` with
 ## 3. First boot
 
 ```bash
-bash scripts/migrate.sh          # Oracle V001..V007 + Timescale T001..T003 (globbed)
+bash scripts/migrate.sh          # Oracle V*.sql + Timescale T*.sql (globbed, in order)
 SEED_DB=1 bash scripts/migrate.sh # optional: package-driven seed (db/oracle/seed/seed.sql)
 docker compose --env-file .env -f infra/docker-compose.yml up -d
 curl -sf localhost:4000/api/v1/health/deep  # oracle:connected, outbox_lag: 0
+```
+
+Windows / Docker Desktop (the WSL docker CLI may not see the Windows engine):
+
+```powershell
+./scripts/migrate.ps1          # same canonical files, same order
+./scripts/migrate.ps1 -Seed    # + demo seed
 ```
 
 The migrate script globs `db/oracle/V00*.sql` and `db/timescale/T00*.sql`, so it picks
@@ -113,16 +120,26 @@ Laptop compose is the graded path: `docker compose -f infra/docker-compose.yml u
 To let anyone open the console from the internet while the stack runs on one machine:
 
 ```bash
-bash scripts/share-demo.sh
+bash scripts/share-demo.sh        # Linux/macOS, or Git Bash on Windows
 ```
 
-The script boots the compose stack, runs two cloudflared quick tunnels **as Docker
-containers** (web `:3000`, API `:4000` — they survive logout and auto-restart), repoints
-the web build at the public API origin (`NEXT_PUBLIC_API_BASE` is baked at build time),
-health-checks both, and prints shareable `https://<random>.trycloudflare.com` links.
+The script boots the compose stack, generates strong `JWT_SECRET` / `INTERNAL_TOKEN`
+values in `.env` when needed, runs two cloudflared quick tunnels **as Docker containers
+on the compose network** (web `:3000`, API `:4000` — they survive logout and auto-restart),
+repoints the web build at the public API origin (`NEXT_PUBLIC_API_BASE` is baked at build
+time), extends the API CORS allow-list to the public console origin, recreates the API and
+worker, and health-checks both URLs plus a CORS preflight. It prints shareable
+`https://<random>.trycloudflare.com` links.
 
 - Free, HTTPS included, no ports opened (outbound-only tunnel), no Cloudflare account needed.
-- `scripts/share-demo.sh --stop` tears the tunnels down; URLs change on each rerun —
+- Host ports for Oracle, Timescale, the API and the web console bind to `127.0.0.1`; the
+  tunnel containers reach the services over the compose network, so nothing is exposed
+  directly on the LAN or internet.
+- `bash scripts/share-demo.sh --stop` tears the tunnels down; URLs change on each rerun —
   for a permanent name, create a **named tunnel** (free plan) or move to the VM path in §1–2.
-- The script sets `TRUST_PROXY=1` and extends `WEB_ORIGIN` in `.env` for you (both now
+- The script sets `TRUST_PROXY=1` and extends `WEB_ORIGIN` in `.env` for you (both
   interpolate through compose), so per-IP throttles keep working behind the tunnel.
+- **Public-demo safety:** the seeded `admin@volthub.in / Admin@123` login and the
+  deterministic `dev-*` OCPP secrets are demo defaults. Change the admin password and
+  rotate `charge_point.auth_secret` (then start the simulator with the matching
+  `OCPP_SECRET`) before exposing anything beyond disposable demo data.

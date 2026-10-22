@@ -63,14 +63,16 @@ export default function Invoices() {
       >
         <div className="kpi">
           <div className="micro">BALANCE</div>
-          <div className="v num">{w ? inr(w.balance) : '…'}</div>
+          <div className="v num">{w ? inr(w.balance) : loading ? '…' : '—'}</div>
         </div>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {[500, 1000, 2000].map((a) => (
-            <button key={a} className="btn" onClick={() => topup(a)}>
-              +{inr(a)}
-            </button>
-          ))}
+          {w
+            ? [500, 1000, 2000].map((a) => (
+                <button key={a} className="btn" onClick={() => topup(a)}>
+                  +{inr(a)}
+                </button>
+              ))
+            : !loading && <span className="micro">NO PREPAID WALLET FOR THIS ACCOUNT</span>}
         </span>
       </div>
       {ok && (

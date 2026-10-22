@@ -474,11 +474,10 @@ async function main() {
         `invariants: local 12 checks × ${store.sessions.size} sessions / ${store.reservations.size} reservations — 0 rows — OK`
       );
   } finally {
-    server.close();
+    await new Promise((res) => server.close(res));
   }
-  process.exit(process.exitCode || 0);
 }
 main().catch((e) => {
   console.error('INVARIANTS ERROR', e);
-  process.exit(1);
+  process.exitCode = 1;
 });

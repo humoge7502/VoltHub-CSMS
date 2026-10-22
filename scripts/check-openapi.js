@@ -45,11 +45,10 @@ async function main() {
     } else console.log(`openapi drift: spec=${specPaths.size} routes~${foundNorm.size} — no missing paths — OK`);
     if (extra.length) console.log(`openapi note: ${extra.length} route(s) without spec entry: ${extra.join(', ')}`);
   } finally {
-    server.close();
+    await new Promise((res) => server.close(res));
   }
-  process.exit(process.exitCode || 0);
 }
 main().catch((e) => {
   console.error('DRIFT ERROR', e);
-  process.exit(1);
+  process.exitCode = 1;
 });

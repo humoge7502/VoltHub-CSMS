@@ -263,7 +263,8 @@ function mountOcpp(wss, store, log) {
             ws.send(result(msg.uid, { currentTime: new Date().toISOString() }));
             break;
           case 'StatusNotification': {
-            const c = store.connectors.get(`${cpId}:${p.connectorId}`);
+            const key = `${cpId}:${p.connectorId}`;
+            const c = store.connectors.get(key);
             if (c) {
               const map = {
                 Available: 'AVAILABLE',
@@ -272,7 +273,23 @@ function mountOcpp(wss, store, log) {
                 Faulted: 'FAULTED',
                 Unavailable: 'UNAVAILABLE',
               };
-              const to = map[p.status] || 'UNAVAILABLE';
+              let to = map[p.status] || 'UNAVAILABLE';
+              // A CP must not be able to erase CSMS-owned state with a stale
+              // "Available": during an active session that would make the connector
+              // bookable again (double-booking), and during a live reservation it
+              // would let a walk-up driver take the reserved window. Keep the
+              // authoritative state for those two cases; physical faults/unavailability
+              // still pass through.
+              if (to === 'AVAILABLE') {
+                const active = [...store.sessions.values()].some(
+                  (sx) => sx.connector_ref === key && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(sx.state)
+                );
+                const booked = [...store.reservations.values()].some(
+                  (r) => r.connector_ref === key && r.status === 'BOOKED'
+                );
+                if (active) to = 'OCCUPIED';
+                else if (booked) to = 'RESERVED';
+              }
               const from = c.status;
               c.status = to;
               c.last_state_change_at = new Date().toISOString();
@@ -361,6 +378,14 @@ function mountOcpp(wss, store, log) {
             // Recover the cursor from the persisted readings on first sight of a session.
             if (tx && e) {
               const sid = Number(tx);
+              // A charge point may only meter its own sessions. Without this check any
+              // authenticated CP could inject readings into (and thereby inflate the
+              // bill of) another CP's live transaction.
+              const owner = store.sessions.get(sid);
+              if (owner && Number(owner.cp_id) !== Number(cpId)) {
+                ws.send(callError(msg.uid, 'SecurityError', `transaction ${sid} is not owned by ${identity}`));
+                break;
+              }
               if (!seqByTx.has(sid)) {
                 const maxSeq = store.readings
                   .filter((r) => r.session_id === sid)
@@ -389,6 +414,12 @@ function mountOcpp(wss, store, log) {
             if (p.transactionId) {
               const sess = store.sessions.get(Number(p.transactionId));
               if (sess) {
+                if (Number(sess.cp_id) !== Number(cpId)) {
+                  ws.send(
+                    callError(msg.uid, 'SecurityError', `transaction ${p.transactionId} is not owned by ${identity}`)
+                  );
+                  break;
+                }
                 // BUG-020 fix: 0 Wh is valid — only fall back when meterStop is absent/NaN.
                 const stopKwh = Number(p.meterStop);
                 sess.end_meter_kwh = Number.isFinite(stopKwh) ? stopKwh / 1000 : sess.end_meter_kwh;

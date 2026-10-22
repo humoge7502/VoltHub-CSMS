@@ -395,10 +395,16 @@ export function CorridorMap({ stations, selected, onPick }) {
       <text x="44" y="196" fill="#6B7681" fontSize="10">
         OMR CORRIDOR · CHENNAI
       </text>
-      {stations.map((s) => {
+      {stations.map((s, i) => {
         const cx = X(s.longitude),
           cy = Y(s.latitude),
           on = selected === s.station_id;
+        // Labels go inside the frame on the right edge and alternate vertical
+        // offset so a dense corridor does not stack two names on one line.
+        const right = cx > 330,
+          lx = right ? cx - 14 : cx + 14,
+          anchor = right ? 'end' : 'start',
+          dy = i % 2 ? -7 : 0;
         return (
           <g
             key={s.station_id}
@@ -424,10 +430,10 @@ export function CorridorMap({ stations, selected, onPick }) {
               stroke={on ? '#FFFDD0' : 'none'}
               strokeWidth="2"
             />
-            <text x={cx + 14} y={cy + 4} fill="#E8EAED" fontSize="11">
+            <text x={lx} y={cy + 4 + dy} fill="#E8EAED" fontSize="11" textAnchor={anchor}>
               {s.name}
             </text>
-            <text x={cx + 14} y={cy + 18} fill="#9AA3AD" fontSize="10" className="num">
+            <text x={lx} y={cy + 18 + dy} fill="#9AA3AD" fontSize="10" className="num" textAnchor={anchor}>
               {s.available_count}/{s.connector_count} free
             </text>
           </g>

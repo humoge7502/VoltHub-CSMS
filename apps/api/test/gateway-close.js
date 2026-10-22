@@ -294,15 +294,148 @@ async function main() {
     assert.ok(stopReply, 'StopTransaction must get a CALLRESULT (was: InternalError ILLEGAL_TRANSITION)');
     assert.strictEqual(store.sessions.get(newSid).state, 'CANCELLED', 'never-charged session must end CANCELLED');
     console.log('  close 6 - StopTransaction on PREPARING ends CANCELLED with a normal CALLRESULT');
-    ws6.close();
 
-    console.log('\nOCPP gateway-close tests: 6 passed');
+    // --- t7 (invariant): a stale "Available" must not erase CSMS-owned state ---
+    // If a CP could flip an in-session connector back to AVAILABLE, a second driver
+    // could start on the same connector; if it could flip a RESERVED connector, a
+    // walk-up could take someone else's booking. Both are CSMS authority, not CP.
+    const st7 = await api('/sessions/start', {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ cpId: cp.cp_id, connectorNo: connNo }),
+    });
+    assert.equal(st7.status, 201, `t7 session start must be 201, got ${st7.status}`);
+    const sid7 = st7.j.session.session_id;
+    ws6.send(
+      JSON.stringify([
+        2,
+        'st-avail',
+        'StatusNotification',
+        { connectorId: connNo, status: 'Available', errorCode: 'NoError' },
+      ])
+    );
+    await sleep(200);
+    assert.strictEqual(
+      store.connectors.get(`${cp.cp_id}:${connNo}`).status,
+      'OCCUPIED',
+      'an active session must keep the connector OCCUPIED despite a CP Available report'
+    );
+    await assert.rejects(
+      () =>
+        store.startSession({
+          uid: reg.j.user.user_id,
+          vehicleId: null,
+          cpId: cp.cp_id,
+          connNo,
+          planId: 2,
+          reservationId: null,
+          idTag: `TAG-${reg.j.user.user_id}`,
+        }),
+      (e) => e.code === 'NOT_BOOKABLE',
+      'double-booking through a stale StatusNotification must be rejected'
+    );
+    await api(`/sessions/${sid7}/remote-stop`, { method: 'POST', headers: H });
+    await sleep(250);
+    // ...and a live booking survives the same stale report.
+    const rsv = await api('/reservations', {
+      method: 'POST',
+      headers: { ...H, 'Idempotency-Key': `close-rsv-${Date.now()}` },
+      body: JSON.stringify({
+        cpId: cp.cp_id,
+        connectorNo: connNo,
+        startAt: new Date(Date.now() + 20 * 60000).toISOString(),
+        endAt: new Date(Date.now() + 60 * 60000).toISOString(),
+      }),
+    });
+    assert.equal(rsv.status, 201, `reservation must be 201, got ${rsv.status}`);
+    ws6.send(
+      JSON.stringify([
+        2,
+        'st-avail-2',
+        'StatusNotification',
+        { connectorId: connNo, status: 'Available', errorCode: 'NoError' },
+      ])
+    );
+    await sleep(200);
+    assert.strictEqual(
+      store.connectors.get(`${cp.cp_id}:${connNo}`).status,
+      'RESERVED',
+      'a BOOKED reservation must survive a CP Available report'
+    );
+    await api(`/reservations/${rsv.j.reservation.reservation_id}/cancel`, { method: 'POST', headers: H });
+    console.log('  close 7 - stale Available cannot unlock an active session or a live reservation');
+
+    // --- t8 (ownership): a CP cannot meter or stop another CP's transaction ---
+    const st8 = await api('/sessions/start', {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ cpId: cp.cp_id, connectorNo: connNo }),
+    });
+    assert.equal(st8.status, 201, `t8 session start must be 201, got ${st8.status}`);
+    const sid8 = st8.j.session.session_id;
+    const other = [...store.cps.values()].find((o) => o.cp_id !== cp.cp_id);
+    assert.ok(other, 'need a second CP for the ownership probe');
+    const otherSecret = other.auth_secret || `dev-${other.ocpp_identity}`;
+    const otherBasic = Buffer.from(`${other.ocpp_identity}:${otherSecret}`).toString('base64');
+    const wsOther = await new Promise((res, rej) => {
+      const w = new WebSocket(`ws://localhost:4109/ocpp/${other.ocpp_identity}`, {
+        headers: { Authorization: `Basic ${otherBasic}` },
+      });
+      w.on('open', () => res(w));
+      w.on('error', rej);
+    });
+    const foreignReplies = [];
+    wsOther.on('message', (raw) => {
+      try {
+        foreignReplies.push(JSON.parse(String(raw)));
+      } catch {}
+    });
+    await sleep(150);
+    wsOther.send(
+      JSON.stringify([
+        2,
+        'foreign-mv',
+        'MeterValues',
+        {
+          transactionId: sid8,
+          meterValue: [
+            {
+              timestamp: new Date().toISOString(),
+              sampledValue: [{ measurand: 'Energy.Active.Import.Register', value: '9999' }],
+            },
+          ],
+        },
+      ])
+    );
+    await sleep(250);
+    const mvErr = foreignReplies.find((m) => Array.isArray(m) && m[0] === 4 && m[1] === 'foreign-mv');
+    assert.ok(mvErr, 'foreign MeterValues must get a CALLERROR');
+    assert.strictEqual(mvErr[2], 'SecurityError', `expected SecurityError, got ${mvErr[2]}`);
+    assert.strictEqual(
+      store.readings.filter((r) => r.session_id === sid8).length,
+      0,
+      'foreign meter data must not be recorded'
+    );
+    wsOther.send(JSON.stringify([2, 'foreign-stop', 'StopTransaction', { transactionId: sid8, meterStop: 0 }]));
+    await sleep(250);
+    const stopErr = foreignReplies.find((m) => Array.isArray(m) && m[0] === 4 && m[1] === 'foreign-stop');
+    assert.ok(stopErr, 'foreign StopTransaction must get a CALLERROR');
+    assert.strictEqual(stopErr[2], 'SecurityError', `expected SecurityError, got ${stopErr[2]}`);
+    assert.notStrictEqual(store.sessions.get(sid8).state, 'COMPLETED', 'foreign CP must not stop the session');
+    wsOther.close();
+    await api(`/sessions/${sid8}/remote-stop`, { method: 'POST', headers: H });
+    await sleep(200);
+    console.log("  close 8 - a CP cannot meter or stop another CP's transaction (SecurityError)");
+
+    ws6.close();
+    await sleep(250);
+    console.log('\nOCPP gateway-close tests: 8 passed');
   } finally {
-    server.close();
+    await new Promise((res) => server.close(res));
   }
-  process.exit(0);
+  process.exitCode = 0;
 }
 main().catch((e) => {
   console.error('GATEWAY-CLOSE FAIL', e);
-  process.exit(1);
+  process.exitCode = 1;
 });

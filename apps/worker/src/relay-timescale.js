@@ -39,6 +39,15 @@ function _setPoolFactory(fn) {
 // ADR-0010/Phase 3: ENFORCEMENT_TICK rides the same outbox -> meter_tick_enforcement (T003)
 // with priority over analytics-only kinds when relay lag breaches the SLO (O.2 backpressure).
 function toRows(events) {
+  // Timescale hypertables key on (id, ts). Oracle package payloads carry second
+  // precision while the JS outbox carries milliseconds; truncating to seconds makes
+  // the two writers collide on the same primary key, so ON CONFLICT DO NOTHING
+  // dedupes a tick that both engines observed instead of storing it twice.
+  const toSec = (v) => {
+    const d = new Date(v);
+    d.setMilliseconds(0);
+    return d;
+  };
   const ticks = [],
     states = [],
     enforcement = [];
@@ -47,7 +56,7 @@ function toRows(events) {
     if (e.kind === 'METER_TICK' && p.session_id && p.ts) {
       // B2G-006: pass seq + dedupe_key so same-second ticks don't collide on the PK.
       ticks.push([
-        new Date(p.ts),
+        toSec(p.ts),
         Number(p.session_id),
         Number(p.seq ?? 0),
         String(p.connector_ref || ''),
@@ -70,7 +79,7 @@ function toRows(events) {
       ]);
     } else if (e.kind === 'CONNECTOR_STATE' && p.connector_ref) {
       states.push([
-        new Date(e.created_at || Date.now()),
+        toSec(e.created_at || Date.now()),
         String(p.connector_ref),
         p.from || null,
         p.to || 'UNKNOWN',
@@ -80,7 +89,7 @@ function toRows(events) {
       ]);
     } else if (e.kind === 'SESSION_EVENT' && p.session_id) {
       states.push([
-        new Date(e.created_at || Date.now()),
+        toSec(e.created_at || Date.now()),
         String(p.connector_ref || `sess:${p.session_id}`),
         p.from || null,
         p.to || 'UNKNOWN',
@@ -194,7 +203,7 @@ async function relayToTimescale(apiBase, internalToken, fetchImpl) {
     const ack = await fetchFn(`${apiBase}/internal/outbox/ack`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-internal': internalToken },
-      body: JSON.stringify({ ids: events.map((e) => e.event_id) }),
+      body: JSON.stringify({ ids: events.map((e) => e.event_id), keys: events.map((e) => e.dedupe_key) }),
     });
     if (!ack.ok) throw new Error(`ack ${ack.status}`);
     return { relayed: events.length, ticks: nt, states: ns, enforcement: ne };

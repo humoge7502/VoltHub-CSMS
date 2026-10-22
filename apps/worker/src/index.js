@@ -82,7 +82,7 @@ async function relayOnce(opts = {}) {
   const ack = await doFetch(`${API}/internal/outbox/ack`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-internal': TOKEN },
-    body: JSON.stringify({ ids: events.map((e) => e.event_id) }),
+    body: JSON.stringify({ ids: events.map((e) => e.event_id), keys: events.map((e) => e.dedupe_key) }),
   });
   if (!ack.ok) throw new Error(`ack ${ack.status}`);
   return { relayed: events.length };

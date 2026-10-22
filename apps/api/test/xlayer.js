@@ -18,6 +18,12 @@ async function main() {
     body: JSON.stringify({ email: `xl${Date.now()}@example.in`, password: 'Driver@123', full_name: 'Xlayer Driver' }),
   });
   assert.equal(reg.status, 201);
+  // Login is case-insensitive: the UI renders demo emails in uppercase.
+  const caseLogin = await api('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: reg.j.user.email.toUpperCase(), password: 'Driver@123' }),
+  });
+  assert.equal(caseLogin.status, 200, `case-insensitive login must be 200, got ${caseLogin.status}`);
   const H = { Authorization: `Bearer ${reg.j.accessToken}` };
   const { j: disc } = await api('/stations');
   const c = disc.stations[0].connectors.find((x) => x.status === 'AVAILABLE');
@@ -86,11 +92,26 @@ async function main() {
   const payOk = await api(`/invoices/${inv3}/pay`, { method: 'POST', headers: HP });
   assert.equal(payOk.status, 201, `top-up-then-pay must be 201, got ${payOk.status}`);
   assert.equal(store.invoices.get(inv3).status, 'PAID');
-  console.log('XLAYER: 4 passed (PREPARING->CANCELLED, band resolver, pay-parity recovery, invoice DUE)');
-  server.close();
-  process.exit(0);
+  // BUG-008 follow-up: EVERY minute of the day must resolve to a band, including
+  // the final minute where a 23:59/23:59:59 close used to fall through the gap.
+  const planIds = [...new Set(store.bands.map((b) => b.plan_id))];
+  for (const planId of planIds) {
+    for (let minute = 0; minute < 24 * 60; minute++) {
+      const at = new Date(2026, 0, 5, 0, 0, 0);
+      at.setMinutes(minute);
+      const p = store.resolveBandPrice(planId, at.toISOString());
+      assert.ok(Number.isFinite(Number(p)), `plan ${planId} has no band at ${at.toString()}`);
+    }
+  }
+  const lastSecond = new Date(2026, 0, 5, 23, 59, 30);
+  assert.ok(Number.isFinite(Number(store.resolveBandPrice(planIds[0], lastSecond.toISOString()))));
+  console.log(
+    'XLAYER: 5 passed (PREPARING->CANCELLED, band resolver, pay-parity recovery, invoice DUE, 24h band coverage)'
+  );
+  await new Promise((res) => server.close(res));
+  process.exitCode = 0;
 }
 main().catch((e) => {
   console.error('XLAYER FAIL', e);
-  process.exit(1);
+  process.exitCode = 1;
 });

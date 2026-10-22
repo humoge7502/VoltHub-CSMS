@@ -322,13 +322,22 @@ CREATE OR REPLACE PACKAGE BODY tariff_pkg AS
     -- BUG-008: half-open [start, end) to match the JS resolver (mins >= start AND mins < end).
     -- Midnight-closing bands are stored as 23:59:59 (see V005); BETWEEN (closed) mis-prices edge ticks.
     v_frac := CAST(p_at AS DATE) - TRUNC(CAST(p_at AS DATE));
-    -- B2G-011/D-03: deterministic on overlap — specific WEEKDAY/WEEKEND beats ALL.
+    -- BUG-008/D-04: a band may close at midnight. Oracle's TIMESTAMP cannot hold
+    -- 24:00, so a next-midnight close is stored as 00:00; older seeds clamped it to
+    -- 23:59:59. Both mean end-of-day. Treat near-midnight closes as 1 so the last
+    -- second of the day cannot fall through to NO_TARIFF_BAND.
+    -- B2G-011/D-03: deterministic on overlap - specific WEEKDAY/WEEKEND beats ALL.
     SELECT price_per_kwh INTO v_price FROM tariff_band
      WHERE plan_id = p_plan
        AND (day_scope = 'ALL' OR (day_scope='WEEKDAY' AND v_dow NOT IN ('SAT','SUN'))
             OR (day_scope='WEEKEND' AND v_dow IN ('SAT','SUN')))
        AND v_frac >= (CAST(start_time AS DATE) - TRUNC(CAST(start_time AS DATE)))
-       AND v_frac <  (CAST(end_time AS DATE) - TRUNC(CAST(end_time AS DATE)))
+       AND v_frac <  CASE
+             WHEN CAST(end_time AS DATE) - TRUNC(CAST(end_time AS DATE)) = 0
+               OR CAST(end_time AS DATE) - TRUNC(CAST(end_time AS DATE)) >= 86399/86400
+             THEN 1
+             ELSE CAST(end_time AS DATE) - TRUNC(CAST(end_time AS DATE))
+           END
      ORDER BY CASE day_scope WHEN 'ALL' THEN 0 ELSE 1 END
      FETCH FIRST 1 ROW ONLY;
     RETURN v_price;

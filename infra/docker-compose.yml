@@ -7,7 +7,10 @@ services:
       ORACLE_PASSWORD: volthub_dev_pwd
       APP_USER: volthub
       APP_USER_PASSWORD: volthub_dev_pwd
-    ports: ['1521:1521']
+    # BIND_ADDR defaults to all interfaces for Docker Desktop compatibility; set
+    # BIND_ADDR=127.0.0.1 in .env to keep published ports off the LAN. TS_HOST_PORT
+    # exists because 5432 is often taken by another local Postgres.
+    ports: ['${BIND_ADDR:-0.0.0.0}:${ORACLE_HOST_PORT:-1521}:1521']
     volumes:
       - oracle-data:/opt/oracle/oradata
     # Schema + seed are applied by scripts/migrate.sh (DEPLOY.md §3) — single
@@ -29,7 +32,7 @@ services:
       POSTGRES_DB: volthub
       POSTGRES_USER: volthub
       POSTGRES_PASSWORD: volthub_dev_pwd
-    ports: ['5432:5432']
+    ports: ['${BIND_ADDR:-0.0.0.0}:${TS_HOST_PORT:-5432}:5432']
     volumes:
       - ts-data:/var/lib/postgresql/data
     # Schema (T001/T002 caggs) applied via scripts/migrate.sh (DEPLOY.md §3). A
@@ -55,6 +58,11 @@ services:
       # DEPLOY.md §1: a root .env is NOT read by compose (project dir is infra/) —
       # pass `--env-file .env` or this silently falls back to the dev secret.
       JWT_SECRET: ${JWT_SECRET:-dev-only-32-byte-secret-0123456789}
+      # Worker -> API internal routes (outbox poll/ack, stale expiry). Must match the
+      # worker's value; compose passes the same interpolation to both services.
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal}
+      # OCPP 1.6J upgrade auth: per-cp (default), require, or off.
+      OCPP_AUTH: ${OCPP_AUTH:-per-cp}
       # CORS allow-list for the web console. Extend via .env (--env-file) when the
       # console is served from a tunnel/prod origin (DEPLOY.md §2) — e.g.
       # WEB_ORIGIN=https://app.example.com,http://localhost:3000
@@ -66,7 +74,7 @@ services:
       # Load-testing toggle (bench/README.md): set 1 only for k6 runs — the
       # 60 req/min throttle would otherwise count the whole k6 fleet as one IP.
       RATE_LIMIT_OFF: ${RATE_LIMIT_OFF:-0}
-    ports: ['4000:4000']
+    ports: ['${BIND_ADDR:-0.0.0.0}:${API_HOST_PORT:-4000}:4000']
     depends_on:
       oracle: { condition: service_healthy }
       timescale: { condition: service_healthy }
@@ -80,6 +88,7 @@ services:
     command: ['node', 'apps/worker/src/index.js']
     environment:
       API_BASE: http://api:4000/api/v1
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal}
       TS_HOST: timescale
       TS_PORT: '5432'
       TS_DB: volthub
@@ -106,7 +115,7 @@ services:
       # Runtime copy: the server-rendered pages read it too, but the browser bundle uses
       # the build arg above. Changing this alone requires a rebuild to take effect.
       NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:4000/api/v1}
-    ports: ['3000:3000']
+    ports: ['${BIND_ADDR:-0.0.0.0}:${WEB_HOST_PORT:-3000}:3000']
     depends_on: [api]
     restart: unless-stopped
 
@@ -114,7 +123,7 @@ services:
   grafana:
     image: grafana/grafana:11.2.0
     container_name: volthub-grafana
-    ports: ['3001:3000']
+    ports: ['${BIND_ADDR:-0.0.0.0}:${GRAFANA_HOST_PORT:-3001}:3000']
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

@@ -86,21 +86,21 @@ DECLARE v_v1 NUMBER; v_v2 NUMBER; v_h1 NUMBER; BEGIN
   INSERT INTO tariff_band (plan_id, day_scope, start_time, end_time, price_per_kwh) VALUES
    (v_v1, 'ALL', TRUNC(SYSDATE) + 18/24, TRUNC(SYSDATE) + 22/24, 24);
   INSERT INTO tariff_band (plan_id, day_scope, start_time, end_time, price_per_kwh) VALUES
-   (v_v1, 'ALL', TRUNC(SYSDATE) + 22/24, TRUNC(SYSDATE) + 86399/86400, 18);
+   (v_v1, 'ALL', TRUNC(SYSDATE) + 22/24, TRUNC(SYSDATE) + 1, 18);
   tariff_pkg.create_version(1, 'City Day v2', 20, 0, SYSTIMESTAMP - 15, 1, v_v2);
   INSERT INTO tariff_band (plan_id, day_scope, start_time, end_time, price_per_kwh) VALUES
    (v_v2, 'ALL', TRUNC(SYSDATE), TRUNC(SYSDATE) + 18/24, 22);
   INSERT INTO tariff_band (plan_id, day_scope, start_time, end_time, price_per_kwh) VALUES
    (v_v2, 'ALL', TRUNC(SYSDATE) + 18/24, TRUNC(SYSDATE) + 22/24, 28);
   INSERT INTO tariff_band (plan_id, day_scope, start_time, end_time, price_per_kwh) VALUES
-   (v_v2, 'ALL', TRUNC(SYSDATE) + 22/24, TRUNC(SYSDATE) + 86399/86400, 22);
+   (v_v2, 'ALL', TRUNC(SYSDATE) + 22/24, TRUNC(SYSDATE) + 1, 22);
   tariff_pkg.create_version(2, 'Highway Flat v1', 49, 0, SYSTIMESTAMP - 60, 1, v_h1);
   INSERT INTO tariff_band (plan_id, day_scope, start_time, end_time, price_per_kwh) VALUES
    (v_h1, 'ALL', TRUNC(SYSDATE), TRUNC(SYSDATE) + 18/24, 25);
   INSERT INTO tariff_band (plan_id, day_scope, start_time, end_time, price_per_kwh) VALUES
    (v_h1, 'ALL', TRUNC(SYSDATE) + 18/24, TRUNC(SYSDATE) + 22/24, 31);
   INSERT INTO tariff_band (plan_id, day_scope, start_time, end_time, price_per_kwh) VALUES
-   (v_h1, 'ALL', TRUNC(SYSDATE) + 22/24, TRUNC(SYSDATE) + 86399/86400, 25);
+   (v_h1, 'ALL', TRUNC(SYSDATE) + 22/24, TRUNC(SYSDATE) + 1, 25);
 END;
 /
 COMMIT;
