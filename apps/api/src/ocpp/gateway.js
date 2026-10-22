@@ -282,8 +282,7 @@ function mountOcpp(wss, store, log) {
               // still pass through.
               if (to === 'AVAILABLE') {
                 const active = [...store.sessions.values()].some(
-                  (sx) =>
-                    sx.connector_ref === key && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(sx.state)
+                  (sx) => sx.connector_ref === key && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(sx.state)
                 );
                 const booked = [...store.reservations.values()].some(
                   (r) => r.connector_ref === key && r.status === 'BOOKED'

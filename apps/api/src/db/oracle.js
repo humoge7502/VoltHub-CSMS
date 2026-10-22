@@ -464,20 +464,25 @@ async function hydrate(local, pool) {
         local.seq.fault = Math.max(local.seq.fault, id);
       }
     );
-    await q('SELECT notification_id, user_id, kind, title, is_read FROM notification', 'notifications', (r) => {
-      local.notifs.push({
-        notification_id: Number(r.NOTIFICATION_ID),
-        user_id: Number(r.USER_ID),
-        kind: r.KIND,
-        title: r.TITLE,
-        payload: {},
-        is_read: r.IS_READ,
-        created_at: new Date().toISOString(),
-      });
-      local.seq.notif = Math.max(local.seq.notif, Number(r.NOTIFICATION_ID));
-    }, () => {
-      local.notifs.length = 0;
-    });
+    await q(
+      'SELECT notification_id, user_id, kind, title, is_read FROM notification',
+      'notifications',
+      (r) => {
+        local.notifs.push({
+          notification_id: Number(r.NOTIFICATION_ID),
+          user_id: Number(r.USER_ID),
+          kind: r.KIND,
+          title: r.TITLE,
+          payload: {},
+          is_read: r.IS_READ,
+          created_at: new Date().toISOString(),
+        });
+        local.seq.notif = Math.max(local.seq.notif, Number(r.NOTIFICATION_ID));
+      },
+      () => {
+        local.notifs.length = 0;
+      }
+    );
     await q(
       'SELECT vehicle_id, user_id, nickname, make, model, battery_kwh, is_default FROM vehicle',
       'vehicles',
@@ -496,24 +501,29 @@ async function hydrate(local, pool) {
         local.seq.vehicle = Math.max(local.seq.vehicle, id);
       }
     );
-    await q('SELECT event_id, kind, dedupe_key, payload, created_at, processed_at FROM outbox_event', 'outbox', (r) => {
-      const id = Number(r.EVENT_ID);
-      let payload = {};
-      try {
-        payload = JSON.parse(r.PAYLOAD);
-      } catch {}
-      local.outbox.push({
-        event_id: id,
-        kind: r.KIND,
-        dedupe_key: r.DEDUPE_KEY,
-        payload,
-        created_at: r.CREATED_AT ? new Date(r.CREATED_AT).toISOString() : new Date().toISOString(),
-        processed_at: r.PROCESSED_AT ? new Date(r.PROCESSED_AT).toISOString() : null,
-      });
-      local.seq.outbox = Math.max(local.seq.outbox, id);
-    }, () => {
-      local.outbox.length = 0;
-    });
+    await q(
+      'SELECT event_id, kind, dedupe_key, payload, created_at, processed_at FROM outbox_event',
+      'outbox',
+      (r) => {
+        const id = Number(r.EVENT_ID);
+        let payload = {};
+        try {
+          payload = JSON.parse(r.PAYLOAD);
+        } catch {}
+        local.outbox.push({
+          event_id: id,
+          kind: r.KIND,
+          dedupe_key: r.DEDUPE_KEY,
+          payload,
+          created_at: r.CREATED_AT ? new Date(r.CREATED_AT).toISOString() : new Date().toISOString(),
+          processed_at: r.PROCESSED_AT ? new Date(r.PROCESSED_AT).toISOString() : null,
+        });
+        local.seq.outbox = Math.max(local.seq.outbox, id);
+      },
+      () => {
+        local.outbox.length = 0;
+      }
+    );
     await q('SELECT key_value, status_code, response_body FROM idempotency_key', 'idem', (r) => {
       try {
         local.idem.set(r.KEY_VALUE, { status_code: Number(r.STATUS_CODE), response_body: r.RESPONSE_BODY });

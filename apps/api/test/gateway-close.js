@@ -425,7 +425,7 @@ async function main() {
     wsOther.close();
     await api(`/sessions/${sid8}/remote-stop`, { method: 'POST', headers: H });
     await sleep(200);
-    console.log('  close 8 - a CP cannot meter or stop another CP\'s transaction (SecurityError)');
+    console.log("  close 8 - a CP cannot meter or stop another CP's transaction (SecurityError)");
 
     ws6.close();
     await sleep(250);

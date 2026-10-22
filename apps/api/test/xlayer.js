@@ -105,7 +105,9 @@ async function main() {
   }
   const lastSecond = new Date(2026, 0, 5, 23, 59, 30);
   assert.ok(Number.isFinite(Number(store.resolveBandPrice(planIds[0], lastSecond.toISOString()))));
-  console.log('XLAYER: 5 passed (PREPARING->CANCELLED, band resolver, pay-parity recovery, invoice DUE, 24h band coverage)');
+  console.log(
+    'XLAYER: 5 passed (PREPARING->CANCELLED, band resolver, pay-parity recovery, invoice DUE, 24h band coverage)'
+  );
   await new Promise((res) => server.close(res));
   process.exitCode = 0;
 }

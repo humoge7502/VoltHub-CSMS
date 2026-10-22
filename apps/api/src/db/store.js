@@ -283,8 +283,11 @@ function createStore() {
   s.createUser = async ({ email, password, full_name, role = 'DRIVER', phone }) => {
     // Email is an identity, not a display string: normalize once so Admin@x and
     // admin@x cannot become two accounts (and so login is case-insensitive).
-    const normEmail = String(email || '').trim().toLowerCase();
-    for (const u of s.users.values()) if (String(u.email).toLowerCase() === normEmail) throw err('DUPLICATE_EMAIL', 'email taken', 409);
+    const normEmail = String(email || '')
+      .trim()
+      .toLowerCase();
+    for (const u of s.users.values())
+      if (String(u.email).toLowerCase() === normEmail) throw err('DUPLICATE_EMAIL', 'email taken', 409);
     const user_id = ++s.seq.user;
     const u = {
       user_id,
@@ -309,8 +312,7 @@ function createStore() {
   s.setUserStatus = async (uid, status, actor) => {
     const u = s.users.get(Number(uid));
     if (!u) throw err('NOT_FOUND', 'user', 404);
-    if (!['ACTIVE', 'SUSPENDED'].includes(status))
-      throw err('INVALID_STATUS', 'status must be ACTIVE|SUSPENDED', 422);
+    if (!['ACTIVE', 'SUSPENDED'].includes(status)) throw err('INVALID_STATUS', 'status must be ACTIVE|SUSPENDED', 422);
     const prev = u.status;
     u.status = status;
     s.auditLog(actor, 'APP_USER', u.user_id, 'UPDATE', prev, status);
@@ -322,7 +324,8 @@ function createStore() {
   // One method, one write path: the Oracle adapter mirrors plan + bands atomically.
   s.createTariffVersion = async ({ groupId, name, sessionFee, bands, actor }) => {
     const group_id = Number(groupId || 1);
-    if (!Number.isInteger(group_id) || group_id < 1) throw err('INVALID_GROUP', 'group_id must be a positive integer', 422);
+    if (!Number.isInteger(group_id) || group_id < 1)
+      throw err('INVALID_GROUP', 'group_id must be a positive integer', 422);
     const fee = Number(sessionFee || 0);
     if (!(fee >= 0)) throw err('INVALID_FEE', 'session_fee must be >= 0', 422);
     const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;

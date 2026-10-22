@@ -279,9 +279,7 @@ async function main() {
     for (const s of stations) {
       try {
         const { connectors } = await api(`/stations/${s.station_id}/connectors/live`);
-        connectors
-          .filter((c) => c.status === 'AVAILABLE')
-          .forEach((c) => cps.push({ ...c, station_id: s.station_id }));
+        connectors.filter((c) => c.status === 'AVAILABLE').forEach((c) => cps.push({ ...c, station_id: s.station_id }));
       } catch {}
     }
   }

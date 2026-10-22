@@ -16,7 +16,9 @@ try {
 } catch {
   // Relative API base (e.g. /api/v1 behind a same-origin proxy) needs no extra origin.
 }
-const connectSrc = [...new Set(["'self'", 'http://localhost:4000', 'https://api.volthub.example', apiOrigin].filter(Boolean))];
+const connectSrc = [
+  ...new Set(["'self'", 'http://localhost:4000', 'https://api.volthub.example', apiOrigin].filter(Boolean)),
+];
 
 module.exports = {
   reactStrictMode: true,
