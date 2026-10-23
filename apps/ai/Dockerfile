@@ -15,6 +15,13 @@ RUN pip install --no-cache-dir \
 
 COPY apps/ai/ /app/
 
+# Run unprivileged: the sidecar needs no write access and no capabilities
+# (Trivy DS-0002 — a root container would turn any model-parsing bug into a
+# host-level compromise).
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin volthub \
+ && chown -R volthub:volthub /app
+USER volthub
+
 EXPOSE 8100
 
 # /health is token-gated, so the probe sends the same x-internal header the API uses.

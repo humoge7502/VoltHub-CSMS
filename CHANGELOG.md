@@ -42,9 +42,22 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 - **SEC-050 — admin credential is provisioned, not published.** The demo admin password
   is now read from `ADMIN_BOOTSTRAP_PASSWORD` at seed time, rotated in the live Oracle
-  row and `seed.sql` (Argon2id), and removed from the landing page, login hint, README,
-  DEPLOY and SECURITY. The previous default now returns `401`. `scripts/rotate-admin.js`
-  reproduces the rotation (hash + DB update + the two places to keep in sync).
+  row and `seed.sql`, and removed from the landing page, login hint, README, DEPLOY,
+  SECURITY, CONTRIBUTING and `share-demo.sh`. The Oracle seed writes the admin row with
+  the `!unprovisioned` sentinel (which can never verify), and `scripts/migrate.sh`
+  provisions the real hash from the env var via
+  `scripts/rotate-admin.js --if-unprovisioned` — idempotent, so a restart never clobbers
+  a rotated credential. The previous default now returns `401`.
+- **`body-parser` 2.3.0 → 2.4.0** (GHSA-27r3-jxmh-p828, high): DoS via trailing bytes
+  after a compressed request body. The API is an Express 5 app, so this was reachable on
+  every JSON route. `npm audit` is now clean on both lockfiles.
+- **AI sidecar runs unprivileged** — the image had no `USER`, so a model-parsing bug was
+  a root container compromise (Trivy DS-0002). Now `uid 10001` with `/app` chowned.
+
+### Fixed
+
+- `scripts/rotate-admin.js` no longer echoes the plaintext password (CodeQL
+  `js/clear-text-logging`); it prints the hash and a redacted instruction instead.
 
 ## [1.8.1] — 2026-10-24
 

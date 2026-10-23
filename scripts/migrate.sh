@@ -47,6 +47,14 @@ done
 if [ "$ORACLE_OK" = "1" ] && [ -f "$ROOT/db/oracle/seed/seed.sql" ] && [ "${SEED_DB:-0}" = "1" ]; then
   echo "-- seed (SEED_DB=1)"
   run_oracle_file "$ROOT/db/oracle/seed/seed.sql" || ORACLE_OK=0
+  # SEC-050: the seed writes the admin row with the '!unprovisioned' sentinel, so
+  # there is no working admin password until this provisions one. It only touches
+  # a row still on the sentinel, so re-running never clobbers a rotated credential.
+  if [ "$ORACLE_OK" = "1" ] && [ -n "${ADMIN_BOOTSTRAP_PASSWORD:-}" ] && command -v node >/dev/null 2>&1; then
+    echo "-- provision admin (SEC-050)"
+    node "$ROOT/scripts/rotate-admin.js" --if-unprovisioned || \
+      echo "(admin provisioning skipped — run scripts/rotate-admin.js by hand)"
+  fi
 fi
 echo "== Timescale ${TS_HOST:-localhost}:${TS_PORT:-5432}/${TS_DB:-volthub} =="
 TS_OK=1

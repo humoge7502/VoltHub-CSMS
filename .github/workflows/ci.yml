@@ -124,6 +124,10 @@ jobs:
       TS_DB: volthub
       TS_USER: volthub
       TS_PASSWORD: volthub_dev_pwd
+      # SEC-050: the Oracle seed writes admin@volthub.in with the '!unprovisioned'
+      # sentinel, and scripts/migrate.sh provisions the real hash from this. It is a
+      # throwaway CI database, so a fixed fixture password is fine here.
+      ADMIN_BOOTSTRAP_PASSWORD: Admin@123
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
