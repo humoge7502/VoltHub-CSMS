@@ -2,6 +2,27 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- **Web smoke suite** — `apps/web/test/smoke.mjs` (+ `npm run test:smoke` in `apps/web`).
+  13 outcome-based checks (hero, font, nav, no uncaught exceptions, no horizontal
+  overflow at 375/1280, login fields, discover render) runnable against any origin via
+  `BASE_URL`. First automated test for the console (closes the ISS-02 gap).
+- **`docs/STRATEGY-AND-ROADMAP.md`** — full analysis: differentiation vectors, issue
+  catalogue (severity/priority/effort/dependencies/timeline), per-module enhancements,
+  advanced features, integrations, test strategy, and a 90-day plan.
+
+### Changed
+
+- **Landing page de-slopped** per the Impeccable detector: removed the hero eyebrow chip,
+  the "TAKE IT FROM THE TOP" kicker, and the three numbered section labels; reduced
+  em-dash saturation; corrected the stale **66 paths → 72 paths** figure.
+- **Type system**: body Inter → **IBM Plex Sans** (pairs with IBM Plex Mono numerals);
+  display Space Grotesk → **Bricolage Grotesque**. Removes the two most over-used
+  AI-default faces while keeping the carbon/cream/lime identity.
+
 ## [1.8.1] — 2026-10-24
 
 > Ships the 2026-10-24 security/money-path review fixes and the console polish pass, plus the

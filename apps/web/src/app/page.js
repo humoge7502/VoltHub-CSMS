@@ -57,8 +57,7 @@ export default function Home() {
     <div className="wrap">
       {/* 01 — hero: what, why, who, next */}
       <section className="hero">
-        <div className="micro rise">ORACLE OLTP · TIMESCALEDB TELEMETRY · OCPP 1.6J</div>
-        <h1 className="display rise d1" style={{ margin: 'var(--sp-4) 0 0' }}>
+        <h1 className="display rise d1" style={{ margin: 0 }}>
           Certainty is
           <br />
           a database
@@ -86,9 +85,8 @@ export default function Home() {
       {/* 02 — live system state (client island, the only JS on this page) */}
       <section className="sec" aria-label="Live system state">
         <div className="sec-h">
-          <span className="secnum">01</span>
           <h2>Live from the gateway</h2>
-          <p>Polling /health on the API — outbox lag is the distance between a meter tick and its analytics copy.</p>
+          <p>Polling /health on the API. Outbox lag is the distance between a meter tick and its analytics copy.</p>
         </div>
         <LiveKpis />
       </section>
@@ -113,7 +111,7 @@ export default function Home() {
           </div>
           <div>
             <div className="micro">API surface</div>
-            <div className="v num">66 paths</div>
+            <div className="v num">72 paths</div>
             <div className="micro">OpenAPI drift-gated</div>
           </div>
         </div>
@@ -122,9 +120,8 @@ export default function Home() {
       {/* 04 — the north-star flow, as an index */}
       <section className="sec">
         <div className="sec-h">
-          <span className="secnum">02</span>
           <h2>Four steps, two clicks to live kWh</h2>
-          <p>The demo path a first-time user takes — every step is a real route in this console.</p>
+          <p>The demo path a first-time user takes; every step is a real route in this console.</p>
         </div>
         <div className="idx">
           {FLOWS.map((f) => (
@@ -143,9 +140,8 @@ export default function Home() {
       {/* 05 — what makes it different */}
       <section className="sec">
         <div className="sec-h">
-          <span className="secnum">03</span>
           <h2>Two engines. One transaction boundary.</h2>
-          <p>Each choice names its trade-off — the full set lives in the ADR index.</p>
+          <p>Each choice names its trade-off; the full set lives in the ADR index.</p>
         </div>
         <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
           {CAPS.map((c) => (
@@ -173,10 +169,9 @@ export default function Home() {
           }}
         >
           <div>
-            <div className="micro">TAKE IT FROM THE TOP</div>
-            <h2 style={{ margin: 'var(--sp-2) 0 0' }}>Run the whole stack locally</h2>
+            <h2 style={{ margin: 0 }}>Run the whole stack locally</h2>
             <p style={{ color: 'var(--tx2)', margin: 'var(--sp-2) 0 0', maxWidth: '52ch' }}>
-              No Docker needed for the local profile. Demo logins —{' '}
+              No Docker needed for the local profile. Demo logins:{' '}
               <span className="num">admin@volthub.in / Admin@123</span> ·{' '}
               <span className="num">arjun@volthub.in / Operator@123</span> · any seeded driver with{' '}
               <span className="num">Driver@123</span>.
