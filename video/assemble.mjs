@@ -156,7 +156,11 @@ fs.writeFileSync(path.join(OUT, 'volthub-demo.srt'), srt, 'utf8');
 
 // ---- 4. mux -------------------------------------------------------------------
 const out = path.join(OUT, 'volthub-demo.mp4');
-const assFilter = `ass='${assPath.replace(/\\/g, '/').replace(/:/g, '\\:')}'`;
+// ffmpeg filter paths: escape the escape character FIRST, then the filter's special
+// characters (':' and "'") — a partial chain reads as incomplete escaping
+// (CodeQL js/incomplete-string-escaping).
+const ffFilterPath = (p) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\\\'");
+const assFilter = `ass='${ffFilterPath(assPath)}'`;
 ff(
   [
     '-i',
