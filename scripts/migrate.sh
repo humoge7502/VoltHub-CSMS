@@ -41,6 +41,31 @@ run_oracle_file() {
   fi
 }
 ORACLE_OK=1
+# Bounded wait for the PDB to register with the listener. The listener accepts
+# connections a few seconds before `freepdb1` is registered, so the first file
+# would die with ORA-12514 on a fast runner — the race that made the ui workflow
+# red. The Docker healthcheck can already read `healthy` at that point, so the
+# probe has to be a real query.
+oracle_probe() {
+  local cname
+  if command -v sqlplus >/dev/null 2>&1; then
+    echo "select 'READY' from dual;" |
+      sqlplus -S "${ORACLE_USER}/${ORACLE_PASSWORD}@${ORACLE_HOST}/${ORACLE_SERVICE}" 2>/dev/null | grep -q READY
+    return
+  fi
+  cname="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^volthub-oracle$' || true)"
+  [ -z "$cname" ] && cname="$(docker ps --filter 'ancestor=gvenzl/oracle-free:23-slim' --format '{{.Names}}' 2>/dev/null | head -1)"
+  [ -z "$cname" ] && return 1
+  echo "select 'READY' from dual;" |
+    docker exec -i "$cname" sqlplus -S "${ORACLE_USER}/${ORACLE_PASSWORD}@localhost/${ORACLE_SERVICE}" 2>/dev/null | grep -q READY
+}
+if command -v sqlplus >/dev/null 2>&1 || docker ps --format '{{.Names}}' 2>/dev/null | grep -q .; then
+  for i in $(seq 1 24); do
+    oracle_probe && break
+    echo "   (waiting for ${ORACLE_SERVICE} to register — ${i}/24)"
+    sleep 5
+  done
+fi
 for f in "$ROOT"/db/oracle/V0[0-9]*.sql; do
   run_oracle_file "$f" || ORACLE_OK=0
 done

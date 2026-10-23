@@ -58,6 +58,9 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 - `scripts/rotate-admin.js` no longer echoes the plaintext password (CodeQL
   `js/clear-text-logging`); it prints the hash and a redacted instruction instead.
+- `scripts/migrate.sh` waits (up to 2 min) for `freepdb1` to register with the listener
+  before applying V001…, instead of racing it with ORA-12514 on a fast runner — the
+  Docker healthcheck can already read `healthy` while the PDB is still closed.
 
 ## [1.8.1] — 2026-10-24
 

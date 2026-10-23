@@ -28,8 +28,12 @@ const SENTINEL = '!unprovisioned';
 const ifUnprovisioned = process.argv.includes('--if-unprovisioned');
 
 const password = arg('password') || process.env.ADMIN_BOOTSTRAP_PASSWORD;
-if (!password || password.length < 12) {
-  console.error('Refusing: provide --password (>=12 chars) or ADMIN_BOOTSTRAP_PASSWORD.');
+// --if-unprovisioned mirrors what the local seed accepts (seed.js falls back to
+// its dev default), so it takes the same floor rather than the rotation floor —
+// otherwise a 9-char dev/CI value would seed fine locally and refuse in Oracle.
+const MIN_LEN = ifUnprovisioned ? 8 : 12;
+if (!password || password.length < MIN_LEN) {
+  console.error(`Refusing: provide --password (>=${MIN_LEN} chars) or ADMIN_BOOTSTRAP_PASSWORD.`);
   process.exit(1);
 }
 
