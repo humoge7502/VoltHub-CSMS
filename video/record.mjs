@@ -54,13 +54,15 @@ async function token(email, password) {
   return j.accessToken;
 }
 
-const authFetch = (tok) => async (p, opts = {}) => {
-  const r = await fetch(`${API}${p}`, {
-    ...opts,
-    headers: { 'content-type': 'application/json', Authorization: `Bearer ${tok}`, ...(opts.headers || {}) },
-  });
-  return r.json().catch(() => ({}));
-};
+const authFetch =
+  (tok) =>
+  async (p, opts = {}) => {
+    const r = await fetch(`${API}${p}`, {
+      ...opts,
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${tok}`, ...(opts.headers || {}) },
+    });
+    return r.json().catch(() => ({}));
+  };
 
 // The live session the app tour films. A durable CSMS may hold several; prefer one that is
 // actually charging, then anything open, then the newest finished session (the page renders
@@ -122,7 +124,10 @@ const run = async () => {
         // Reserve the first free connector exactly as a driver would.
         const reserve = page.getByRole('button', { name: /^Reserve$/ });
         if (await reserve.count()) {
-          await reserve.first().click({ timeout: 4000 }).catch(() => {});
+          await reserve
+            .first()
+            .click({ timeout: 4000 })
+            .catch(() => {});
         }
         await at(13.5);
         await goto(`${WEB}/session/${liveId}`);
@@ -141,17 +146,34 @@ const run = async () => {
         const connect = page.locator('section.sec').first();
         await connect.scrollIntoViewIfNeeded().catch(() => {});
         await at(9.0);
-        await page.getByRole('button', { name: /Link wallet/i }).click({ timeout: 5000 }).catch(() => {});
-        await page.locator('.w-proof').scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => {});
+        await page
+          .getByRole('button', { name: /Link wallet/i })
+          .click({ timeout: 5000 })
+          .catch(() => {});
+        await page
+          .locator('.w-proof')
+          .scrollIntoViewIfNeeded({ timeout: 4000 })
+          .catch(() => {});
         await at(21.0);
         const topup = page.locator('section.sec').nth(1);
         await topup.scrollIntoViewIfNeeded().catch(() => {});
         await at(23.0);
-        await page.locator('.w-chip', { hasText: '500' }).first().click({ timeout: 4000 }).catch(() => {});
+        await page
+          .locator('.w-chip', { hasText: '500' })
+          .first()
+          .click({ timeout: 4000 })
+          .catch(() => {});
         await at(24.5);
-        await page.getByRole('button', { name: /^Authorise/i }).click({ timeout: 5000 }).catch(() => {});
+        await page
+          .getByRole('button', { name: /^Authorise/i })
+          .click({ timeout: 5000 })
+          .catch(() => {});
         await at(34.0);
-        await page.locator('section.sec').nth(2).scrollIntoViewIfNeeded().catch(() => {});
+        await page
+          .locator('section.sec')
+          .nth(2)
+          .scrollIntoViewIfNeeded()
+          .catch(() => {});
         await at(d);
       } else if (seg.scene === 'operator') {
         await goto(`${WEB}/`);

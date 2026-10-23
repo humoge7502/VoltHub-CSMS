@@ -74,19 +74,27 @@ for (const [i, seg] of timing.entries()) {
   // painted frame. tpad clones the last frame if the clip is a hair short.
   ff(
     [
-      '-ss', '0.35',
-      '-i', src,
-      '-t', String(seg.duration),
+      '-ss',
+      '0.35',
+      '-i',
+      src,
+      '-t',
+      String(seg.duration),
       '-vf',
       `fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
         `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x0b0e11,setsar=1,` +
         `tpad=stop_mode=clone:stop_duration=3`,
-      '-t', String(seg.duration),
+      '-t',
+      String(seg.duration),
       '-an',
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-crf', '19',
-      '-pix_fmt', 'yuv420p',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '19',
+      '-pix_fmt',
+      'yuv420p',
       dst,
     ],
     `normalise ${seg.id}`
@@ -140,9 +148,10 @@ const ass = [
 const assPath = path.join(OUT, 'captions.ass');
 fs.writeFileSync(assPath, ass, 'utf8');
 
-const srt = cues
-  .map((c, i) => `${i + 1}\n${ts(c.start)} --> ${ts(c.end)}\n${c.text}\n`)
-  .join('\n');
+// SRT has no escape syntax — strip backslashes and control characters before writing
+// cue text (CodeQL js/incomplete-string-escaping: ASS escapes above, SRT sanitizes).
+const plain = (s) => String(s).replace(/[\\{}\r\n]+/g, ' ');
+const srt = cues.map((c, i) => `${i + 1}\n${ts(c.start)} --> ${ts(c.end)}\n${plain(c.text)}\n`).join('\n');
 fs.writeFileSync(path.join(OUT, 'volthub-demo.srt'), srt, 'utf8');
 
 // ---- 4. mux -------------------------------------------------------------------
@@ -150,18 +159,29 @@ const out = path.join(OUT, 'volthub-demo.mp4');
 const assFilter = `ass='${assPath.replace(/\\/g, '/').replace(/:/g, '\\:')}'`;
 ff(
   [
-    '-i', silent,
-    '-i', voice,
-    '-vf', `${assFilter},fade=t=in:st=0:d=0.5,fade=t=out:st=${(total - 1).toFixed(2)}:d=1`,
-    '-af', `afade=t=out:st=${(total - 1.2).toFixed(2)}:d=1.2`,
-    '-c:v', 'libx264',
-    '-preset', 'medium',
-    '-crf', '19',
-    '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac',
-    '-b:a', '192k',
+    '-i',
+    silent,
+    '-i',
+    voice,
+    '-vf',
+    `${assFilter},fade=t=in:st=0:d=0.5,fade=t=out:st=${(total - 1).toFixed(2)}:d=1`,
+    '-af',
+    `afade=t=out:st=${(total - 1.2).toFixed(2)}:d=1.2`,
+    '-c:v',
+    'libx264',
+    '-preset',
+    'medium',
+    '-crf',
+    '19',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '192k',
     '-shortest',
-    '-movflags', '+faststart',
+    '-movflags',
+    '+faststart',
     out,
   ],
   'mux'

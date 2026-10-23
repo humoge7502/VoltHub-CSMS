@@ -44,7 +44,9 @@ const main = async () => {
   step(1, 'Sign in');
   const { accessToken } = await api('/auth/login', { method: 'POST', body: { email: EMAIL, password: PASSWORD } });
   const before = await api('/me/wallet', { token: accessToken });
-  line(`    balance ${c.lime(`₹${before.wallet.balance}`)} · links ${before.links.length} · ledger ${before.ledger.length} rows`);
+  line(
+    `    balance ${c.lime(`₹${before.wallet.balance}`)} · links ${before.links.length} · ledger ${before.ledger.length} rows`
+  );
 
   const wallet = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
   step(2, `Signer ${wallet.address}`);
@@ -56,7 +58,15 @@ const main = async () => {
     token: accessToken,
     body: { address: wallet.address },
   });
-  line(c.dim(ch.message.split('\n').slice(0, 4).map((l) => '    ' + l).join('\n')));
+  line(
+    c.dim(
+      ch.message
+        .split('\n')
+        .slice(0, 4)
+        .map((l) => '    ' + l)
+        .join('\n')
+    )
+  );
 
   step(4, 'Sign it (EIP-191 personal_sign) and link');
   const sig = await wallet.signMessage(ch.message);
@@ -78,7 +88,9 @@ const main = async () => {
     token: accessToken,
     body: { intent_id: intent.intent_id, signature: auth },
   });
-  line(`    ${c.lime('credited')} ₹${out.receipt.amount_inr} · ledger seq ${out.receipt.ledger_seq} · balance ₹${out.receipt.balance_after}`);
+  line(
+    `    ${c.lime('credited')} ₹${out.receipt.amount_inr} · ledger seq ${out.receipt.ledger_seq} · balance ₹${out.receipt.balance_after}`
+  );
   line(c.dim(`    reference ${out.receipt.reference}`));
 
   step(7, 'Replay the same signature — the rail must refuse');
@@ -99,7 +111,10 @@ const main = async () => {
     `\n${c.cream('ledger tail')}\n` +
       after.ledger
         .slice(0, 3)
-        .map((l) => `    #${String(l.seq_no).padStart(3, '0')} ${l.kind.padEnd(8)} ${String(l.amount).padStart(9)} → ${l.balance_after}  ${c.dim(l.note || '')}`)
+        .map(
+          (l) =>
+            `    #${String(l.seq_no).padStart(3, '0')} ${l.kind.padEnd(8)} ${String(l.amount).padStart(9)} → ${l.balance_after}  ${c.dim(l.note || '')}`
+        )
         .join('\n')
   );
 };

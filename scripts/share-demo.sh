@@ -145,8 +145,10 @@ set_env_key WEB_ORIGIN "${KEPT_ORIGIN},${WEB_URL}"
 set_env_key NEXT_PUBLIC_API_BASE "${API_URL}/api/v1"
 set_env_key NEXT_PUBLIC_SITE_URL "${WEB_URL}"
 
-# API + worker must pick up WEB_ORIGIN / TRUST_PROXY / INTERNAL_TOKEN; the browser
-# bundle needs a rebuild because NEXT_PUBLIC_* is inlined at build time.
+# Deploy the CURRENT code, not whatever the image was when it was last built:
+# api/worker images must be rebuilt just like the web bundle (a rerun after a code
+# change used to redeploy a fresh web bundle against a stale backend image).
+compose build api worker
 compose up -d --force-recreate --no-deps api worker
 compose up -d --build --no-deps web
 

@@ -27,12 +27,12 @@ signed text carry every field that changes the money.
 
 ### 1. Two ceremonies, one verification path
 
-| | Wallet link | Top-up |
-|---|---|---|
-| Challenge | EIP-4361-shaped, names address, chain id, nonce, issued-at, URI | domain-separated intent, names intent id, wallet, chain, **amount in INR and in wei**, expiry |
-| TTL | 5 minutes | 10 minutes |
-| Reuse | single-use nonce, deleted on success | single-use intent, `ALREADY_SETTLED` on replay |
-| Verified by | `verifyMessage` → recovered signer must equal the claimed address | same, **plus** the intent row must still be `PENDING` and unexpired |
+|             | Wallet link                                                       | Top-up                                                                                        |
+| ----------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Challenge   | EIP-4361-shaped, names address, chain id, nonce, issued-at, URI   | domain-separated intent, names intent id, wallet, chain, **amount in INR and in wei**, expiry |
+| TTL         | 5 minutes                                                         | 10 minutes                                                                                    |
+| Reuse       | single-use nonce, deleted on success                              | single-use intent, `ALREADY_SETTLED` on replay                                                |
+| Verified by | `verifyMessage` → recovered signer must equal the claimed address | same, **plus** the intent row must still be `PENDING` and unexpired                           |
 
 Both produce a real signature over real text; both are verified server-side by recovering
 the signer, never by trusting a client-supplied address. `apps/api/src/wallet/rail.js` owns

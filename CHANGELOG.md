@@ -8,14 +8,13 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 > 1.8.0 wallet-rail content below, which was built but never tagged. Everything in this
 > section landed with regression tests; the full chain (16 suites) is green.
 
-
 ### Added
 
 - **Console motion + honesty layer (UI/UX polish pass).** Live-session hero number
   glides between polls (`useCountUp`, snaps under `prefers-reduced-motion`); charts
   draw in once on mount and the live power trace carries a pulsing last point; polled
   dashboards keep the last good charts when a poll fails and show a `reconnecting —
-  showing last good data` chip instead of wiping the view; route-level
+showing last good data` chip instead of wiping the view; route-level
   `error.js`/`global-error.js` boundaries replace Next's default white-screen crash.
 
 ### Fixed
@@ -69,7 +68,7 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 ### Security
 
 - **OCPP gateway refuses secretless charge points (SEC-041).** A CP row without an
-  `auth_secret` was previously accepted with *no credentials at all* in `per-cp` mode —
+  `auth_secret` was previously accepted with _no credentials at all_ in `per-cp` mode —
   on any seeded/hydrated deployment (identities are guessable), anyone could connect as
   any charger and fabricate `StartTransaction`/`MeterValues` billing input. Such
   connections now close with `4401`. Regression: gateway-close t9.

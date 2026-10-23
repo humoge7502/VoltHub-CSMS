@@ -28,9 +28,16 @@ async function main() {
   const { server, store } = require('../src/server');
   await new Promise((r) => server.listen(4109, r));
   const B = 'http://localhost:4109/api/v1';
+  const ORIGIN = new URL(B).origin;
   const api = async (p, o = {}) => {
     const { headers, ...rest } = o;
-    const r = await fetch(B + p, {
+    // CodeQL js/request-forgery: request paths interpolate ids received from simulated
+    // chargers (tainted by construction). The base is a FIXED localhost test origin —
+    // normalize the path against it and refuse anything that would leave that origin
+    // before the request is made (the documented allowlist mitigation).
+    const u = new URL(`${B.replace(/\/$/, '')}${p.startsWith('/') ? '' : '/'}${p}`);
+    if (u.origin !== ORIGIN) throw new Error(`refusing non-test origin: ${u.origin}`);
+    const r = await fetch(u, {
       ...rest,
       headers: { 'content-type': 'application/json', ...(headers || {}) },
     });

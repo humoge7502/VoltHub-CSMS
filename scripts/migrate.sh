@@ -41,7 +41,7 @@ run_oracle_file() {
   fi
 }
 ORACLE_OK=1
-for f in "$ROOT"/db/oracle/V00*.sql; do
+for f in "$ROOT"/db/oracle/V0[0-9]*.sql; do
   run_oracle_file "$f" || ORACLE_OK=0
 done
 if [ "$ORACLE_OK" = "1" ] && [ -f "$ROOT/db/oracle/seed/seed.sql" ] && [ "${SEED_DB:-0}" = "1" ]; then
@@ -51,7 +51,7 @@ fi
 echo "== Timescale ${TS_HOST:-localhost}:${TS_PORT:-5432}/${TS_DB:-volthub} =="
 TS_OK=1
 if command -v psql >/dev/null 2>&1; then
-  for f in "$ROOT"/db/timescale/T00*.sql; do
+  for f in "$ROOT"/db/timescale/T0[0-9]*.sql; do
     echo "-- apply $f"
     PGPASSWORD="${TS_PASSWORD:-volthub_dev_pwd}" psql -h "${TS_HOST:-localhost}" -U "${TS_USER:-volthub}" -d "${TS_DB:-volthub}" -v ON_ERROR_STOP=1 -f "$f" || TS_OK=0
   done

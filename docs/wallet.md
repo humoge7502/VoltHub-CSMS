@@ -9,13 +9,13 @@ Design record: [ADR-0016](adr/0016-wallet-signature-rail.md).
 
 ## What it is, and what it is not
 
-| | |
-|---|---|
-| **Is** | EIP-191 `personal_sign` authorisation, verified server-side by signer recovery |
-| **Is** | A single-use, amount-binding, expiring authorisation for one ledger credit |
-| **Is** | Compatible with MetaMask and any EIP-1193 provider, plus a demo signer for machines with no extension |
-| **Is not** | An on-chain transaction. No gas, no chain write, no ETH moves |
-| **Is not** | A custodial wallet. The server stores a public address and a signature; never a key |
+|            |                                                                                                       |
+| ---------- | ----------------------------------------------------------------------------------------------------- |
+| **Is**     | EIP-191 `personal_sign` authorisation, verified server-side by signer recovery                        |
+| **Is**     | A single-use, amount-binding, expiring authorisation for one ledger credit                            |
+| **Is**     | Compatible with MetaMask and any EIP-1193 provider, plus a demo signer for machines with no extension |
+| **Is not** | An on-chain transaction. No gas, no chain write, no ETH moves                                         |
+| **Is not** | A custodial wallet. The server stores a public address and a signature; never a key                   |
 
 The reference rate (₹2,50,000 per ETH) is a fixed demo constant, not a price feed. It exists
 so a receipt can show an ETH-denominated line next to the rupee amount; it is labelled as a
@@ -81,17 +81,17 @@ The settle call never reads an amount from the request body.
 
 ## Error codes you can rely on
 
-| Code | HTTP | When |
-|---|---|---|
-| `INVALID_ADDRESS` | 422 | Address fails EIP-55 checksum / is not 20 bytes |
-| `BAD_SIGNATURE` | 401 | Signature is not recoverable |
-| `SIGNATURE_MISMATCH` | 401 | Recovered signer ≠ claimed address |
-| `CHALLENGE_EXPIRED` | 409 | Challenge older than 5 minutes, or nonce already used |
-| `INTENT_EXPIRED` | 409 | Intent older than 10 minutes |
-| `ALREADY_SETTLED` | 409 | This intent has already credited the ledger |
-| `WALLET_TAKEN` | 409 | Address is actively linked to another user |
-| `NO_WALLET_LINKED` | 409 | Top-up attempted before linking |
-| `AMOUNT_OUT_OF_RANGE` | 422 | Outside ₹1 – ₹10,000 |
+| Code                  | HTTP | When                                                  |
+| --------------------- | ---- | ----------------------------------------------------- |
+| `INVALID_ADDRESS`     | 422  | Address fails EIP-55 checksum / is not 20 bytes       |
+| `BAD_SIGNATURE`       | 401  | Signature is not recoverable                          |
+| `SIGNATURE_MISMATCH`  | 401  | Recovered signer ≠ claimed address                    |
+| `CHALLENGE_EXPIRED`   | 409  | Challenge older than 5 minutes, or nonce already used |
+| `INTENT_EXPIRED`      | 409  | Intent older than 10 minutes                          |
+| `ALREADY_SETTLED`     | 409  | This intent has already credited the ledger           |
+| `WALLET_TAKEN`        | 409  | Address is actively linked to another user            |
+| `NO_WALLET_LINKED`    | 409  | Top-up attempted before linking                       |
+| `AMOUNT_OUT_OF_RANGE` | 422  | Outside ₹1 – ₹10,000                                  |
 
 Each of these is asserted in `apps/api/test/wallet.js` (12 cases), including the replay case
 that matters most: settle the same signature twice, get one credit and one `409`.

@@ -10,9 +10,7 @@ const arg = (k, d) => {
   return i > -1 ? process.argv[i + 1] : d;
 };
 const OUT = path.resolve(arg('--out', 'docs/screenshots'));
-const ONLY = arg('--only', '')
-  .split(',')
-  .filter(Boolean);
+const ONLY = arg('--only', '').split(',').filter(Boolean);
 const W = Number(arg('--w', 1440));
 const H = Number(arg('--h', 900));
 const SCALE = Number(arg('--scale', 2));
@@ -71,9 +69,7 @@ const run = async () => {
     const res = await page.goto(`${WEB}${route}`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(900);
     // let skeletons settle: wait for any .skel to disappear (max 6s)
-    await page
-      .waitForFunction(() => !document.querySelector('.skel'), null, { timeout: 6000 })
-      .catch(() => {});
+    await page.waitForFunction(() => !document.querySelector('.skel'), null, { timeout: 6000 }).catch(() => {});
     await page.waitForTimeout(400);
     const file = path.join(OUT, `${name}.png`);
     await page.screenshot({ path: file, fullPage: FULL });
