@@ -20,3 +20,9 @@ __pycache__/
 
 # local scratch (not for submission)
 VoltHub-CSMS_Master_Transformation_Blueprint.docx
+
+# local agent-tooling assets (not project code)
+.zcode/
+.workbuddy-ai/
+# demo-film build artifacts (record.mjs/assemble.mjs sources ARE committed)
+video/out/

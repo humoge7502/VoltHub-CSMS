@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { api, Pill, PageHead, EmptyState, AuthGate } from '../../lib/ui';
+import { api, Pill, PageHead, EmptyState, AuthGate, IST } from '../../lib/ui';
 
 export default function Notifications() {
   const [list, setList] = useState([]);
@@ -39,7 +39,15 @@ export default function Notifications() {
         </p>
       )}
       <AuthGate error={err}>
-        {!loading && !list.length && !err ? (
+        {loading ? (
+          /* A loading fetch used to render an EMPTY grid (the EmptyState needs
+             !loading, but nothing showed skeletons) — blink of empty then a pop. */
+          <div style={{ display: 'grid', gap: 12 }} aria-busy="true" aria-label="Loading">
+            <div className="skel" style={{ height: 92 }} />
+            <div className="skel" style={{ height: 92 }} />
+            <div className="skel" style={{ height: 92 }} />
+          </div>
+        ) : !list.length && !err ? (
           <EmptyState
             title="All quiet"
             body="Reservation confirmations, session events and invoice receipts will land here."
@@ -58,7 +66,14 @@ export default function Notifications() {
                     <Pill s={unread ? 'BOOKED' : 'EXPIRED'} />
                     <b>{n.title}</b>
                     <span className="micro num" style={{ marginLeft: 'auto' }}>
-                      {new Date(n.created_at).toLocaleString()}
+                      {new Date(n.created_at).toLocaleString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false,
+                        timeZone: IST,
+                      })}
                     </span>
                   </div>
                   <div className="num micro" style={{ marginTop: 4 }}>

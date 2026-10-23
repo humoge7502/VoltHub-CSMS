@@ -1,8 +1,8 @@
 # @volthub/worker — outbox relay + expiry sweeper
 
-2s loop, batch 500: `GET /internal/outbox` → sink (TimescaleDB `COPY … ON CONFLICT
+2s loop, batch 500: `GET /internal/outbox` → sink (TimescaleDB multi-row `INSERT … ON CONFLICT
 DO NOTHING` in prod, idempotent `timescale-mirror.jsonl` locally) → `POST
-/internal/outbox/ack`, plus reservation no-show expiry. Crash-after-COPY replays
+/internal/outbox/ack`, plus reservation no-show expiry. Crash-mid-batch replays
 with zero dupes (dedupe key `(kind,session_id,seq)`); sink-down accumulates and the
 dashboard stays stale-honest via `/health.outbox_lag`.
 

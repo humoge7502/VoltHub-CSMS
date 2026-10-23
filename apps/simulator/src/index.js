@@ -79,7 +79,17 @@ function ocppCall(ws, action, payload) {
 }
 
 async function loginDriver() {
-  // seed drivers use Driver@123; pick first driver via register (idempotent-ish)
+  // `--driver <email>` drives the session as an *existing* driver (seed users use
+  // Driver@123). That matters for demos: the console you are already signed into only
+  // shows sessions owned by that user, so a throwaway `sim.*` account would start a
+  // session nobody can see. Without the flag we register a fresh sim driver.
+  if (args.driver) {
+    const j = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: args.driver, password: args.password || 'Driver@123' }),
+    });
+    return { token: j.accessToken, userId: j.user.user_id };
+  }
   const email = `sim.${Date.now()}@example.in`;
   const j = await api('/auth/register', {
     method: 'POST',
@@ -176,7 +186,9 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
     timestamp: new Date().toISOString(),
   });
   console.log(`[sim:${identity}] charging tx=${transactionId} res=${reservation?.reservation_id ?? '-'}`);
-  const ticks = faultMid ? 6 : 12;
+  const ticks = faultMid ? 6 : Number(args.ticks || 12);
+  const gapMs = Number(args.interval || 700);
+  let cumWh = 0;
   for (let i = 1; i <= ticks; i++) {
     if (remoteStopTx) {
       console.log(`[sim:${identity}] stopped by CSMS at tick ${i}`);
@@ -193,10 +205,19 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
       break;
     }
     // Natural draw vs honored profile: a compliant CP meters min(natural, limit).
-    const naturalW = 30000 + i * 500;
+    // `naturalW` also respects the connector's nameplate rating — a 22 kW AC bay that
+    // meters 49 kW is a number nobody believes, and the console shows it next to the
+    // connector's own spec.
+    const capW = (Number(opts.maxKw) || 60) * 1000 * 0.82;
+    const naturalW = Math.min(30000 + i * 500, Math.round(capW));
     const drawW = profileLimitW != null ? Math.min(naturalW, profileLimitW) : naturalW;
     if (profileLimitW != null && drawW < naturalW)
       console.log(`[sim:${identity}] profile honored: ${naturalW}W -> ${drawW}W`);
+    // The meter register advances by the energy actually delivered during this frame:
+    // W × s / 3600 = Wh. A fixed +2.5 kWh per tick implied 12 MW at a 0.7 s cadence, so
+    // the invoice and the power trace told different stories. `--interval` now also
+    // scales the register, which keeps `elapsed × kW ≈ kWh` true in the console.
+    cumWh += (drawW * (gapMs / 1000)) / 3600;
     await ocppCall(ws, 'MeterValues', {
       connectorId: connNo,
       transactionId,
@@ -204,18 +225,25 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
         {
           timestamp: new Date().toISOString(),
           sampledValue: [
-            { value: String(i * 2500), measurand: 'Energy.Active.Import.Register', unit: 'Wh' },
+            { value: cumWh.toFixed(1), measurand: 'Energy.Active.Import.Register', unit: 'Wh' },
             { value: String(drawW), measurand: 'Power.Active.Import', unit: 'W' },
           ],
         },
       ],
     });
-    await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, gapMs));
+  }
+  // `--hold <s>` keeps the transaction open after the last meter value. Screen
+  // recordings need the session to stay live long enough to watch it tick; the
+  // alternative — a longer `--ticks` — would inflate the meter register for real.
+  if (!faultMid && Number(args.hold)) {
+    console.log(`[sim:${identity}] holding tx=${transactionId} open for ${args.hold}s`);
+    await new Promise((r) => setTimeout(r, Number(args.hold) * 1000));
   }
   if (!faultMid)
     await ocppCall(ws, 'StopTransaction', {
       transactionId,
-      meterStop: ticks * 2500,
+      meterStop: Math.round(cumWh),
       timestamp: new Date().toISOString(),
     });
   ws.close();
@@ -290,26 +318,63 @@ async function main() {
   if (!args.provision && N > cps.length && SCENARIO !== 'burst')
     console.log(`[sim] requested ${N} charger(s) but only ${cps.length} connector(s) are AVAILABLE`);
   if (SCENARIO === 'race') {
-    // R1: two parallel reserves, same connector+window -> exactly 1x201 + 1x409
-    const c = cps[0];
-    const [cp, no] = c.connector_ref.split(':').map(Number);
+    // R1: two parallel reserves, same connector+window -> exactly 1x201 + 1x409.
+    // The precondition is a connector that is actually free for that window: against a
+    // durable database a previous run may still hold one, and "both lost to an existing
+    // booking" is not a race result. Walk the fleet until a bay is genuinely free, and
+    // say which one was used — a race on a booked bay would prove nothing.
     const s = new Date(Date.now() + 20 * 60000).toISOString(),
       e = new Date(Date.now() + 60 * 60000).toISOString();
-    const mk = () =>
-      api('/reservations', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': `race-${Math.random()}` },
-        body: JSON.stringify({ cpId: cp, connectorNo: no, startAt: s, endAt: e }),
+    const clean = (m) => String(m).split('\n')[0];
+    // Print the race as a transcript rather than a verdict: two named racers, the
+    // latency each one actually measured, and the reservation id that won. Every value
+    // below comes from the response — nothing here is decorated for the camera.
+    let ok = 0;
+    for (const c of cps) {
+      const [cp, no] = c.connector_ref.split(':').map(Number);
+      const mk = async () => {
+        const t0 = process.hrtime.bigint();
+        try {
+          const r = await api('/reservations', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': `race-${Math.random()}` },
+            body: JSON.stringify({ cpId: cp, connectorNo: no, startAt: s, endAt: e }),
+          });
+          return { ok: true, ms: Number(process.hrtime.bigint() - t0) / 1e6, body: r };
+        } catch (err) {
+          return { ok: false, ms: Number(process.hrtime.bigint() - t0) / 1e6, err };
+        }
+      };
+      const out = await Promise.all([mk(), mk()]);
+      const wins = out.filter((x) => x.ok).length;
+      const lines = out.map((x, i) => {
+        const who = `racer ${i ? 'B' : 'A'}`;
+        const ms = `${x.ms.toFixed(0)} ms`.padStart(7);
+        if (x.ok)
+          return `201 BOOKED   ${who}  ${ms}  reservation #${x.body.reservation?.reservation_id}  ${x.body.reservation?.connector_ref}`;
+        const tag = x.err.status === 409 ? '409 OVERLAP' : `${x.err.status || '?'} FAILED`;
+        return `${tag}  ${who}  ${ms}  ${clean(x.err.message)}`;
       });
-    const out = await Promise.allSettled([mk(), mk()]);
-    console.log(
-      out
-        .map((x) => (x.status === 'fulfilled' ? '201 BOOKED' : `${x.reason.status || '?'} ${x.reason.message}`))
-        .join(' | ')
-    );
-    const ok = out.filter((x) => x.status === 'fulfilled').length;
-    console.log(ok === 1 ? 'RACE-OK: exactly one winner (no double-book)' : `RACE-FAIL: ${ok} winners`);
-    process.exit(ok === 1 ? 0 : 1);
+      const transcript = [
+        `[race] connector ${c.connector_ref} · window +20..+60 min · 2 requests in flight`,
+        `[race] both racers POST /reservations with distinct Idempotency-Keys`,
+        ...lines,
+      ];
+      if (wins === 1) {
+        console.log(transcript.join('\n'));
+        console.log('RACE-OK: exactly one winner (no double-book) · 1×201 + 1×409');
+        process.exit(0);
+      }
+      // 0 winners here means the window was already taken before we raced: move on.
+      if (!out.every((x) => !x.ok && /OVERLAP|409/.test(`${x.err.status} ${x.err.message}`))) {
+        console.log(transcript.join('\n'));
+        console.log(`RACE-FAIL: ${wins} winners`);
+        process.exit(1);
+      }
+      ok = wins;
+    }
+    console.log(`RACE-FAIL: ${ok} winners (no free connector for the race window)`);
+    process.exit(1);
   }
   if (SCENARIO === 'no-show') {
     const c = cps[0];
@@ -357,6 +422,7 @@ async function main() {
     // FC-HCC compliance verification — the verifier must see the deviation).
     await normalFlow(c.ocpp_identity, cp, no, token, false, TAG, {
       compliant: args.impair !== 'noncompliant',
+      maxKw: c.max_power_kw,
     });
   }
 }

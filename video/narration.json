@@ -1,0 +1,139 @@
+[
+  {
+    "id": "01-title",
+    "kind": "scene",
+    "scene": "title",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-4%",
+    "text": "VoltHub C S M S. A charge point operator system where reservations can never double book, invoices bill exactly once, and every meter tick lands in two places at the same time.",
+    "captions": [
+      "VoltHub CSMS — a charge point operator system.",
+      "Reservations can never double-book.",
+      "Invoices bill exactly once.",
+      "Every meter tick lands in two places at once."
+    ]
+  },
+  {
+    "id": "02-problem",
+    "kind": "scene",
+    "scene": "problem",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-2%",
+    "text": "An EV charging network looks simple from the driver's seat. Underneath, it is three hard problems wearing one coat. Two drivers reserving the same connector in the same second. Money that must be billed once, and only once. And a firehose of meter readings arriving every few seconds, forever.",
+    "captions": [
+      "From the driver's seat, an EV network looks simple.",
+      "Underneath: three hard problems wearing one coat.",
+      "Two drivers, one connector, the same second.",
+      "Money that must be billed once — and only once.",
+      "And a firehose of meter readings, forever."
+    ]
+  },
+  {
+    "id": "03-idea",
+    "kind": "scene",
+    "scene": "idea",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-2%",
+    "text": "VoltHub answers with two database engines and one transaction boundary. Oracle twenty three AI owns the money path: reservations, sessions, invoices, and a wallet ledger whose balance is the last line of an append only log. TimescaleDB owns telemetry: hypertables, continuous aggregates, compression and retention. One outbox event carries every meter tick into both engines, so the billing record and the analytics record can never disagree.",
+    "captions": [
+      "Two engines. One transaction boundary.",
+      "Oracle 23ai owns the money path.",
+      "Reservations, sessions, invoices, and an append-only ledger.",
+      "TimescaleDB owns telemetry: hypertables, caggs, compression.",
+      "One outbox event carries each tick into both engines.",
+      "Billing and analytics can never disagree."
+    ]
+  },
+  {
+    "id": "04-race",
+    "kind": "scene",
+    "scene": "terminal",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-2%",
+    "text": "The race is the claim, so let's run it. Two requests reserve the same connector at the same instant. One gets two hundred and one created. The other gets four oh nine overlap. Not because the application was careful, but because the row lock lives in the database. The race suite asserts exactly one winner on every push, against both engines.",
+    "captions": [
+      "The race is the claim — so let's run it.",
+      "Two parallel reservations, same connector, same instant.",
+      "One gets 201 Created.",
+      "The other gets 409 Overlap.",
+      "The row lock lives in the database, not in the app.",
+      "CI asserts exactly one winner on every push."
+    ]
+  },
+  {
+    "id": "05-app",
+    "kind": "app",
+    "scene": "app-tour",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-2%",
+    "text": "Here is what a driver sees. Discover live availability along the Chennai corridor. Reserve a window on one specific connector. Plug in, and watch real O C P P meter values tick energy, power and cost every five seconds. When the session ends, the invoice is itemised by time of use band and session fee, and the prepaid wallet settles it in a single transaction.",
+    "captions": [
+      "What a driver sees: live availability on the corridor.",
+      "Reserve a window on one specific connector.",
+      "Plug in — real OCPP MeterValues tick kWh, kW and cost.",
+      "The invoice is itemised by time-of-use band.",
+      "The wallet settles it in a single transaction."
+    ]
+  },
+  {
+    "id": "06-wallet",
+    "kind": "app",
+    "scene": "wallet",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-2%",
+    "text": "Payments are where most demos get vague, so this one is cryptographically explicit. Link a wallet: the server issues a single use challenge, your wallet signs it, and the server recovers the signer to prove the address is yours. Top up: the amount is inside the signed text, so a five hundred rupee signature cannot settle five thousand. The API verifies the signature, then appends exactly one ledger row. Replay the same signature, and it is refused. No card data. No private keys. No gas.",
+    "captions": [
+      "Payments, made cryptographically explicit.",
+      "The server issues a single-use challenge.",
+      "Your wallet signs it — the server recovers the signer.",
+      "The amount lives inside the signed text.",
+      "Verified: exactly one ledger row is appended.",
+      "Replay the same signature — refused.",
+      "No card data. No private keys. No gas."
+    ]
+  },
+  {
+    "id": "07-operator",
+    "kind": "app",
+    "scene": "operator",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-2%",
+    "text": "For operators, the same events at a different resolution. Station health and revenue. A load curve read from TimescaleDB, not from memory. A seven by twenty four utilisation matrix. Faults with a maintenance trail. And a control plane that certifies capacity before it schedules a single kilowatt.",
+    "captions": [
+      "For operators: the same events, a different resolution.",
+      "Station health and revenue.",
+      "A load curve read from TimescaleDB, not from memory.",
+      "A 7 by 24 utilisation matrix.",
+      "Faults with a maintenance trail.",
+      "A control plane that certifies before it schedules."
+    ]
+  },
+  {
+    "id": "08-receipts",
+    "kind": "scene",
+    "scene": "receipts",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-2%",
+    "text": "Every claim in this project carries a receipt. One hundred and thirty seven tests on every push, plus a race suite that runs against both database engines. An OpenAPI contract with a drift gate. Decision records that name the trade offs, including the experiment that failed, and the fix that repaired it without rewriting the result.",
+    "captions": [
+      "Every claim carries a receipt.",
+      "137 tests on every push, plus a race suite on both engines.",
+      "An OpenAPI contract with a drift gate.",
+      "Decision records that name the trade-offs.",
+      "Including the experiment that failed — and its fix."
+    ]
+  },
+  {
+    "id": "09-close",
+    "kind": "scene",
+    "scene": "close",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-4%",
+    "text": "VoltHub C S M S. Two engines, one transaction boundary. Certainty is not a feature you add later. It is a property of the database.",
+    "captions": [
+      "VoltHub CSMS — two engines, one transaction boundary.",
+      "Certainty is not a feature you add later.",
+      "It is a property of the database."
+    ]
+  }
+]

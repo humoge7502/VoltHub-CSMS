@@ -38,6 +38,55 @@ export async function api(path, opts = {}) {
 }
 export const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 export const kwh = (n) => `${Number(n || 0).toFixed(2)} kWh`;
+// The console is India-first but viewed from anywhere: chart/table time labels render in
+// a FIXED zone (Asia/Kolkata) so the "IST" suffix tells the truth for every visitor.
+// (Pre-fix: toLocaleTimeString rendered the BROWSER's zone with "IST" hardcoded after it.)
+export const IST = 'Asia/Kolkata';
+export const fmtClock = (iso) =>
+  iso
+    ? new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: IST })
+    : '—';
+
+// useCountUp: RAF-driven number tween for polled hero values (emil/animate: motion
+// must earn its place — a big number that snaps every 5 s reads as broken; one that
+// glides reads as alive). Respects prefers-reduced-motion by snapping.
+export function useCountUp(target, { duration = 650 } = {}) {
+  const [v, setV] = useState(target);
+  const fromRef = useRef(target);
+  useEffect(() => {
+    const to = Number(target) || 0;
+    const from = Number(fromRef.current) || 0;
+    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    fromRef.current = to;
+    if (reduce || !Number.isFinite(to) || Math.abs(to - from) < 0.005) {
+      setV(to);
+      return;
+    }
+    const t0 = performance.now();
+    let raf;
+    const tick = (now) => {
+      const p = Math.min(1, (now - t0) / duration);
+      const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic (never ease-in on enter)
+      setV(from + (to - from) * eased);
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return v;
+}
+
+// StaleChip: a poll failed but the last good payload is still on screen. Honest about
+// freshness instead of wiping the charts (pre-fix: any transient blip replaced the
+// whole dashboard with an error card).
+export function StaleChip({ label = 'reconnecting — showing last good data' }) {
+  return (
+    <span className="stale-chip" role="status">
+      <i />
+      {label}
+    </span>
+  );
+}
 
 /* ---------------- primitives ---------------- */
 
@@ -293,118 +342,164 @@ export function StationPicker({ id, label = 'Station', stations, value, onChange
 /* ---------------- charts (inline SVG — zero chart dependencies) ---------------- */
 
 // Inline SVG line chart (no chart dep; IST axis labels). Flat fill per §21.4.
-export function Line({ pts, h = 160, stroke = '#C6F24E', id = 'lg' }) {
+// Reads as a chart, not a block: a y-axis with real values, hour labels on the x-axis,
+// a gradient area under the line, and a marked last point. A constant series still
+// looks like a line at the top of its band instead of a solid rectangle.
+export function Line({ pts, h = 160, stroke = '#C6F24E', id = 'lg', unit = 'kW', live = false }) {
   if (!pts?.length) return <div className="skel" style={{ height: h }} />;
-  const W = 560,
+  const W = 960,
     H = h,
-    P = 24;
+    PL = 38,
+    PR = 14,
+    PT = 26,
+    PB = 22;
   const ys = pts.map((p) => p.avg_kw ?? p.power_kw ?? 0);
-  const mx = Math.max(...ys, 1);
-  const X = (i) => P + (i * (W - 2 * P)) / Math.max(pts.length - 1, 1);
-  const Y = (v) => H - P - (v / mx) * (H - 2 * P);
+  const rawMax = Math.max(...ys, 1);
+  // round the ceiling to a friendly number so the axis does not read 33.3
+  const step = rawMax > 200 ? 100 : rawMax > 50 ? 20 : rawMax > 20 ? 10 : 5;
+  const mx = Math.ceil(rawMax / step) * step;
+  const X = (i) => PL + (i * (W - PL - PR)) / Math.max(pts.length - 1, 1);
+  const Y = (v) => H - PB - (v / mx) * (H - PT - PB);
   const d = pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(ys[i]).toFixed(1)}`).join(' ');
   const lastX = X(pts.length - 1).toFixed(1),
     lastY = Y(ys[ys.length - 1]).toFixed(1);
+  const gid = `grad-${id}`;
+  const ticks = [0, 0.5, 1].map((f) => ({ v: mx * f, y: Y(mx * f) }));
+  const label = (p) => fmtClock(p.bucket || p.ts);
   return (
+    // height:auto keeps the chart at its natural aspect ratio instead of letter-boxing a
+    // 560-wide drawing inside a 1200-wide card — which shrank the axis labels to ~9px and
+    // left the plot floating in the middle of the panel.
     <svg
       viewBox={`0 0 ${W} ${H}`}
-      style={{ width: '100%', height: h, display: 'block' }}
+      style={{ width: '100%', height: 'auto', display: 'block' }}
       role="img"
-      aria-label={`Load curve, ${pts.length} points, peak ${Math.max(...ys).toFixed(1)} kW`}
+      aria-label={`Load curve, ${pts.length} points, peak ${rawMax.toFixed(1)} ${unit}`}
     >
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line key={f} x1={P} x2={W - P} y1={H * f} y2={H * f} stroke="rgba(255,255,255,.08)" />
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={stroke} stopOpacity=".16" />
+          <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      {ticks.map((t) => (
+        <g key={t.v}>
+          <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="rgba(255,255,255,.07)" />
+          <text x={PL - 6} y={t.y + 3} fill="#8A94A0" fontSize="9" textAnchor="end">
+            {Math.round(t.v)}
+          </text>
+        </g>
       ))}
-      <path d={`${d} L${lastX},${H - P} L${P},${H - P} Z`} fill={stroke} opacity=".1" />
-      <path d={d} fill="none" stroke={stroke} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+      <path d={`${d} L${lastX},${H - PB} L${PL},${H - PB} Z`} fill={`url(#${gid})`} />
+      <path
+        d={d}
+        fill="none"
+        stroke={stroke}
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        className="chart-line"
+        pathLength="1"
+      />
+      <line x1={lastX} x2={lastX} y1={lastY} y2={H - PB} stroke={stroke} strokeOpacity=".35" strokeDasharray="2 3" />
+      {live && <circle className="chart-pulse" cx={lastX} cy={lastY} r="3" fill={stroke} />}
       <circle cx={lastX} cy={lastY} r="3" fill={stroke} />
-      <text x={P} y={14} fill="#A7B0BA" fontSize="10">
-        peak {Math.max(...ys).toFixed(1)} kW · IST
+      <text x={PL} y={H - 6} fill="#8A94A0" fontSize="9">
+        {label(pts[0])}
+      </text>
+      <text x={W - PR} y={H - 6} fill="#8A94A0" fontSize="9" textAnchor="end">
+        {label(pts[pts.length - 1])} IST
+      </text>
+      <text x={W - PR} y={11} fill="#A7B0BA" fontSize="9.5" textAnchor="end">
+        peak {rawMax.toFixed(1)} {unit}
       </text>
     </svg>
   );
 }
 
-// 7x24 utilization heatmap (carbon -> cream -> lime scale).
-export function Heatmap({ grid }) {
+// 7x24 utilization heatmap (near-black -> moss -> lime scale).
+// Cell value = average bays in use in that hour (from Timescale), so the diagonal
+// rhythm of a real corridor is visible instead of a uniform wash.
+// HEAT_RAMP is exported so legends elsewhere (telemetry) render the SAME scale —
+// the legend used to be a hand-copied array that drifted from this one.
+export const HEAT_RAMP = ['#151A20', '#23301C', '#3F5A23', '#79A62F', '#C6F24E'];
+export function Heatmap({ grid, unit = 'bays busy' }) {
   if (!grid) return <div className="skel" style={{ height: 180 }} />;
-  const mx = Math.max(1, ...grid.flat());
-  // three-stop scale: quiet carbon -> warm cream -> hot lime
+  const flat = grid.flat().filter((v) => v > 0);
+  const mx = Math.max(1e-9, ...flat);
+  // Normalise across the *observed* range, not 0..max: a corridor that runs 0.4–2.5 bays
+  // busy collapsed into the darkest stop when zero was the floor, so the matrix read as
+  // an empty grid with one bright cell. Gamma 0.6 lifts the quiet hours into view.
+  const mn = Math.min(mx, ...flat);
+  const RAMP = HEAT_RAMP;
   const col = (v) => {
-    if (v === 0) return '#171C23';
-    const r = v / mx;
-    if (r < 0.34) return '#FFFDD0';
-    if (r < 0.67) return '#E4EF9A';
-    return '#C6F24E';
+    if (!v) return RAMP[0];
+    const r = Math.min(1, Math.max(0, (v - mn) / Math.max(mx - mn, 1e-9))) ** 0.6;
+    const i = Math.min(RAMP.length - 2, Math.floor(r * (RAMP.length - 1)));
+    const t = r * (RAMP.length - 1) - i;
+    const hex = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+    const a = hex(RAMP[i]),
+      b = hex(RAMP[i + 1]);
+    return `rgb(${a.map((x, k) => Math.round(x + (b[k] - x) * t)).join(',')})`;
   };
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   return (
     <svg
-      viewBox="0 0 520 170"
+      viewBox="0 0 560 190"
       style={{ width: '100%' }}
       role="img"
-      aria-label={`7-day by-hour utilization heatmap, peak ${mx}`}
+      aria-label={`7-day by-hour utilization heatmap, peak ${mx.toFixed(1)} ${unit}`}
     >
       {grid.map((row, d) =>
         row.map((v, h) => (
-          <rect
-            key={`${d}-${h}`}
-            x={40 + h * 19}
-            y={10 + d * 20}
-            width="17"
-            height="17"
-            rx="2"
-            fill={col(v)}
-            opacity={v ? 0.35 + 0.65 * (v / mx) : 1}
-          >
-            <title>{`day ${d + 1}, ${String(h).padStart(2, '0')}:00 — ${v} sessions`}</title>
+          <rect key={`${d}-${h}`} x={44 + h * 20} y={12 + d * 22} width="18" height="19" rx="2" fill={col(v)}>
+            <title>{`${DAYS[d]} ${String(h).padStart(2, '0')}:00 — ${v} ${unit}`}</title>
           </rect>
         ))
       )}
-      {['Su', 'Sa'].map((t, i) => (
-        <text key={t} x="0" y={i === 0 ? 24 : 144} fill="#6B7681" fontSize="9">
+      {DAYS.map((t, i) => (
+        <text key={t} x="0" y={12 + i * 22 + 13} fill="#6B7681" fontSize="9">
           {t}
         </text>
       ))}
-      {[0, 6, 12, 18].map((h) => (
-        <text key={h} x={40 + h * 19} y={166} fill="#6B7681" fontSize="9">
+      {[0, 6, 12, 18, 23].map((h) => (
+        <text key={h} x={44 + h * 20} y={186} fill="#6B7681" fontSize="9">
           {String(h).padStart(2, '0')}
         </text>
       ))}
+      <text x={44 + 24 * 20} y={186} fill="#8A94A0" fontSize="9" textAnchor="end">
+        peak {mx.toFixed(1)} {unit}
+      </text>
     </svg>
   );
 }
 
 // Schematic Chennai corridor map (no tile key; positions projected from lat/lng).
-// Pins are focusable buttons — selectable by keyboard, announced to screen readers.
+// Numbered pins + a legend, because station names printed next to pins collided at
+// corridor density (two names on one line is worse than no name at all).
 export function CorridorMap({ stations, selected, onPick }) {
   const lats = stations.map((s) => s.latitude),
     lngs = stations.map((s) => s.longitude);
   const lo = [Math.min(...lats, 12.8), Math.min(...lngs, 79.9)],
     hi = [Math.max(...lats, 13.1), Math.max(...lngs, 80.3)];
-  const X = (lng) => 30 + ((lng - lo[1]) / Math.max(hi[1] - lo[1], 0.01)) * 500;
-  const Y = (lat) => 200 - ((lat - lo[0]) / Math.max(hi[0] - lo[0], 0.01)) * 170;
+  const X = (lng) => 60 + ((lng - lo[1]) / Math.max(hi[1] - lo[1], 0.01)) * 430;
+  const Y = (lat) => 178 - ((lat - lo[0]) / Math.max(hi[0] - lo[0], 0.01)) * 130;
   const dot = (s) => (s.available_count > 0 ? '#3ECF8E' : '#E5484D');
   return (
     <svg
-      viewBox="0 0 560 220"
+      viewBox="0 0 560 236"
       style={{ width: '100%', background: '#11151A', border: '1px solid rgba(255,255,255,.08)', borderRadius: 8 }}
       role="img"
-      aria-label="Chennai station corridor map — each station is also listed beside the map"
+      aria-label="Chennai station corridor map — numbered pins, legend below"
     >
-      <path d="M40,180 L200,120 L360,90 L520,40" stroke="#5C6670" strokeDasharray="6 6" fill="none" />
-      <text x="44" y="196" fill="#6B7681" fontSize="10">
+      <path d="M40,190 L200,120 L360,90 L520,40" stroke="#5C6670" strokeDasharray="6 6" fill="none" />
+      <text x="44" y="206" fill="#6B7681" fontSize="10">
         OMR CORRIDOR · CHENNAI
       </text>
       {stations.map((s, i) => {
         const cx = X(s.longitude),
           cy = Y(s.latitude),
           on = selected === s.station_id;
-        // Labels go inside the frame on the right edge and alternate vertical
-        // offset so a dense corridor does not stack two names on one line.
-        const right = cx > 330,
-          lx = right ? cx - 14 : cx + 14,
-          anchor = right ? 'end' : 'start',
-          dy = i % 2 ? -7 : 0;
         return (
           <g
             key={s.station_id}
@@ -421,20 +516,32 @@ export function CorridorMap({ stations, selected, onPick }) {
               }
             }}
           >
-            <circle
-              cx={cx}
-              cy={cy}
-              r={on ? 12 : 9}
-              fill={dot(s)}
-              opacity=".9"
-              stroke={on ? '#FFFDD0' : 'none'}
-              strokeWidth="2"
-            />
-            <text x={lx} y={cy + 4 + dy} fill="#E8EAED" fontSize="11" textAnchor={anchor}>
-              {s.name}
+            {on ? <circle cx={cx} cy={cy} r="18" fill={dot(s)} opacity=".18" /> : null}
+            <circle cx={cx} cy={cy} r="12" fill={dot(s)} stroke={on ? '#FFFDD0' : '#0B0E11'} strokeWidth="2" />
+            <text
+              x={cx}
+              y={cy + 4}
+              fill="#0B0E11"
+              fontSize="11"
+              fontWeight="700"
+              textAnchor="middle"
+              style={{ pointerEvents: 'none' }}
+            >
+              {i + 1}
             </text>
-            <text x={lx} y={cy + 18 + dy} fill="#9AA3AD" fontSize="10" className="num" textAnchor={anchor}>
-              {s.available_count}/{s.connector_count} free
+          </g>
+        );
+      })}
+      {stations.map((s, i) => {
+        const col = i % 2,
+          row = Math.floor(i / 2);
+        return (
+          <g key={`lg-${s.station_id}`} opacity={selected === s.station_id ? 1 : 0.72}>
+            <text x={44 + col * 258} y={26 + row * 15} fill="#A7B0BA" fontSize="10">
+              <tspan fill="#6B7681">{i + 1}</tspan> {s.name.length > 24 ? `${s.name.slice(0, 23)}…` : s.name}
+              <tspan fill={s.available_count ? '#3ECF8E' : '#E5484D'} dx="6">
+                {s.available_count}/{s.connector_count}
+              </tspan>
             </text>
           </g>
         );

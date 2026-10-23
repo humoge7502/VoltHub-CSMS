@@ -20,6 +20,119 @@ module.exports = function extended(store) {
 
   r.get('/docs', (req, res) => res.json(spec));
 
+  /* ---------------- ADR-0016: signed wallet rail ----------------
+   * GET  /me/wallet              — balance, active links, recent intents, ledger tail
+   * POST /me/wallet/challenge    — single-use EIP-4361 challenge for one address
+   * POST /me/wallet/link         — link the address whose signature verifies
+   * DEL  /me/wallet/link/:addr   — revoke (append-only: Oracle stamps revoked_at)
+   * POST /me/wallet/intent       — amount-bearing authorisation to sign
+   * POST /me/wallet/settle       — verify signature, then credit the ledger once
+   *
+   * Every response that carries a signature-verified fact names the mechanism, so a
+   * client cannot mistake this rail for an on-chain transfer.
+   */
+  const fail = (res, e) =>
+    res.status(e.status || oraStatus(e) || 500).json({
+      error: { code: e.code || 'WALLET_ERROR', message: e.message },
+    });
+  // The challenge binds the origin the driver is actually on (EIP-4361 URI field), so a
+  // signature harvested from a phishing origin is visibly a different message.
+  const originOf = (req) => {
+    const o = req.get('origin') || (process.env.WEB_ORIGIN || 'http://localhost:3000').split(',')[0];
+    try {
+      return new URL(o).origin;
+    } catch {
+      return 'http://localhost:3000';
+    }
+  };
+
+  r.get(
+    '/me/wallet',
+    authRequired,
+    safe(async (req, res) => {
+      const out = store.walletOverview(req.user.id);
+      res.json({
+        ...out,
+        rail: {
+          chain_id: require('./wallet/rail').CHAIN_ID,
+          chain_name: require('./wallet/rail').CHAIN_NAME,
+          inr_per_eth: require('./wallet/rail').INR_PER_ETH,
+          max_topup_inr: require('./wallet/rail').MAX_TOPUP_INR,
+          standard: 'EIP-191 personal_sign · EIP-4361 challenge',
+        },
+      });
+    })
+  );
+
+  r.post(
+    '/me/wallet/challenge',
+    authRequired,
+    safe(async (req, res) => {
+      try {
+        const uri = originOf(req);
+        res.status(201).json(
+          store.walletChallenge(req.user.id, {
+            address: req.body?.address,
+            domain: new URL(uri).host,
+            uri,
+          })
+        );
+      } catch (e) {
+        fail(res, e);
+      }
+    })
+  );
+
+  r.post(
+    '/me/wallet/link',
+    authRequired,
+    safe(async (req, res) => {
+      try {
+        const { address, signature, nonce, label } = req.body || {};
+        res.status(201).json({ link: await store.linkWallet(req.user.id, { address, signature, nonce, label }) });
+      } catch (e) {
+        fail(res, e);
+      }
+    })
+  );
+
+  r.delete(
+    '/me/wallet/link/:address',
+    authRequired,
+    safe(async (req, res) => {
+      try {
+        res.json(await store.unlinkWallet(req.user.id, req.params.address));
+      } catch (e) {
+        fail(res, e);
+      }
+    })
+  );
+
+  r.post(
+    '/me/wallet/intent',
+    authRequired,
+    safe(async (req, res) => {
+      try {
+        res.status(201).json({ intent: store.createTopupIntent(req.user.id, { amount: req.body?.amount }) });
+      } catch (e) {
+        fail(res, e);
+      }
+    })
+  );
+
+  r.post(
+    '/me/wallet/settle',
+    authRequired,
+    safe(async (req, res) => {
+      try {
+        const { intent_id, signature } = req.body || {};
+        res.status(201).json(await store.settleTopup(req.user.id, { intent_id, signature }));
+      } catch (e) {
+        fail(res, e);
+      }
+    })
+  );
+
   // public current-tariff preview (drivers see prices before reserving)
   r.get(
     '/tariffs/active',

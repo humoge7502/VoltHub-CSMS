@@ -59,5 +59,5 @@ export default function (data) {
 
 export function teardown() {
   const r = http.get(`${BASE}/health`);
-  check(r, { 'outbox drained (<30s lag equivalent)': (x) => (x.json('outbox_lag') || 0) < 5000 });
+  check(r, { 'outbox drained (lag < 5s)': (x) => (x.json('outbox_lag') || 0) < 5000 });
 }

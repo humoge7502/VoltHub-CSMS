@@ -1,6 +1,7 @@
 export const metadata = {
-  title: 'Wallet',
-  description: 'Prepaid wallet and itemized invoices — ledger append and balance decrement in one transaction.',
+  title: 'Invoices',
+  description:
+    'Itemized invoices — time-of-use energy bands and the plan session fee — ledger append and balance decrement in one transaction.',
 };
 
 export default function Layout({ children }) {

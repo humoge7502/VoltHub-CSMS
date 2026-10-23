@@ -1,12 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { api, Pill, kwh, PageHead, PageState, EmptyState } from '../../lib/ui';
+import { api, Pill, kwh, PageHead, PageState, EmptyState, IST } from '../../lib/ui';
 
 export default function History() {
   const [list, setList] = useState([]);
   const [cur, setCur] = useState(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  const [more, setMore] = useState(false); // in-flight guard: a double click used to
+  // run load(cur) twice with the same cursor and append every row twice
   const load = (c) =>
     api(`/sessions${c ? `?cursor=${c}` : ''}`)
       .then((j) => {
@@ -19,6 +21,11 @@ export default function History() {
   useEffect(() => {
     load().catch(() => {});
   }, []);
+  const loadMore = () => {
+    if (more || !cur) return;
+    setMore(true);
+    load(cur).finally(() => setMore(false));
+  };
   return (
     <div className="wrap">
       <PageHead
@@ -50,7 +57,16 @@ export default function History() {
                       </a>
                     </td>
                     <td className="n">{s.connector_ref}</td>
-                    <td className="num">{new Date(s.started_at).toLocaleString()}</td>
+                    <td className="num">
+                      {new Date(s.started_at).toLocaleString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false,
+                        timeZone: IST,
+                      })}
+                    </td>
                     <td className="n num">{s.energy_kwh != null ? kwh(s.energy_kwh) : '—'}</td>
                     <td>
                       <Pill s={s.state} />
@@ -62,8 +78,8 @@ export default function History() {
           </div>
         )}
         {cur && (
-          <button className="btn" style={{ marginTop: 'var(--sp-3)' }} onClick={() => load(cur)}>
-            Load more (keyset)
+          <button className="btn" style={{ marginTop: 'var(--sp-3)' }} onClick={loadMore} disabled={more}>
+            {more ? 'Loading…' : 'Load more (keyset)'}
           </button>
         )}
       </PageState>

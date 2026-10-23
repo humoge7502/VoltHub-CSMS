@@ -6,6 +6,10 @@
 const crypto = require('crypto');
 const { legalTransition } = require('@volthub/shared');
 const argon2 = require('@node-rs/argon2');
+// ADR-0016: the wallet rail owns signature verification. Kept out of the store so the
+// crypto primitives have one home (and one test file) instead of being re-implemented
+// wherever a signature happens to be checked.
+const rail = require('../wallet/rail');
 
 function err(code, message, status) {
   const e = new Error(message);
@@ -44,16 +48,17 @@ class Mutex {
     const prev = this.q.get(key) || Promise.resolve();
     let release;
     const cur = new Promise((r) => (release = r));
-    this.q.set(
-      key,
-      prev.then(() => cur)
-    );
+    // The map stores the CHAIN, so cleanup must compare against the chain — the old
+    // code compared against `cur` (never stored), the comparison never matched, and
+    // every key ever locked leaked into the Map forever (review 2026-10-24, B-46).
+    const chained = prev.then(() => cur);
+    this.q.set(key, chained);
     await prev;
     try {
       return await fn();
     } finally {
       release();
-      if (this.q.get(key) === cur) this.q.delete(key);
+      if (this.q.get(key) === chained) this.q.delete(key);
     }
   }
 }
@@ -101,6 +106,24 @@ function verifyPassword(pw, stored) {
 // timeouts). The async variants run the same KDF on the sidecar's thread pool and
 // are the hot-path (HTTP login/register) entry points; the sync forms remain for
 // seed/store-internal use only.
+function scryptAsync(pw, salt) {
+  return new Promise((resolve, reject) =>
+    crypto.scrypt(String(pw), salt, 32, (err, key) => (err ? reject(err) : resolve(key)))
+  );
+}
+// Review 2026-10-24: the legacy `$scrypt$…` branch still delegated to the SYNC
+// verifyScrypt — a pre-Argon2 user logging in blocked the loop anyway.
+async function verifyScryptAsync(pw, stored) {
+  const [, , salt, h] = String(stored).split('$');
+  if (!salt || !h) return false;
+  const got = (await scryptAsync(pw, salt)).toString('hex');
+  if (got.length !== h.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(h));
+  } catch {
+    return false;
+  }
+}
 async function verifyPasswordAsync(pw, stored) {
   if (typeof stored !== 'string') return false;
   if (stored.startsWith('$argon2')) {
@@ -110,7 +133,7 @@ async function verifyPasswordAsync(pw, stored) {
       return false;
     }
   }
-  if (stored.startsWith('$scrypt$')) return verifyScrypt(pw, stored);
+  if (stored.startsWith('$scrypt$')) return verifyScryptAsync(pw, stored);
   return false;
 }
 async function hashPasswordAsync(pw) {
@@ -142,10 +165,19 @@ function createStore() {
       cert: 0,
       push: 0,
       letter: 0,
+      // ADR-0016 wallet rail: links are durable (Oracle `wallet_link`); challenges and
+      // top-up intents are short-lived authorisations and live in memory on purpose.
+      walletLink: 0,
+      walletIntent: 0,
     },
     users: new Map(),
     wallets: new Map(),
     ledgers: [],
+    // ADR-0016: one address may be linked to exactly one account (global uniqueness is
+    // the anti-collision rule; the key is the lowercased address).
+    walletLinks: new Map(),
+    walletChallenges: new Map(),
+    walletIntents: new Map(),
     vehicles: new Map(),
     vehicleStd: [],
     stations: new Map(),
@@ -387,7 +419,10 @@ function createStore() {
     s.auditLog(actor, 'TARIFF_PLAN', plan_id, 'VERSION', prev?.plan_id ?? null, plan.name);
     return { plan, bands: created, previousPlanId: prev?.plan_id ?? null, previousActiveTo };
   };
-  s.topup = (uid, amount) => {
+  // `note` is the ledger's provenance line. The plain top-up route keeps the default;
+  // the signed wallet rail passes a note that names the address and the intent, so an
+  // auditor reading wallet_ledger can tell a card-free demo top-up from a signed one.
+  s.topup = (uid, amount, note = 'top-up') => {
     if (!(amount > 0)) throw err('INVALID_AMOUNT', 'amount > 0', 422);
     // SEC-008: demo-economy caps — single top-up <= 10000, welcome credit handled by caller.
     if (amount > 10000) throw err('INVALID_AMOUNT', 'top-up capped at Rs.10000 per transaction (demo economy)', 422);
@@ -403,11 +438,209 @@ function createStore() {
       amount,
       balance_after: w.balance,
       payment_id: null,
-      note: 'top-up',
+      note,
       created_at: new Date().toISOString(),
     });
-    s.auditLog(uid, 'WALLET', uid, 'TOPUP', null, { amount, balance_after: w.balance });
+    s.auditLog(uid, 'WALLET', uid, 'TOPUP', null, { amount, balance_after: w.balance, note });
     return w;
+  };
+
+  /* ---------------- ADR-0016: signed wallet rail ----------------
+   * The signature is the authorisation, the ledger is the settlement. Three properties
+   * are load-bearing and each has a test (apps/api/test/wallet.js):
+   *   1. a challenge is single-use and expires (no replay of a captured signature);
+   *   2. an intent names its amount, so a signature for ₹500 cannot settle ₹5,000;
+   *   3. settle is idempotent-by-rejection — a second settle of the same intent is 409,
+   *      never a second credit (double-credit is the failure mode that matters).
+   */
+  const pruneWalletAuth = () => {
+    const now = Date.now();
+    for (const [k, c] of s.walletChallenges) if (c.expires_at_ms < now) s.walletChallenges.delete(k);
+    for (const [, i] of s.walletIntents)
+      if (i.expires_at_ms < now && i.status === 'PENDING') {
+        i.status = 'EXPIRED';
+      }
+  };
+
+  s.walletOverview = (uid) => {
+    pruneWalletAuth();
+    const links = [...s.walletLinks.values()]
+      .filter((l) => l.user_id === Number(uid))
+      .sort((a, b) => String(b.linked_at).localeCompare(String(a.linked_at)));
+    const intents = [...s.walletIntents.values()]
+      .filter((i) => i.user_id === Number(uid))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, 10)
+      .map(({ message: _m, ...rest }) => rest);
+    return {
+      wallet: s.wallets.get(Number(uid)) || null,
+      links,
+      intents,
+      ledger: s.ledgers
+        .filter((l) => l.user_id === Number(uid))
+        .sort((a, b) => b.seq_no - a.seq_no)
+        .slice(0, 25),
+    };
+  };
+
+  s.walletChallenge = (uid, { address, domain, uri }) => {
+    pruneWalletAuth();
+    const addr = rail.normalise(address);
+    const n = rail.nonce();
+    const issued_at = new Date().toISOString();
+    const message = rail.challengeMessage({
+      address: addr,
+      chainId: rail.CHAIN_ID,
+      nonce: n,
+      issuedAt: issued_at,
+      uri,
+      domain,
+    });
+    s.walletChallenges.set(n, {
+      user_id: Number(uid),
+      address: addr.toLowerCase(),
+      message,
+      expires_at_ms: Date.now() + rail.CHALLENGE_TTL_MS,
+    });
+    return { nonce: n, message, address: addr, chain_id: rail.CHAIN_ID, chain_name: rail.CHAIN_NAME };
+  };
+
+  // `address` is accepted for a stable call shape but intentionally unused: the
+  // binding that matters is the CHALLENGE's address (ch.address) — trusting the
+  // request's own address claim would let a client link an address it never signed for.
+  s.linkWallet = (uid, { address: _address, signature, nonce: n, label }) => {
+    pruneWalletAuth();
+    const ch = s.walletChallenges.get(String(n || ''));
+    if (!ch) throw err('CHALLENGE_INVALID', 'challenge missing, used or expired — request a new one', 409);
+    if (ch.user_id !== Number(uid)) throw err('CHALLENGE_INVALID', 'challenge belongs to another account', 403);
+    // Single-use: consume before verifying so a malformed retry cannot brute-force the
+    // same nonce, and a replayed request cannot link twice.
+    s.walletChallenges.delete(String(n));
+    if (ch.expires_at_ms < Date.now()) throw err('CHALLENGE_EXPIRED', 'challenge expired', 409);
+    const addr = rail.verifySignature({ message: ch.message, signature, address: ch.address });
+    if (addr.toLowerCase() !== ch.address)
+      throw err('SIGNATURE_MISMATCH', 'signed address differs from challenge', 401);
+
+    const key = addr.toLowerCase();
+    const existing = s.walletLinks.get(key);
+    if (existing && existing.user_id !== Number(uid))
+      throw err('WALLET_TAKEN', 'this address is linked to another account', 409);
+    const row = {
+      link_id: existing ? existing.link_id : ++s.seq.walletLink,
+      user_id: Number(uid),
+      address: addr,
+      chain_id: rail.CHAIN_ID,
+      chain_name: rail.CHAIN_NAME,
+      label: String(label || 'Connected wallet').slice(0, 60),
+      linked_at: new Date().toISOString(),
+      verified_by: 'EIP-191',
+    };
+    s.walletLinks.set(key, row);
+    s.auditLog(uid, 'WALLET_LINK', row.link_id, 'LINK', existing ? existing.address : null, {
+      address: addr,
+      chain_id: rail.CHAIN_ID,
+    });
+    return row;
+  };
+
+  s.unlinkWallet = (uid, address) => {
+    const key = String(address || '').toLowerCase();
+    const row = s.walletLinks.get(key);
+    if (!row || row.user_id !== Number(uid)) throw err('NOT_FOUND', 'wallet link', 404);
+    s.walletLinks.delete(key);
+    s.auditLog(uid, 'WALLET_LINK', row.link_id, 'UNLINK', row.address, null);
+    return { unlinked: row.address };
+  };
+
+  s.createTopupIntent = (uid, { amount }) => {
+    pruneWalletAuth();
+    const amt = Number(amount);
+    if (!(amt > 0)) throw err('INVALID_AMOUNT', 'amount > 0', 422);
+    if (amt > rail.MAX_TOPUP_INR)
+      throw err('INVALID_AMOUNT', `top-up capped at Rs.${rail.MAX_TOPUP_INR} per transaction (demo economy)`, 422);
+    const link = [...s.walletLinks.values()].find((l) => l.user_id === Number(uid));
+    if (!link) throw err('NO_WALLET_LINKED', 'link a wallet before creating a top-up intent', 409);
+    const intent_id = `int_${String(++s.seq.walletIntent).padStart(5, '0')}_${rail.nonce().slice(0, 8)}`;
+    const expires_at = new Date(Date.now() + rail.INTENT_TTL_MS).toISOString();
+    const amount_wei = rail.wei(amt).toString();
+    const message = rail.intentMessage({
+      intentId: intent_id,
+      address: link.address,
+      amountInr: amt,
+      amountWei: amount_wei,
+      chainId: rail.CHAIN_ID,
+      expiresAt: expires_at,
+    });
+    const intent = {
+      intent_id,
+      user_id: Number(uid),
+      address: link.address,
+      amount_inr: amt,
+      amount_eth: rail.eth(amt),
+      amount_wei,
+      chain_id: rail.CHAIN_ID,
+      status: 'PENDING',
+      message,
+      created_at: new Date().toISOString(),
+      expires_at,
+      expires_at_ms: Date.now() + rail.INTENT_TTL_MS,
+    };
+    s.walletIntents.set(intent_id, intent);
+    return intent;
+  };
+
+  // async because the Oracle adapter makes topup() promise-shaped: a sync caller would
+  // read `undefined` off a pending mirror and publish a receipt before the money
+  // committed. Awaiting is what keeps "credited" and "committed" the same event.
+  // W5-concurrency (review 2026-10-24): settle runs under the intent's mutex — the old
+  // synchronous status check raced real Oracle I/O (await topup) before the status
+  // flip, so two concurrent settles of one intent BOTH credited. The mutex keeps
+  // "exactly one credit per signature" true under concurrency, not just replay.
+  s.settleTopup = async (uid, { intent_id, signature }) => {
+    return s.mutex.run('wallet-intent:' + String(intent_id || ''), async () => {
+      pruneWalletAuth();
+      const it = s.walletIntents.get(String(intent_id || ''));
+      if (!it || it.user_id !== Number(uid)) throw err('NOT_FOUND', 'top-up intent', 404);
+      if (it.status === 'SETTLED')
+        throw err('ALREADY_SETTLED', 'this intent was already settled — one credit per signature', 409);
+      if (it.status === 'EXPIRED' || it.expires_at_ms < Date.now())
+        throw err('INTENT_EXPIRED', 'intent expired — create a new one', 409);
+      const signer = rail.verifySignature({ message: it.message, signature, address: it.address });
+      const note = `wallet top-up ${it.intent_id} · ${signer.slice(0, 10)}…${signer.slice(-4)}`;
+      const w = await s.topup(uid, it.amount_inr, note);
+      // The ledger row must be identified by its unique note, not array position —
+      // under the mutex the awaited mirror can still interleave with another user's
+      // synchronous topup, and "last row" would then be someone else's receipt.
+      const entry = [...s.ledgers].reverse().find((l) => l.note === note);
+      it.status = 'SETTLED';
+      it.settled_at = new Date().toISOString();
+      it.reference = `vh_${crypto.createHash('sha256').update(signature).digest('hex').slice(0, 24)}`;
+      it.balance_after = w.balance;
+      s.auditLog(uid, 'WALLET', uid, 'SETTLE', null, {
+        intent_id: it.intent_id,
+        amount: it.amount_inr,
+        address: signer,
+        reference: it.reference,
+      });
+      return {
+        wallet: w,
+        entry,
+        receipt: {
+          intent_id: it.intent_id,
+          address: signer,
+          amount_inr: it.amount_inr,
+          amount_eth: it.amount_eth,
+          amount_wei: it.amount_wei,
+          chain_id: it.chain_id,
+          chain_name: rail.CHAIN_NAME,
+          reference: it.reference,
+          settled_at: it.settled_at,
+          ledger_seq: entry.seq_no,
+          balance_after: w.balance,
+          mode: 'signed-authorisation (no gas, no chain write)',
+        },
+      };
+    });
   };
 
   // ---- RESERVATION_PKG.create_reservation (BR-04/05/12, ORA -2050x) ----
@@ -530,7 +763,10 @@ function createStore() {
   };
 
   // ---- CHARGE_SESSION_PKG ----
-  s.startSession = async ({ uid, vehicleId, cpId, connNo, planId, reservationId, idTag }) => {
+  // meterStartKwh: the charger's absolute meter register at plug-in (OCPP meterStart/1000).
+  // BUG-054: billing is end − start, so a session that ignores the register overbills
+  // every charger whose meter did not start at zero.
+  s.startSession = async ({ uid, vehicleId, cpId, connNo, planId, reservationId, idTag, meterStartKwh }) => {
     const key = ref(cpId, connNo);
     return s.mutex.run('conn:' + key, async () => {
       const c = s.getConnector(cpId, connNo);
@@ -589,7 +825,7 @@ function createStore() {
         billing_state: 'UNBILLED',
         started_at: new Date().toISOString(),
         ended_at: null,
-        start_meter_kwh: 0,
+        start_meter_kwh: Number.isFinite(Number(meterStartKwh)) ? Math.max(0, Number(meterStartKwh)) : 0,
         end_meter_kwh: null,
         energy_kwh: null,
         stop_reason: null,

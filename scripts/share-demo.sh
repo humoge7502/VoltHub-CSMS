@@ -100,6 +100,10 @@ fi
 ensure_secret JWT_SECRET
 ensure_secret INTERNAL_TOKEN
 set_env_key TRUST_PROXY 1
+# SEC-043: the public preset disables the unsigned crediting route — the signed wallet
+# rail (ADR-0016) is the demo's money path; a public link must not allow bearer-token
+# wallet top-ups. Re-enable explicitly with WALLET_UNSIGNED_TOPUP=1 if you must.
+set_env_key WALLET_UNSIGNED_TOPUP 0
 
 echo "== 1/6 compose stack =="
 compose up -d
@@ -187,6 +191,9 @@ cat <<EOF
     - Quick-tunnel URLs change on each rerun and live only while this machine and
       the tunnel containers stay online.
     - Strong JWT_SECRET / INTERNAL_TOKEN generated in .env (gitignored).
+    - Public preset: unsigned wallet top-ups are DISABLED (signed rail only); the OCPP
+      gateway requires Basic auth per charge point (Security Profile 1) — seeded demo
+      secrets are public knowledge (dev-<identity>), so treat charger data as demo-only.
     - Stop tunnels:  bash scripts/share-demo.sh --stop
     - Stop stack:    docker compose -f infra/docker-compose.yml down
     - For a permanent URL, use a named Cloudflare tunnel or a VM (DEPLOY.md §1–2).

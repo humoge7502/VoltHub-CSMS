@@ -27,11 +27,24 @@ jobs:
         run: |
           npx eslint . --max-warnings 0
           npx prettier --check .
+      - name: Audit gates (match ci.yml — both lockfiles)
+        run: |
+          npm audit
+          cd apps/web && npm install --no-audit --no-fund && npm audit
+      - name: OpenAPI drift + snapshot freshness (match ci.yml)
+        run: |
+          node scripts/check-openapi.js
+          node scripts/gen-openapi.js --check
       - name: Hermetic test suites (local store)
         run: |
           npm run test -w apps/api
           npm run test -w apps/worker --if-present
           npm run test -w apps/simulator --if-present
+      - name: Web build (match ci.yml)
+        working-directory: apps/web
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
 
   github-release:
     needs: verify

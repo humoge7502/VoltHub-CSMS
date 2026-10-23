@@ -1,6 +1,6 @@
 {
   "name": "@volthub/api",
-  "version": "1.7.0",
+  "version": "1.8.1",
   "private": true,
   "type": "commonjs",
   "scripts": {
@@ -12,6 +12,7 @@
   "dependencies": {
     "@node-rs/argon2": "^2.2.0",
     "cors": "^2.8.5",
+    "ethers": "^6.17.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "jsonwebtoken": "^9.0.2",
