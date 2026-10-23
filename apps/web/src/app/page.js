@@ -172,9 +172,8 @@ export default function Home() {
             <h2 style={{ margin: 0 }}>Run the whole stack locally</h2>
             <p style={{ color: 'var(--tx2)', margin: 'var(--sp-2) 0 0', maxWidth: '52ch' }}>
               No Docker needed for the local profile. Demo logins:{' '}
-              <span className="num">admin@volthub.in / Admin@123</span> ·{' '}
               <span className="num">arjun@volthub.in / Operator@123</span> · any seeded driver with{' '}
-              <span className="num">Driver@123</span>.
+              <span className="num">Driver@123</span>. Admin access is provisioned separately.
             </p>
           </div>
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>

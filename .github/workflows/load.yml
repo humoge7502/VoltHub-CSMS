@@ -1,0 +1,67 @@
+name: load
+
+# Load/soak is a nightly signal, not a per-PR gate: it boots the full stack and
+# runs the 10-minute k6 profile (NFR-03 p95 < 300 ms, NFR-04 ingest lag).
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: load-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm install --no-audit --no-fund
+
+      - name: Boot databases
+        run: docker compose -f infra/docker-compose.yml up -d oracle timescale
+
+      - name: Wait for databases
+        run: |
+          for i in $(seq 1 60); do
+            ok=1
+            for c in volthub-oracle volthub-timescale; do
+              st=$(docker inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null || echo none)
+              [ "$st" = healthy ] || ok=0
+            done
+            [ "$ok" = 1 ] && break
+            echo "wait db $i"; sleep 5
+          done
+          docker inspect -f '{{.Name}} {{.State.Health.Status}}' volthub-oracle volthub-timescale
+
+      - name: Migrate + seed
+        env: { SEED_DB: '1' }
+        run: bash scripts/migrate.sh
+
+      - name: Boot stack
+        run: docker compose -f infra/docker-compose.yml up -d --build
+
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 36); do
+            curl -sf http://localhost:4000/api/v1/health/deep | grep -q '"status":"ok"' && exit 0
+            echo "wait api $i"; sleep 5
+          done
+          echo 'API never became healthy'; exit 1
+
+      - uses: grafana/setup-k6-action@v1
+
+      - name: k6 smoke + soak
+        env:
+          API_BASE: http://localhost:4000/api/v1
+        run: k6 run test/load/k6-smoke.js
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down

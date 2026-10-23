@@ -6,15 +6,16 @@
 -- Story: 4 Chennai stations, tariff City v1->v2 + Highway flat, one faulted ECR
 -- CCS2 connector, one EXPIRED no-show (via backdated BOOKED + expire_stale).
 -- Password hashes below are REAL Argon2id PHC strings (m=19456,t=2,p=1, 16-byte
--- salts, 32-byte tags) for the demo logins admin@volthub.in/Admin@123,
--- *@volthub.in/Operator@123, drivers/Driver@123 — regenerate via apps/api
--- hashPassword if passwords change. verifyPassword accepts both this format and
+-- salts, 32-byte tags) for the demo logins *@volthub.in/Operator@123 and
+-- drivers/Driver@123. The ADMIN credential is provisioned, not published: set
+-- ADMIN_BOOTSTRAP_PASSWORD before seeding (SEC-050) and rotate the row below.
+-- Regenerate any hash via apps/api hashPassword if passwords change. verifyPassword accepts both this format and
 -- the legacy '$scrypt$...' shape (length-safe), so pre-Argon2 rows keep working.
 -- ============================================================================
 
 -- ---- users (admin, 2 operators, 3 drivers) ----
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES
- ('admin@volthub.in', '$argon2id$v=19$m=19456,t=2,p=1$9U3zv2D07k8sliLwBJJCWQ$gXWMNq+15wGmCiymTksESkRH77I1KMiLDgchOrMsmts', 'VoltHub Admin', 'ADMIN');
+ ('admin@volthub.in', '$argon2id$v=19$m=19456,t=2,p=1$CjlBNcCw1jtoDtkLV8rO9Q$TvAQPBfDVwQ7+dNX7lpGvS0rMD58hkJ9479WThbZvZw', 'VoltHub Admin', 'ADMIN');
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES
  ('arjun@volthub.in', '$argon2id$v=19$m=19456,t=2,p=1$4EJc3RqQ+/QeEnFHa7mr+Q$iHnZa051xMdsGRfWFFe4mfi9nl88bh5m2QbmBsU+Pic', 'Arjun Operator', 'OPERATOR');
 INSERT INTO app_user (email, password_hash, full_name, role) VALUES

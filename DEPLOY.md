@@ -139,7 +139,8 @@ worker, and health-checks both URLs plus a CORS preflight. It prints shareable
   for a permanent name, create a **named tunnel** (free plan) or move to the VM path in §1–2.
 - The script sets `TRUST_PROXY=1` and extends `WEB_ORIGIN` in `.env` for you (both
   interpolate through compose), so per-IP throttles keep working behind the tunnel.
-- **Public-demo safety:** the seeded `admin@volthub.in / Admin@123` login and the
-  deterministic `dev-*` OCPP secrets are demo defaults. Change the admin password and
+- **Public-demo safety:** the seeded `arjun@volthub.in / Operator@123` and driver
+  `Driver@123` logins, plus the deterministic `dev-*` OCPP secrets, are demo defaults.
+  The admin credential is provisioned via `ADMIN_BOOTSTRAP_PASSWORD` and is not published;
   rotate `charge_point.auth_secret` (then start the simulator with the matching
   `OCPP_SECRET`) before exposing anything beyond disposable demo data.

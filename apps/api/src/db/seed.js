@@ -17,7 +17,10 @@ function seedStore(s, profile = 'demo') {
   const admin = {
     user_id: ++s.seq.user,
     email: 'admin@volthub.in',
-    password_hash: hashPassword('Admin@123'),
+    // SEC-050: the admin password is provisioned, not published. Any public
+    // deployment MUST set ADMIN_BOOTSTRAP_PASSWORD; the literal below is a
+    // local-development convenience only and is never surfaced in the UI.
+    password_hash: hashPassword(process.env.ADMIN_BOOTSTRAP_PASSWORD || 'Admin@123'),
     full_name: 'VoltHub Admin',
     role: 'ADMIN',
     status: 'ACTIVE',

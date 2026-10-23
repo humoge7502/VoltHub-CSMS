@@ -238,3 +238,18 @@ jobs:
       # belongs to the job that boots the stack, not to the local-store unit tier.
       - run: npm run test:e2e:control
       - run: docker compose -f infra/docker-compose.yml down
+
+  # AI advisory sidecar: CPU pytest tier. CUDA tests skip cleanly without a GPU.
+  ai:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: apps/ai/requirements.txt
+      - name: Install (CPU torch)
+        run: pip install --extra-index-url https://download.pytorch.org/whl/cpu -r apps/ai/requirements.txt
+      - name: pytest
+        run: python -m pytest apps/ai/tests -q

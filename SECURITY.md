@@ -82,7 +82,8 @@ and, independently, by `trg_connector_guard` + `guard_pkg` — see the BR-07 bul
 
 ## Demo credentials
 
-Seeded logins in `README.md` are **demo-only** (`Admin@123` etc.). Rotate before any public
-deploy; top-ups are capped (Rs.10,000/txn) and welcome credit is Rs.500.
+Seeded driver/operator logins in `README.md` are **demo-only** (`Operator@123` etc.). The
+admin password comes from `ADMIN_BOOTSTRAP_PASSWORD` and is never published; rotate it
+before any public deploy. Top-ups are capped (Rs.10,000/txn) and welcome credit is Rs.500.
 
 Report issues privately to the repo owners.

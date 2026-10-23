@@ -10,7 +10,7 @@
 | Dimension        | Grade  | Evidence                                                                                                                                  |
 | ---------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | Architecture     | **A−** | Two-engine money/telemetry split, in-transaction outbox, OCPP gateway, clean module boundaries                                            |
-| Test engineering | **B+** | 137 Node cases + race suite + invariants + OpenAPI drift gate + E2E + control-plane E2E + real Oracle/Timescale CI job                    |
+| Test engineering | **B+** | 143 Node cases + race suite + invariants + OpenAPI drift gate + E2E + control-plane E2E + real Oracle/Timescale CI job                    |
 | CI/CD            | **A−** | 6 jobs, Node 20+22 matrix, `npm audit` on both lockfiles, Codecov, web build                                                              |
 | Frontend quality | **B**  | Strong design system (tinted shadows, documented contrast, `ease-out`, 4px scale); **zero tests**; 3 design anti-patterns found and fixed |
 | Security posture | **C**  | Good CSP/headers/JWT design, but **default admin password is live on the public URL**                                                     |
@@ -80,25 +80,25 @@ Severity = business/security impact. Priority = severity × user exposure. Effor
 
 ### 2.1 Catalogue
 
-| ID     | Issue                                                                                                   | Severity     | Priority | Effort  | Depends on                   | Timeline        |
-| ------ | ------------------------------------------------------------------------------------------------------- | ------------ | -------- | ------- | ---------------------------- | --------------- |
-| ISS-01 | **Default admin password live on the public URL** (`admin@volthub.in / Admin@123` returns an ADMIN JWT) | **Critical** | **P0**   | 0.5 h   | —                            | **Immediately** |
-| ISS-02 | **Web app has zero automated tests** (17 pages / 39 files, no test script)                              | High         | P1       | 3–5 d   | Playwright harness           | 2 weeks         |
-| ISS-03 | **`apps/ai` is orphaned**: pytest suite never runs in CI, no Dockerfile, absent from compose            | High         | P1       | 2–3 d   | —                            | 2 weeks         |
-| ISS-04 | **Access token in `localStorage`** (`vh_token`, 15-min/30-day refresh) — XSS-readable                   | High         | P2       | 2–3 d   | httpOnly cookie + CSRF       | 3 weeks         |
-| ISS-05 | **Ephemeral deployment**: quick-tunnel URL changes on restart; host must stay on                        | Medium       | P2       | 0.5–1 d | Domain or Cloudflare account | 1 week          |
-| ISS-06 | **Load tests not gated**: `test:load` silently skips without k6                                         | Medium       | P2       | 1 d     | k6 in CI                     | 2 weeks         |
-| ISS-07 | **`apps/web` outside npm workspace** — local `test`/`lint`/`coverage` skip it                           | Medium       | P3       | 0.5 d   | —                            | 1 month         |
-| ISS-08 | **Dual lockfiles** (root + `apps/web`) — dependency drift risk                                          | Low          | P3       | 0.5 d   | ISS-07                       | 1 month         |
-| ISS-09 | **AI requirements unpinned** (`torch>=2.1`, …) — non-reproducible builds                                | Medium       | P3       | 0.5 d   | —                            | 1 month         |
-| ISS-10 | **No coverage threshold**; Codecov `fail_ci_if_error: false`                                            | Low          | P3       | 0.5 d   | —                            | 1 month         |
-| ISS-11 | **Stale "66 paths"** on landing page (actual: 72)                                                       | Low          | P3       | —       | —                            | **Fixed**       |
-| ISS-12 | **3 design anti-patterns** (hero eyebrow chip, Inter at 66%, kicker-above-heading)                      | Medium       | P2       | —       | —                            | **Fixed**       |
-| ISS-13 | **Single-node Oracle/Timescale** — no HA/failover                                                       | High (prod)  | P2       | 5–10 d  | Managed DB or replicas       | Quarter         |
-| ISS-14 | **OCPP over plaintext `ws://`** unless a TLS proxy is deployed                                          | High         | P1       | 1 d     | TLS/Caddy                    | 1 week          |
-| ISS-15 | **Demo credentials printed on the public landing page** (compounds ISS-01)                              | High         | P0       | —       | ISS-01                       | Immediately     |
-| ISS-16 | **Web is plain JavaScript** — no type safety on API contracts                                           | Medium       | P3       | 10–15 d | TS migration plan            | Quarter         |
-| ISS-17 | **Accessibility unverified** (no axe run; 29 aria-labels, 0 `<img>`)                                    | Medium       | P2       | 1 d     | axe + Playwright             | 2 weeks         |
+| ID     | Issue                                                                                                     | Severity     | Priority | Effort  | Depends on                    | Timeline        |
+| ------ | --------------------------------------------------------------------------------------------------------- | ------------ | -------- | ------- | ----------------------------- | --------------- |
+| ISS-01 | **Default admin password live on the public URL** (`admin@volthub.in / Admin@123` returns an ADMIN JWT)   | **Critical** | **P0**   | 0.5 h   | —                             | **Immediately** |
+| ISS-02 | **Web app has zero automated tests** (17 pages / 39 files, no test script)                                | High         | P1       | 3–5 d   | Playwright harness            | 2 weeks         |
+| ISS-03 | **`apps/ai` is orphaned**: pytest suite never runs in CI, no Dockerfile, absent from compose              | High         | P1       | 2–3 d   | —                             | 2 weeks         |
+| ISS-04 | **Access token in `localStorage`** (15-min TTL; the refresh token is already an httpOnly/SameSite cookie) | Medium       | P2       | 2–3 d   | in-memory access token + CSRF | 3 weeks         |
+| ISS-05 | **Ephemeral deployment**: quick-tunnel URL changes on restart; host must stay on                          | Medium       | P2       | 0.5–1 d | Domain or Cloudflare account  | 1 week          |
+| ISS-06 | **Load tests not gated**: `test:load` silently skips without k6                                           | Medium       | P2       | 1 d     | k6 in CI                      | 2 weeks         |
+| ISS-07 | **`apps/web` outside npm workspace** — local `test`/`lint`/`coverage` skip it                             | Medium       | P3       | 0.5 d   | —                             | 1 month         |
+| ISS-08 | **Dual lockfiles** (root + `apps/web`) — dependency drift risk                                            | Low          | P3       | 0.5 d   | ISS-07                        | 1 month         |
+| ISS-09 | **AI requirements unpinned** (`torch>=2.1`, …) — non-reproducible builds                                  | Medium       | P3       | 0.5 d   | —                             | 1 month         |
+| ISS-10 | **No coverage threshold**; Codecov `fail_ci_if_error: false`                                              | Low          | P3       | 0.5 d   | —                             | 1 month         |
+| ISS-11 | **Stale "66 paths"** on landing page (actual: 72)                                                         | Low          | P3       | —       | —                             | **Fixed**       |
+| ISS-12 | **3 design anti-patterns** (hero eyebrow chip, Inter at 66%, kicker-above-heading)                        | Medium       | P2       | —       | —                             | **Fixed**       |
+| ISS-13 | **Single-node Oracle/Timescale** — no HA/failover                                                         | High (prod)  | P2       | 5–10 d  | Managed DB or replicas        | Quarter         |
+| ISS-14 | **OCPP over plaintext `ws://`** unless a TLS proxy is deployed                                            | High         | P1       | 1 d     | TLS/Caddy                     | 1 week          |
+| ISS-15 | **Demo credentials printed on the public landing page** (compounds ISS-01)                                | High         | P0       | —       | ISS-01                        | Immediately     |
+| ISS-16 | **Web is plain JavaScript** — no type safety on API contracts                                             | Medium       | P3       | 10–15 d | TS migration plan             | Quarter         |
+| ISS-17 | **Accessibility unverified** (no axe run; 29 aria-labels, 0 `<img>`)                                      | Medium       | P2       | 1 d     | axe + Playwright              | 2 weeks         |
 
 ### 2.2 Detail on the top issues
 
@@ -108,11 +108,24 @@ Severity = business/security impact. Priority = severity × user exposure. Effor
 
 **ISS-03 — AI sidecar is dark in production.** `apps/ai/tests/test_ai.py` exists but no CI job runs pytest, there is no Dockerfile, and compose has no `ai` service. Expected: the advisory service is built and tested like the rest. Actual: `/ai/*` returns `503 AI_UNAVAILABLE` in the public deployment. Fix: add a pytest job, a slim Dockerfile, and an optional compose profile.
 
-**ISS-04 — Token storage.** `apps/web/src/lib/ui.js:8` stores the 15-minute access token in `localStorage`. CSP is present (`next.config.js`) but must allow `'unsafe-inline'` for Next's hydration scripts, so inline-script XSS is not fully neutralised. Fix: move to `httpOnly; Secure; SameSite=Strict` cookies with a CSRF token, or adopt a short-lived in-memory token + refresh rotation.
+**ISS-04 — Token storage.** `apps/web/src/lib/ui.js:8` keeps the 15-minute **access** token in `localStorage`; the 30-day **refresh** token is already an `httpOnly`/`SameSite` cookie (SEC tests 11–14), so the long-lived credential is not XSS-readable. The residual risk is a 15-minute window. Fix: keep the access token in memory only and refresh silently via the existing cookie, or add a CSRF token if it moves to a cookie.
 
 **ISS-14 — OCPP transport.** Basic auth over `ws://` is plaintext. `DEPLOY.md` says TLS is not optional once SEC-003 lands. Fix: terminate TLS at Caddy/Cloudflare and require `wss://` in production config.
 
 ---
+
+### 2.3 Implementation status (this pass)
+
+| ID                                             | Status                                                                                                                                                             |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ISS-01 / ISS-15                                | **Done** — Argon2id rotation; env-provisioned via `ADMIN_BOOTSTRAP_PASSWORD`; removed from landing, login hint, README, DEPLOY, SECURITY; old password returns 401 |
+| ISS-02                                         | **Partial** — 16-check smoke + 12-check authenticated E2E; wired into the `ui` workflow                                                                            |
+| ISS-03                                         | **Done** — `apps/ai/Dockerfile`, pinned `requirements.txt`, `ai` compose profile, pytest CI job                                                                    |
+| ISS-06                                         | **Done** — nightly `load` workflow runs k6 against a booted stack                                                                                                  |
+| ISS-09                                         | **Done** — AI dependencies pinned                                                                                                                                  |
+| ISS-10                                         | **Done** — `codecov.yml` project/patch thresholds                                                                                                                  |
+| ISS-17                                         | **Partial** — a11y floor (input labels, button names, single h1) gated in smoke                                                                                    |
+| ISS-05, ISS-07, ISS-08, ISS-13, ISS-14, ISS-16 | **Open** — need infra/accounts (named tunnel, HA) or multi-week refactors (workspace, TLS proxy, TypeScript)                                                       |
 
 ## 3. Enhancements & modifications (by module)
 
@@ -209,7 +222,7 @@ Severity = business/security impact. Priority = severity × user exposure. Effor
 
 ### 6.1 Current coverage (verified)
 
-- **137 Node cases**: relay 7, API 36, simulator 2, security 17, rate-limit 8, cross-layer 5, OCPP-remote 2, gateway-close 8, control 16, control-AES 6, wallet 12, AI contract 6, twin 12.
+- **143 Node cases**: relay 7, API 37, simulator 2, security 17, rate-limit 8, cross-layer 5, OCPP-remote 2, gateway-close 11, control 16, control-AES 6, wallet 14, AI contract 6, twin 12.
 - **Race suite** (R1 double-reserve, R4 double-pay) on both engines.
 - **SQL invariants** runner, **OpenAPI drift gate** (72 paths), **snapshot check**.
 - **E2E** + **control-plane E2E** against a real compose stack in CI.
@@ -290,7 +303,7 @@ Severity = business/security impact. Priority = severity × user exposure. Effor
 
 ```bash
 # correctness
-npm test                     # 137 cases + invariants + OpenAPI drift
+npm test                     # 143 cases + invariants + OpenAPI drift
 npm run test:race            # 201/409 proof on both engines
 npm run test:e2e             # browser E2E against the stack
 

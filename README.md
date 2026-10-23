@@ -160,7 +160,7 @@ npm run coverage                       # c8 line coverage over the unit-tier sui
 node apps/simulator/src/index.js --scenario race   # expect exactly one 201 + one 409
 ```
 
-Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` / `Operator@123` · any seeded driver / `Driver@123`.
+Demo logins: `arjun@volthub.in` / `Operator@123` · any seeded driver / `Driver@123`. The admin credential is **not** published — set `ADMIN_BOOTSTRAP_PASSWORD` before seeding (see `DEPLOY.md` §8).
 
 ## Status & releases
 

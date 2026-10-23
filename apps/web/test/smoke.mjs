@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global process, console, document, getComputedStyle */
+/* global process, console, document, getComputedStyle, CSS */
 // Web smoke suite — the console's first automated test (ISS-02).
 // Runs against any origin, so the same file gates local dev, CI, and the public demo:
 //
@@ -21,7 +21,10 @@ function check(name, ok, detail = '') {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  — ${detail}` : ''}`);
 }
 
-const browser = await chromium.launch({ channel: 'chrome', headless: true });
+// PW_CHANNEL='chrome' uses the system browser; set it to an empty string in CI to
+// use Playwright's bundled Chromium.
+const CHANNEL = process.env.PW_CHANNEL ?? 'chrome';
+const browser = await chromium.launch({ ...(CHANNEL ? { channel: CHANNEL } : {}), headless: true });
 
 async function visit(path, { width = 1280, height = 800 } = {}) {
   const ctx = await browser.newContext({ viewport: { width, height } });
@@ -89,6 +92,39 @@ for (const width of [375, 1280]) {
   ).trim();
   check('discover: main content rendered', text.length > 20, `${text.length} chars`);
   check('discover: no uncaught exceptions', errors.length === 0, errors[0] || '');
+  await ctx.close();
+}
+
+// 5. Accessibility floor: labelled inputs, named buttons, one h1 per page.
+{
+  const { ctx, page } = await visit('/login');
+  const unlabelled = await page
+    .evaluate(() => {
+      const inputs = [...document.querySelectorAll('input:not([type="hidden"])')];
+      return inputs.filter((el) => {
+        if (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby')) return false;
+        if (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) return false;
+        if (el.closest('label')) return false;
+        return true;
+      }).length;
+    })
+    .catch(() => -1);
+  check('a11y: every login input is labelled', unlabelled === 0, `${unlabelled} unlabelled`);
+
+  const unnamed = await page
+    .evaluate(() => {
+      return [...document.querySelectorAll('button')].filter(
+        (b) => !(b.innerText || '').trim() && !b.getAttribute('aria-label') && !b.getAttribute('title')
+      ).length;
+    })
+    .catch(() => -1);
+  check('a11y: every button has an accessible name', unnamed === 0, `${unnamed} unnamed`);
+  await ctx.close();
+}
+{
+  const { ctx, page } = await visit('/');
+  const h1s = await page.locator('h1').count();
+  check('a11y: exactly one h1 on the landing page', h1s === 1, `${h1s} h1 elements`);
   await ctx.close();
 }
 

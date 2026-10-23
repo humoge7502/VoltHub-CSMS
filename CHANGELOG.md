@@ -7,9 +7,21 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 ### Added
 
 - **Web smoke suite** — `apps/web/test/smoke.mjs` (+ `npm run test:smoke` in `apps/web`).
-  13 outcome-based checks (hero, font, nav, no uncaught exceptions, no horizontal
-  overflow at 375/1280, login fields, discover render) runnable against any origin via
-  `BASE_URL`. First automated test for the console (closes the ISS-02 gap).
+  16 outcome-based checks (hero, font, nav, no uncaught exceptions, no horizontal
+  overflow at 375/1280, login fields, discover render, a11y floor: every input labelled,
+  every button named, exactly one `h1`) runnable against any origin via `BASE_URL`.
+  First automated test for the console (closes the ISS-02 gap).
+- **Authenticated UI E2E** (`apps/web/test/e2e.mjs`, + `npm run test:e2e`) — 12 checks
+  covering the signed-in driver tour (`/discover`, `/wallet`, `/invoices`,
+  `/reservations`) with zero-uncaught-exception assertions. The admin leg is opt-in via
+  `ADMIN_PASSWORD` so CI never stores the provisioned secret.
+- **`ui` workflow** (`.github/workflows/ui.yml`) — boots the stack, then runs smoke + E2E
+  against the real console.
+- **AI sidecar is deployable and tested**: `apps/ai/Dockerfile` (CPU torch), pinned
+  `requirements.txt`, an opt-in `ai` compose profile, and an `ai` CI job running pytest.
+- **Nightly load workflow** (`.github/workflows/load.yml`) running the 10-minute k6
+  profile against a booted stack.
+- **Coverage thresholds** (`codecov.yml`, 70% project / 60% patch).
 - **`docs/STRATEGY-AND-ROADMAP.md`** — full analysis: differentiation vectors, issue
   catalogue (severity/priority/effort/dependencies/timeline), per-module enhancements,
   advanced features, integrations, test strategy, and a 90-day plan.
@@ -21,7 +33,18 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   em-dash saturation; corrected the stale **66 paths → 72 paths** figure.
 - **Type system**: body Inter → **IBM Plex Sans** (pairs with IBM Plex Mono numerals);
   display Space Grotesk → **Bricolage Grotesque**. Removes the two most over-used
-  AI-default faces while keeping the carbon/cream/lime identity.
+  AI-default faces while keeping the carbon/cream/lime identity. The detector now exits
+  clean on the live site.
+- **Compose healthchecks** on `api` and `web` (both now report `(healthy)`).
+- `apps/ai` binds `AI_HOST` (default loopback; containers set `0.0.0.0`).
+
+### Security
+
+- **SEC-050 — admin credential is provisioned, not published.** The demo admin password
+  is now read from `ADMIN_BOOTSTRAP_PASSWORD` at seed time, rotated in the live Oracle
+  row and `seed.sql` (Argon2id), and removed from the landing page, login hint, README,
+  DEPLOY and SECURITY. The previous default now returns `401`. `scripts/rotate-admin.js`
+  reproduces the rotation (hash + DB update + the two places to keep in sync).
 
 ## [1.8.1] — 2026-10-24
 

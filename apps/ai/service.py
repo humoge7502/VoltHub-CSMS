@@ -347,4 +347,11 @@ def optimize(req: OptimizeReq, x_internal: str | None = Header(default=None)):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("AI_PORT", "8100")), log_level="info")
+    # AI_HOST defaults to loopback for bare-metal runs; the container sets 0.0.0.0
+    # so the API can reach it over the compose network.
+    uvicorn.run(
+        app,
+        host=os.environ.get("AI_HOST", "127.0.0.1"),
+        port=int(os.environ.get("AI_PORT", "8100")),
+        log_level="info",
+    )

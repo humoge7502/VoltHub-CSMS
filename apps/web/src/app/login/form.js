@@ -134,8 +134,7 @@ export function LoginForm({ mode }) {
           </span>
           {mode === 'login' && (
             <span className="micro" style={{ borderTop: '1px solid var(--hair)', paddingTop: 'var(--sp-3)' }}>
-              demo — <span className="num">admin@volthub.in / Admin@123</span> ·{' '}
-              <span className="num">arjun@volthub.in / Operator@123</span> · any seeded driver /{' '}
+              demo — <span className="num">arjun@volthub.in / Operator@123</span> · any seeded driver /{' '}
               <span className="num">Driver@123</span>
             </span>
           )}
