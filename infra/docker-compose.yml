@@ -63,6 +63,9 @@ services:
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal}
       # OCPP 1.6J upgrade auth: per-cp (default), require, or off.
       OCPP_AUTH: ${OCPP_AUTH:-per-cp}
+      # SEC-043: unsigned wallet top-ups are demo/test-only. Compose only injects .env
+      # variables the yaml references, so this must be listed for the .env flag to work.
+      WALLET_UNSIGNED_TOPUP: ${WALLET_UNSIGNED_TOPUP:-}
       # CORS allow-list for the web console. Extend via .env (--env-file) when the
       # console is served from a tunnel/prod origin (DEPLOY.md §2) — e.g.
       # WEB_ORIGIN=https://app.example.com,http://localhost:3000
