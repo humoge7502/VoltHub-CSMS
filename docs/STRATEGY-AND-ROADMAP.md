@@ -127,6 +127,13 @@ Severity = business/security impact. Priority = severity × user exposure. Effor
 | ISS-17                                         | **Partial** — a11y floor (input labels, button names, single h1) gated in smoke                                                                                    |
 | ISS-05, ISS-07, ISS-08, ISS-13, ISS-14, ISS-16 | **Open** — need infra/accounts (named tunnel, HA) or multi-week refactors (workspace, TLS proxy, TypeScript)                                                       |
 
+Three findings surfaced only once CI ran against the pushed branch. All were fixed rather than
+suppressed: **body-parser 2.3.0 → 2.4.0** (GHSA-27r3-jxmh-p828, a high-severity DoS reachable on
+every JSON route — Express 5 uses it everywhere); **`apps/ai` ran as root** (Trivy DS-0002, now
+`uid 10001`); and the **Oracle admin row is seeded with the `!unprovisioned` sentinel**, so a fresh
+database has no working admin password at all until `scripts/migrate.sh` provisions the real hash
+from `ADMIN_BOOTSTRAP_PASSWORD` — idempotent, so a restart never clobbers a rotation.
+
 ## 3. Enhancements & modifications (by module)
 
 ### 3.1 `apps/api`

@@ -172,6 +172,11 @@ jobs:
   e2e:
     needs: db-tests
     runs-on: ubuntu-latest
+    # SEC-050: migrate.sh provisions the Oracle admin hash from this and compose
+    # forwards it to the api container, so the control-plane E2E can sign in as
+    # admin. Same throwaway fixture as db-tests.
+    env:
+      ADMIN_BOOTSTRAP_PASSWORD: Admin@123
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
