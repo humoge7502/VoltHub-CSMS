@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api, Pill, inr, PageHead, PageState, AuthGate, EmptyState } from '../../lib/ui';
 
 export default function Invoices() {
@@ -10,6 +11,7 @@ export default function Invoices() {
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const [det, setDet] = useState(null);
+  const [paying, setPaying] = useState(null); // invoice_id with a Pay POST in flight
   const load = () =>
     Promise.all([api('/invoices').then((j) => setInvs(j.invoices)), api('/me').then((j) => setW(j.wallet))])
       .then(() => {
@@ -20,17 +22,6 @@ export default function Invoices() {
   useEffect(() => {
     load();
   }, []);
-  const pay = async (id) => {
-    setMsg('');
-    setOk('');
-    try {
-      await api(`/invoices/${id}/pay`, { method: 'POST' });
-      setOk('PAID — ledger appended, balance decremented atomically.');
-      load();
-    } catch (e) {
-      setMsg(`${e.code || ''} ${e.message}`);
-    }
-  };
   const open = async (id) => {
     setMsg('');
     try {
@@ -39,40 +30,48 @@ export default function Invoices() {
       setMsg(e.message);
     }
   };
-  const topup = async (amt) => {
+  // Deep link from the session page (?id=<invoice_id>) actually opens the itemized
+  // panel — the param used to be dead: /invoices ignored it entirely.
+  useEffect(() => {
+    try {
+      const q = Number(new URLSearchParams(window.location.search).get('id'));
+      if (q) open(q);
+    } catch {}
+  }, []);
+  const pay = async (id) => {
+    if (paying) return; // double-click guard — a second POST would 409 noisily
     setMsg('');
     setOk('');
+    setPaying(id);
     try {
-      await api('/me/wallet/topup', { method: 'POST', body: JSON.stringify({ amount: amt }) });
-      setOk(`Wallet credited ${inr(amt)}.`);
+      await api(`/invoices/${id}/pay`, { method: 'POST' });
+      setOk('PAID — ledger appended, balance decremented atomically.');
       load();
     } catch (e) {
-      setMsg(e.message);
+      setMsg(`${e.code || ''} ${e.message}`);
+    } finally {
+      setPaying(null);
     }
   };
   return (
     <div className="wrap">
       <PageHead
-        eyebrow="DRIVER · PREPAID WALLET · NO CARD DATA, EVER"
-        title="Wallet"
-        lede="Top up, settle invoices, inspect every line. Payment is a ledger append and a balance decrement in one transaction."
+        eyebrow="DRIVER · ITEMIZED BILLING · SETTLED FROM THE PREPAID WALLET"
+        title="Invoices"
+        lede="Every session is billed once, line by line — time-of-use energy bands and the plan's session fee. Payment appends a ledger row and decrements the balance in one transaction."
       />
       <div
         className="card hl"
         style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 'var(--sp-4)' }}
       >
         <div className="kpi">
-          <div className="micro">BALANCE</div>
+          <div className="micro">WALLET BALANCE</div>
           <div className="v num">{w ? inr(w.balance) : loading ? '…' : '—'}</div>
         </div>
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {w
-            ? [500, 1000, 2000].map((a) => (
-                <button key={a} className="btn" onClick={() => topup(a)}>
-                  +{inr(a)}
-                </button>
-              ))
-            : !loading && <span className="micro">NO PREPAID WALLET FOR THIS ACCOUNT</span>}
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Link className="btn" href="/wallet">
+            Top up by signature →
+          </Link>
         </span>
       </div>
       {ok && (
@@ -98,27 +97,33 @@ export default function Invoices() {
                       Total
                     </th>
                     <th scope="col">Status</th>
-                    <th scope="col">Actions</th>
+                    <th scope="col">Actions</th>{' '}
                   </tr>
                 </thead>
                 <tbody>
                   {invs.map((i) => (
                     <tr key={i.invoice_id}>
-                      <td className="n">#{i.invoice_id}</td>
-                      <td className="n">{i.session_id}</td>
+                      <td className="num">{i.invoice_id}</td>
+                      <td className="num">{i.session_id}</td>
                       <td className="n num">{inr(i.total)}</td>
                       <td>
                         <Pill s={i.status} />
                       </td>
-                      <td style={{ display: 'flex', gap: 6 }}>
-                        <button className="btn sm" onClick={() => open(i.invoice_id)}>
-                          Itemize
-                        </button>
-                        {i.status === 'DUE' && (
-                          <button className="btn sm pri" onClick={() => pay(i.invoice_id)}>
-                            Pay
+                      <td>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button className="btn sm" onClick={() => open(i.invoice_id)}>
+                            Itemize
                           </button>
-                        )}
+                          {i.status === 'DUE' && (
+                            <button
+                              className="btn sm pri"
+                              onClick={() => pay(i.invoice_id)}
+                              disabled={paying === i.invoice_id}
+                            >
+                              {paying === i.invoice_id ? 'Paying…' : 'Pay'}
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -139,8 +144,13 @@ export default function Invoices() {
           style={{ marginTop: 'var(--sp-4)' }}
           aria-label={`Invoice ${det.invoice.invoice_id} detail`}
         >
-          <div className="micro">
-            INVOICE #{det.invoice.invoice_id} · {det.invoice.status}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="micro">
+              INVOICE #{det.invoice.invoice_id} · {det.invoice.status}
+            </div>
+            <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => setDet(null)}>
+              Close ✕
+            </button>
           </div>
           {det.lines.map((l) => (
             <div

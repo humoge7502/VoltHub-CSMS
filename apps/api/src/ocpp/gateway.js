@@ -3,7 +3,10 @@
 // state into the store (CLIENT_IDENTIFIER='ocpp-gw' equivalent) exactly like
 // the Oracle trigger expects in prod.
 // SEC-003: OCPP 1.6 Security Profile 1 — HTTP Basic on upgrade (username=ocpp_identity,
-// password=charge_point.auth_secret). Enforced when the CP has a secret or OCPP_AUTH=require.
+// password=charge_point.auth_secret). A charge point WITHOUT a stored secret is not
+// authenticable and is refused outright: an open registration row must not mean an
+// open gateway (SEC-041 — the pre-fix behaviour let any guessable identity connect
+// credential-less and fabricate sessions + meter input). OCPP_AUTH=off disables everything.
 'use strict';
 const crypto = require('crypto');
 const { parse, result, call, callError } = require('@volthub/ocpp-messages');
@@ -145,7 +148,11 @@ function checkBasic(req, identity, cp) {
   const secret = cp?.auth_secret;
   const mode = process.env.OCPP_AUTH || 'per-cp'; // per-cp | require | off
   if (mode === 'off') return true;
-  if (!secret && mode !== 'require') return true; // legacy CPs without secret (dev/seeds migrating)
+  // SEC-041 (review 2026-10-24): a CP row with no auth_secret is NOT authenticable.
+  // The old `!secret => allow` bypass turned every seeded/hydrated deployment into an
+  // open gateway (anyone could connect as any guessable identity). Provision a secret
+  // via the admin API, or set OCPP_AUTH=off explicitly for an isolated lab.
+  if (!secret) return false;
   const h = String(req.headers?.authorization || '');
   const m = /^Basic (.+)$/.exec(h);
   if (!m) return false;
@@ -236,11 +243,17 @@ function mountOcpp(wss, store, log) {
         msg = null;
       }
       if (overLimit) {
-        ws.send(callError(msg ? msg.uid : '0', 'FormationViolation', 'rate limit 10 msg/s per charge point'));
+        // SEC-042: these two sends run BEFORE the handler's try/catch — a throw from a
+        // dying socket rejected the async listener (process-fatal unhandled rejection).
+        try {
+          ws.send(callError(msg ? msg.uid : '0', 'FormationViolation', 'rate limit 10 msg/s per charge point'));
+        } catch {}
         return;
       }
       if (!msg) {
-        ws.send(callError('0', 'FormationViolation'));
+        try {
+          ws.send(callError('0', 'FormationViolation'));
+        } catch {}
         return;
       }
       // B2G-009 + ADR-0010: CSMS-initiated CALLs get CALLRESULT/CALLERROR answers.
@@ -307,6 +320,14 @@ function mountOcpp(wss, store, log) {
                   reported_at: new Date().toISOString(),
                   cleared_at: null,
                 });
+              } else {
+                // BUG-062: a NoError report clears this connector's open OCPP faults —
+                // previously only the manual maintenance route ever set cleared_at, so
+                // triage queues filled with faults the charger had already recovered from.
+                const fref = `${cpId}:${p.connectorId}`;
+                const nowIso = new Date().toISOString();
+                for (const f of store.faults.values())
+                  if (f.connector_ref === fref && f.source === 'OCPP' && !f.cleared_at) f.cleared_at = nowIso;
               }
               store.emitOutbox('CONNECTOR_STATE', `ocpp:${cpId}:${p.connectorId}:${Date.now()}`, {
                 connector_ref: `${cpId}:${p.connectorId}`,
@@ -341,6 +362,11 @@ function mountOcpp(wss, store, log) {
               break;
             }
             const uid = Number(tagUid[1]);
+            // BUG-054 (review 2026-10-24): meterStart is the charger's absolute register
+            // at plug-in. OCPP sends Wh. Ignoring it billed every charger with a non-zero
+            // register for energy it never delivered (bill = end − start, start was 0).
+            const meterStartRaw = Number(p.meterStart);
+            const meterStartKwh = Number.isFinite(meterStartRaw) ? meterStartRaw / 1000 : 0;
             const sess = await store
               .startSession({
                 uid,
@@ -350,6 +376,7 @@ function mountOcpp(wss, store, log) {
                 planId: store.defaultPlanId ? store.defaultPlanId() : 2,
                 reservationId: null,
                 idTag: p.idTag,
+                meterStartKwh,
               })
               .catch((e) => {
                 // B2G-013b: a foreign idTag on a RESERVED connector must read as Invalid
@@ -376,11 +403,12 @@ function mountOcpp(wss, store, log) {
             // every replayed seq_no would be silently swallowed by the store's idempotent
             // dedupe ({deduped:true}) — meter data dropped until the counter caught up.
             // Recover the cursor from the persisted readings on first sight of a session.
-            if (tx && e) {
+            if (tx) {
               const sid = Number(tx);
               // A charge point may only meter its own sessions. Without this check any
               // authenticated CP could inject readings into (and thereby inflate the
-              // bill of) another CP's live transaction.
+              // bill of) another CP's live transaction. (Applies to EVERY frame, not
+              // just energy-bearing ones.)
               const owner = store.sessions.get(sid);
               if (owner && Number(owner.cp_id) !== Number(cpId)) {
                 ws.send(callError(msg.uid, 'SecurityError', `transaction ${sid} is not owned by ${identity}`));
@@ -393,19 +421,44 @@ function mountOcpp(wss, store, log) {
                 seqByTx.set(sid, maxSeq);
                 if (maxSeq) log.info({ identity, sessionId: sid, maxSeq }, 'ocpp tick cursor recovered after restart');
               }
-              const next = seqByTx.get(sid) + 1;
-              seqByTx.set(sid, next);
-              const sampledAt = new Date().toISOString();
-              const sampledKw = pr ? Number(pr.value) / 1000 : null;
-              await store.recordTick(sid, next, sampledAt, Number(e.value) / 1000, sampledKw, null, null);
-              // Verify stage: only after the tick is durably recorded do we compare it
-              // to the schedule in force — a tick that was rejected/deduped must not
-              // become compliance evidence.
-              try {
-                enforcementSample(store, cpId, sid, sampledKw, sampledAt);
-              } catch (err) {
-                log.warn({ identity, err: err.message }, 'enforcement sample failed');
+              if (e) {
+                const next = seqByTx.get(sid) + 1;
+                seqByTx.set(sid, next);
+                const sampledAt = new Date().toISOString();
+                const sampledKw = pr ? Number(pr.value) / 1000 : null;
+                await store.recordTick(sid, next, sampledAt, Number(e.value) / 1000, sampledKw, null, null);
+                // Verify stage: only after the tick is durably recorded do we compare it
+                // to the schedule in force — a tick that was rejected/deduped must not
+                // become compliance evidence.
+                try {
+                  enforcementSample(store, cpId, sid, sampledKw, sampledAt);
+                } catch (err) {
+                  log.warn({ identity, err: err.message }, 'enforcement sample failed');
+                }
+              } else if (pr) {
+                // BUG-061: a frame carrying ONLY power (no energy measurand) used to be
+                // ACKed and dropped — real chargers do this between register updates, so
+                // the power trace lost its cadence. Carry the last known register
+                // forward: energy is unchanged (billing reads max(reading), unaffected),
+                // the power sample is preserved.
+                const next = seqByTx.get(sid) + 1;
+                seqByTx.set(sid, next);
+                const sampledAt = new Date().toISOString();
+                const sampledKw = Number(pr.value) / 1000;
+                const lastKwh = Math.max(
+                  Number(owner?.start_meter_kwh) || 0,
+                  store.readings
+                    .filter((r) => r.session_id === sid)
+                    .reduce((m, r) => Math.max(m, Number(r.meter_kwh) || 0), 0)
+                );
+                await store.recordTick(sid, next, sampledAt, lastKwh, sampledKw, null, null);
+                try {
+                  enforcementSample(store, cpId, sid, sampledKw, sampledAt);
+                } catch (err) {
+                  log.warn({ identity, err: err.message }, 'enforcement sample failed');
+                }
               }
+              // frames with neither measurand (SoC/voltage-only) stay ACK-only.
             }
             ws.send(result(msg.uid, {}));
             break;
@@ -438,7 +491,11 @@ function mountOcpp(wss, store, log) {
             ws.send(callError(msg.uid, 'NotSupported', msg.action));
         }
       } catch (e) {
-        ws.send(callError(msg.uid, 'InternalError', e.message));
+        // The catch's own send can throw on a dying socket — that must not turn an
+        // InternalError answer into an unhandled rejection (same window as SEC-042).
+        try {
+          ws.send(callError(msg.uid, 'InternalError', e.message));
+        } catch {}
       }
     });
     ws.on('error', (err) => {

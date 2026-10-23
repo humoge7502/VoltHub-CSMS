@@ -24,6 +24,10 @@ module.exports = [
       '**/package-lock.json',
       '.shot-tmp/**',
       'data/**',
+      // Local agent-tooling assets (installed skills), not project code.
+      '.zcode/**',
+      '.workbuddy-ai/**',
+      'video/**',
     ],
   },
   js.configs.recommended,
@@ -67,5 +71,16 @@ module.exports = [
     files: ['test/load/**/*.js', 'bench/k6-*.js'],
     languageOptions: { ecmaVersion: 2022, sourceType: 'module' },
     rules: { 'no-console': 'off', 'no-undef': 'off', 'no-unused-vars': 'off', 'prefer-const': 'off' },
+  },
+  {
+    // ESM tooling scripts (Playwright capture, wallet walkthrough): Node host that
+    // also evaluates browser-context callbacks, so both global sets are legitimate.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node, ...globals.browser },
+    },
+    rules: { 'no-console': 'off' },
   },
 ];

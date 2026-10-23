@@ -1,7 +1,17 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { api, Pill, PageHead, PageState, ConfirmDialog, EmptyState, AuthGate } from '../../lib/ui';
+import { api, Pill, PageHead, PageState, ConfirmDialog, EmptyState, AuthGate, IST } from '../../lib/ui';
+
+const fmtWin = (iso) =>
+  new Date(iso).toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: IST,
+  });
 
 export default function Reservations() {
   const [list, setList] = useState([]);
@@ -9,6 +19,18 @@ export default function Reservations() {
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const [cancelTarget, setCancelTarget] = useState(null);
+  const [planId, setPlanId] = useState(null);
+  // Start-session used to hardcode planId: 2 — a tariff the user never chose and one
+  // that may not exist (or may not be the active version) on another database. The
+  // active version from the public /tariffs/active preview is the honest default.
+  useEffect(() => {
+    api('/tariffs/active')
+      .then((j) => {
+        const active = (j.plans || []).filter((p) => !p.active_to).sort((a, b) => b.plan_id - a.plan_id)[0];
+        setPlanId(active?.plan_id ?? null);
+      })
+      .catch(() => {});
+  }, []);
   const load = () =>
     api('/reservations')
       .then((j) => {
@@ -37,7 +59,12 @@ export default function Reservations() {
       const [cp, no] = r.connector_ref.split(':').map(Number);
       const j = await api('/sessions/start', {
         method: 'POST',
-        body: JSON.stringify({ cpId: cp, connectorNo: no, reservationId: r.reservation_id, planId: 2 }),
+        body: JSON.stringify({
+          cpId: cp,
+          connectorNo: no,
+          reservationId: r.reservation_id,
+          ...(planId ? { planId } : {}),
+        }),
       });
       window.location = `/session/${j.session.session_id}`;
     } catch (e) {
@@ -67,7 +94,9 @@ export default function Reservations() {
                     <th scope="col">Connector</th>
                     <th scope="col">Window</th>
                     <th scope="col">Status</th>
-                    <th scope="col" aria-label="Actions" />
+                    <th scope="col" style={{ textAlign: 'right' }}>
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -76,7 +105,7 @@ export default function Reservations() {
                       <td className="n">#{r.reservation_id}</td>
                       <td className="n">{r.connector_ref}</td>
                       <td className="num">
-                        {new Date(r.start_at).toLocaleString()} → {new Date(r.end_at).toLocaleTimeString()}
+                        {fmtWin(r.start_at)} → {fmtWin(r.end_at)}
                       </td>
                       <td>
                         <Pill s={r.status} />

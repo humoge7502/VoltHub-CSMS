@@ -3,6 +3,12 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { api, Pill, inr } from '../../../lib/ui';
 
+// local wall-clock string for <input type="datetime-local">
+const localInput = (d) => {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 export default function Station() {
   // Next 16: dynamic-route params come from useParams(), not the page props.
   const params = useParams();
@@ -23,8 +29,11 @@ export default function Station() {
           .flatMap((c) => c.connectors.map((x) => ({ ...x, cp_id: c.cp_id })))
           .find((c) => c.status === 'AVAILABLE');
         setSel(free || null);
+        // <input type="datetime-local"> speaks *local* wall-clock time. Handing it
+        // toISOString() fed it UTC, so in IST the default start sat 5h30 in the past and
+        // the first click on Reserve failed with "startAt must be in the future".
         const d = new Date(Date.now() + 30 * 60000);
-        setStart(d.toISOString().slice(0, 16));
+        setStart(localInput(d));
       })
       .catch((e) => setMsg(e.message));
     api('/tariffs/active')
@@ -60,11 +69,18 @@ export default function Station() {
   if (!s)
     return (
       <div className="wrap">
-        <div className="skel" style={{ height: 200 }} />
-        {msg && (
-          <p className="err" role="alert" style={{ marginTop: 12 }}>
-            {msg}
-          </p>
+        {/* A failed station fetch used to leave the 200px skeleton on screen forever
+            with the error below it — fail visibly with a retry instead. */}
+        {msg ? (
+          <div className="card" role="alert">
+            <div className="micro">REQUEST FAILED</div>
+            <p className="err">{msg}</p>
+            <button className="btn" style={{ marginTop: 'var(--sp-2)' }} onClick={() => window.location.reload()}>
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div className="skel" style={{ height: 200 }} />
         )}
       </div>
     );
@@ -130,7 +146,13 @@ export default function Station() {
           <div className="sheet" style={{ marginTop: 'var(--sp-3)' }}>
             <label className="f">
               Start
-              <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} disabled={!sel} />
+              <input
+                type="datetime-local"
+                value={start}
+                min={localInput(new Date())}
+                onChange={(e) => setStart(e.target.value)}
+                disabled={!sel}
+              />
             </label>
             <label className="f">
               Duration (min)

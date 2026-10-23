@@ -22,6 +22,8 @@ const connectSrc = [
 
 module.exports = {
   reactStrictMode: true,
+  // The dev overlay badge is a screenshot artefact in docs/video captures.
+  devIndicators: false,
   env: { NEXT_PUBLIC_API_BASE: API_BASE },
   async headers() {
     const isProd = process.env.NODE_ENV === 'production';

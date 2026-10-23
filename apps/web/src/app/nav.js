@@ -11,8 +11,8 @@ const DRIVER = [
   ['/discover', 'Discover'],
   ['/reservations', 'Reservations'],
   ['/history', 'History'],
-  ['/invoices', 'Wallet'],
-  ['/notifications', 'Alerts'],
+  ['/wallet', 'Wallet'],
+  ['/invoices', 'Invoices'],
 ];
 const OPERATOR = [
   ['/dashboard', 'Dashboard'],

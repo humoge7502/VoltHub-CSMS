@@ -501,6 +501,32 @@ async function hydrate(local, pool) {
         local.seq.vehicle = Math.max(local.seq.vehicle, id);
       }
     );
+    // ADR-0016: active wallet links only. A revoked link stays in Oracle as history but
+    // must not hydrate — otherwise an unlinked address would come back on restart.
+    await q(
+      `SELECT link_id, user_id, address, address_lc, chain_id, label, verified_by, linked_at
+         FROM wallet_link WHERE revoked_at IS NULL`,
+      'wallet_link',
+      (r) => {
+        const id = Number(r.LINK_ID);
+        local.walletLinks.set(String(r.ADDRESS_LC).toLowerCase(), {
+          link_id: id,
+          user_id: Number(r.USER_ID),
+          address: r.ADDRESS,
+          chain_id: Number(r.CHAIN_ID),
+          chain_name: require('../wallet/rail').CHAIN_NAME,
+          label: r.LABEL,
+          linked_at: r.LINKED_AT ? new Date(r.LINKED_AT).toISOString() : new Date().toISOString(),
+          verified_by: r.VERIFIED_BY || 'EIP-191',
+        });
+        local.seq.walletLink = Math.max(local.seq.walletLink, id);
+      }
+    );
+    // Revoked rows are not hydrated but they still own their link_id — re-baseline so a
+    // re-link cannot reuse an id that Oracle already holds (explicit-id mirrors).
+    await q('SELECT NVL(MAX(link_id), 0) AS MAXID FROM wallet_link', 'wallet_link_seq', (r) => {
+      local.seq.walletLink = Math.max(local.seq.walletLink, Number(r.MAXID) || 0);
+    });
     await q(
       'SELECT event_id, kind, dedupe_key, payload, created_at, processed_at FROM outbox_event',
       'outbox',
@@ -864,18 +890,94 @@ function wrapWithOracle(local, pool) {
     }
   };
 
-  local.topup = (uid, amount) => {
+  // ADR-0016: a wallet link that lived only in the read-cache would evaporate on the
+  // next restart, and the driver's next top-up would 409 NO_WALLET_LINKED with a
+  // verified address in hand. Mirror it, and undo the local row if Oracle refuses.
+  const origLinkWallet = local.linkWallet.bind(local);
+  local.linkWallet = async (uid, args) => {
+    // Re-linking an address that is already active for this user is a refresh, not a
+    // new row: the local store keeps the same link_id, so mirroring it as an INSERT
+    // would collide on the PK (ORA-00001). Capture the prior state before the write.
+    const priorKey = String(args?.address || '').toLowerCase();
+    const prior = local.walletLinks.get(priorKey);
+    const row = await origLinkWallet(uid, args);
+    if (prior && prior.user_id === Number(uid)) {
+      try {
+        await withConnSync(async () => {
+          const r = await connExec(
+            `UPDATE wallet_link SET label = :p_label, linked_at = SYSTIMESTAMP
+              WHERE link_id = :p_id AND revoked_at IS NULL`,
+            { p_id: row.link_id, p_label: row.label }
+          );
+          if (r.rowsAffected !== 1) throw new Error(`wallet_link ${row.link_id} not active in Oracle`);
+          await mirrorConn.commit();
+        });
+        return row;
+      } catch (e) {
+        throw fromMirrorInsertError(e);
+      }
+    }
+    try {
+      await withConnSync(async () => {
+        // Re-linking a previously revoked address is an insert of a new active row:
+        // the function-based unique index only covers revoked_at IS NULL.
+        await connExec(
+          // Bind names are prefixed on purpose: ORA-01745 fires when a bind name
+          // collides with an Oracle keyword/pseudocolumn (UID is one), and the error
+          // arrives as a 500 at runtime rather than at parse time.
+          `INSERT INTO wallet_link (link_id, user_id, address, address_lc, chain_id, label, verified_by, linked_at)
+           VALUES (:p_id, :p_uid, :p_addr, :p_lc, :p_chain, :p_label, 'EIP-191', SYSTIMESTAMP)`,
+          {
+            p_id: row.link_id,
+            p_uid: Number(uid),
+            p_addr: row.address,
+            p_lc: row.address.toLowerCase(),
+            p_chain: row.chain_id,
+            p_label: row.label,
+          }
+        );
+        await mirrorConn.commit();
+      });
+      return row;
+    } catch (e) {
+      local.walletLinks.delete(row.address.toLowerCase());
+      throw fromMirrorInsertError(e);
+    }
+  };
+
+  const origUnlinkWallet = local.unlinkWallet.bind(local);
+  local.unlinkWallet = async (uid, address) => {
+    // Stamp first in Oracle, then drop locally: the no-DELETE role means revoke is the
+    // only unlink that exists, and a failed revoke must not look like a success.
+    const key = String(address || '').toLowerCase();
+    const row = local.walletLinks.get(key);
+    if (row && row.user_id === Number(uid)) {
+      await withConnSync(async () => {
+        const r = await connExec(
+          `UPDATE wallet_link SET revoked_at = SYSTIMESTAMP WHERE address_lc = :p_lc AND revoked_at IS NULL`,
+          { p_lc: key }
+        );
+        if (r.rowsAffected !== 1) throw new Error(`wallet_link ${key} not active in Oracle`);
+        await mirrorConn.commit();
+      }).catch((e) => {
+        throw fromMirrorInsertError(e);
+      });
+    }
+    return origUnlinkWallet(uid, address);
+  };
+
+  local.topup = (uid, amount, note = 'top-up') => {
     const wBefore = local.wallets.get(Number(uid));
     const preBalance = wBefore ? wBefore.balance : 0;
     const ledgerBefore = local.ledgers.length;
-    const w = origTopup(uid, amount);
+    const w = origTopup(uid, amount, note);
     const entry = local.ledgers[local.ledgers.length - 1];
     const attempt = () =>
       withConnSync(async () => {
         await connExec(
           `INSERT INTO wallet_ledger (user_id, seq_no, kind, amount, balance_after, note)
-           VALUES (:u, :seq, 'TOPUP', :amt, :bal, 'top-up')`,
-          { u: Number(uid), seq: entry.seq_no, amt: amount, bal: entry.balance_after }
+           VALUES (:u, :seq, 'TOPUP', :amt, :bal, :note)`,
+          { u: Number(uid), seq: entry.seq_no, amt: amount, bal: entry.balance_after, note: entry.note }
         );
         await connExec('UPDATE wallet_account SET balance = :bal, updated_at = SYSTIMESTAMP WHERE user_id = :u', {
           bal: entry.balance_after,
@@ -1034,7 +1136,7 @@ function wrapWithOracle(local, pool) {
     try {
       const oracleSid = await withConn(async (conn) => {
         const r = await conn.execute(
-          'BEGIN charge_session_pkg.start_session(:p_user, :p_vehicle, :p_cp, :p_conn, :p_plan, :p_res, :p_idtag, :p_sid); END;',
+          'BEGIN charge_session_pkg.start_session(:p_user, :p_vehicle, :p_cp, :p_conn, :p_plan, :p_res, :p_idtag, :p_mstart, :p_sid); END;',
           {
             p_user: sess.user_id,
             p_vehicle: sess.vehicle_id,
@@ -1043,6 +1145,9 @@ function wrapWithOracle(local, pool) {
             p_plan: sess.tariff_plan_id,
             p_res: sess.reservation_id ? Number(sess.reservation_id) : null,
             p_idtag: sess.id_tag,
+            // BUG-054 (V010): persist the charger's absolute register so billing_pkg's
+            // end - start prices delivered energy, not the register's life total.
+            p_mstart: Number.isFinite(Number(sess.start_meter_kwh)) ? Number(sess.start_meter_kwh) : 0,
             p_sid: BIND_OUT_NUM,
           }
         );

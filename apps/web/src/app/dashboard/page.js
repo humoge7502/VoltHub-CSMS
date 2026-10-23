@@ -1,6 +1,20 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { api, Kpi, Pill, Line, PageState, Toasts, toast, inr, kwh, PageHead, StationPicker } from '../../lib/ui';
+import { useEffect, useRef, useState } from 'react';
+import {
+  api,
+  Kpi,
+  Pill,
+  Line,
+  PageState,
+  Toasts,
+  toast,
+  inr,
+  kwh,
+  PageHead,
+  StationPicker,
+  StaleChip,
+  IST,
+} from '../../lib/ui';
 
 export default function Dashboard() {
   const [st, setSt] = useState([]);
@@ -12,6 +26,11 @@ export default function Dashboard() {
   const [strip, setStrip] = useState([]);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  // Stale-data contract (same as telemetry): a failed poll keeps the last good KPIs
+  // on screen with a reconnecting chip; only a failed first load shows the error card.
+  const gotDataRef = useRef(false);
+  const [stale, setStale] = useState(false);
+  const fanoutRef = useRef(null);
   // URL as state (§9.5-3): ?station= survives refresh/deep-link.
   useEffect(() => {
     try {
@@ -44,8 +63,17 @@ export default function Dashboard() {
     const f = () =>
       Promise.all([
         api(`/stations/${sel}/analytics`)
-          .then((r) => !dead && setA(r))
-          .catch((e) => !dead && setErr(e.message)),
+          .then((r) => {
+            if (dead) return;
+            setA(r);
+            gotDataRef.current = true;
+            setStale(false);
+          })
+          .catch((e) => {
+            if (dead) return;
+            if (gotDataRef.current) setStale(true);
+            else setErr(e.message);
+          }),
         api(`/stations/${sel}/connectors/live`)
           .then((j) => !dead && setLive(j.connectors))
           .catch(() => {}),
@@ -59,6 +87,7 @@ export default function Dashboard() {
           .then((j) => !dead && setStrip(j.points))
           .catch(() => {}),
       ]);
+    fanoutRef.current = f;
     f();
     const t = setInterval(f, 15000);
     return () => {
@@ -75,7 +104,16 @@ export default function Dashboard() {
         lede="Revenue, energy, connector state and faults for one station. Select it here or deep-link with ?station=."
       />
       <StationPicker id="station-pick" stations={st} value={sel} onChange={pick} />
-      <PageState loading={loading && !st.length} error={err} onRetry={() => window.location.reload()}>
+      {stale && (
+        <div style={{ marginTop: 'var(--sp-3)' }}>
+          <StaleChip />
+        </div>
+      )}
+      <PageState
+        loading={loading && !st.length}
+        error={err}
+        onRetry={() => (fanoutRef.current ? fanoutRef.current() : window.location.reload())}
+      >
         {a && (
           <div className="grid cards" style={{ marginTop: 'var(--sp-4)' }}>
             <Kpi l="Revenue" v={inr(a.revenue)} />
@@ -135,7 +173,14 @@ export default function Dashboard() {
                       <td>
                         <Pill s={s.state} />
                       </td>
-                      <td className="num">{new Date(s.started_at).toLocaleTimeString()}</td>
+                      <td className="num">
+                        {new Date(s.started_at).toLocaleTimeString('en-IN', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          hour12: false,
+                          timeZone: IST,
+                        })}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

@@ -17,13 +17,27 @@ const assert = require('assert');
 const WebSocket = require('ws');
 
 async function main() {
+  // Watchdog: this suite holds live WS sockets, so one failed assertion can leave a
+  // client open and server.close() waiting forever — which would hang the whole
+  // 16-suite chain with zero output. Fail loudly instead.
+  const watchdog = setTimeout(() => {
+    console.error('GATEWAY-CLOSE TIMEOUT: suite did not finish in 120s (a socket or await is stuck)');
+    process.exit(2);
+  }, 120000);
   process.env.PORT = '4109';
   const { server, store } = require('../src/server');
   await new Promise((r) => server.listen(4109, r));
   const B = 'http://localhost:4109/api/v1';
+  const ORIGIN = new URL(B).origin;
   const api = async (p, o = {}) => {
     const { headers, ...rest } = o;
-    const r = await fetch(B + p, {
+    // CodeQL js/request-forgery: request paths interpolate ids received from simulated
+    // chargers (tainted by construction). The base is a FIXED localhost test origin —
+    // normalize the path against it and refuse anything that would leave that origin
+    // before the request is made (the documented allowlist mitigation).
+    const u = new URL(`${B.replace(/\/$/, '')}${p.startsWith('/') ? '' : '/'}${p}`);
+    if (u.origin !== ORIGIN) throw new Error(`refusing non-test origin: ${u.origin}`);
+    const r = await fetch(u, {
       ...rest,
       headers: { 'content-type': 'application/json', ...(headers || {}) },
     });
@@ -427,10 +441,163 @@ async function main() {
     await sleep(200);
     console.log("  close 8 - a CP cannot meter or stop another CP's transaction (SecurityError)");
 
+    // --- t9: SEC-041 — a charge point with NO stored secret must be refused ---
+    // Pre-fix: checkBasic returned true for a secretless CP in per-cp mode, so an open
+    // registration row meant an open gateway — anyone could connect as any CP with no
+    // credentials at all and fabricate sessions + meter input.
+    // Contract note: the WS upgrade completes, THEN the gateway closes with 4401 before
+    // any frame is processed (same shape as the wrong-password path). So the assertions
+    // are: a 4401 close arrives, and nothing sent on that socket is ever answered.
+    const stashed = cp.auth_secret;
+    cp.auth_secret = null;
+    const refused = await new Promise((resolve) => {
+      const w = new WebSocket(`ws://localhost:4109/ocpp/${identity}`); // NO auth header
+      let answered = false;
+      w.on('open', () => w.send(JSON.stringify([2, 'noauth-boot', 'BootNotification', {}])));
+      w.on('message', () => {
+        answered = true;
+      });
+      w.on('close', (code) => resolve({ code, answered }));
+      w.on('error', () => {});
+      setTimeout(() => resolve({ code: -1, answered }), 3000);
+    });
+    cp.auth_secret = stashed;
+    assert.strictEqual(refused.code, 4401, `secretless CP must be closed with 4401, got ${JSON.stringify(refused)}`);
+    assert.strictEqual(refused.answered, false, 'a refused socket must not receive any OCPP answer');
+    console.log('  close 9 - a CP without a stored secret is refused (4401), zero frames answered');
+
+    // --- t10: BUG-054 — StartTransaction.meterStart is billed as the register base ---
+    // Pre-fix: start_meter_kwh was hardcoded 0 while meterStop is an absolute register,
+    // so every charger whose meter did not start at zero was overbilled by the offset.
+    const drvUid = reg.j.user.user_id;
+    const free = [...store.connectors.values()].find((c) => c.status === 'AVAILABLE');
+    assert.ok(free, 'need an AVAILABLE connector for the meterStart probe');
+    const fcp = store.cps.get(free.cp_id);
+    const fSecret = fcp.auth_secret || `dev-${fcp.ocpp_identity}`;
+    const fBasic = Buffer.from(`${fcp.ocpp_identity}:${fSecret}`).toString('base64');
+    const wsMs = await new Promise((res, rej) => {
+      const w = new WebSocket(`ws://localhost:4109/ocpp/${fcp.ocpp_identity}`, {
+        headers: { Authorization: `Basic ${fBasic}` },
+      });
+      w.on('open', () => res(w));
+      w.on('error', rej);
+      setTimeout(() => rej(new Error('meterStart probe: connect timeout')), 3000);
+    });
+    const msReplies = [];
+    wsMs.on('message', (raw) => {
+      try {
+        msReplies.push(JSON.parse(String(raw)));
+      } catch {}
+    });
+    const msCall = (uid, action, payload) =>
+      new Promise((resolve, reject) => {
+        wsMs.send(JSON.stringify([2, uid, action, payload]));
+        const t0 = Date.now();
+        const iv = setInterval(() => {
+          const hit = msReplies.find((m) => Array.isArray(m) && m[0] === 3 && m[1] === uid);
+          if (hit) {
+            clearInterval(iv);
+            resolve(hit[2]);
+          } else if (Date.now() - t0 > 3000) {
+            clearInterval(iv);
+            reject(new Error(`timeout waiting for ${action}`));
+          }
+        }, 50);
+      });
+    const startAck = await msCall('ms-start', 'StartTransaction', {
+      connectorId: free.connector_no,
+      idTag: `TAG-${drvUid}`,
+      meterStart: 500000, // Wh — the charger's register did NOT start at zero
+      timestamp: new Date().toISOString(),
+    });
+    assert.ok(startAck.transactionId > 0, `StartTransaction must be Accepted, got ${JSON.stringify(startAck)}`);
+    const msSid = startAck.transactionId;
+    assert.equal(store.sessions.get(msSid).start_meter_kwh, 500, 'meterStart must persist as the register base (kWh)');
+    await msCall('ms-tick', 'MeterValues', {
+      transactionId: msSid,
+      meterValue: [
+        {
+          timestamp: new Date().toISOString(),
+          sampledValue: [{ measurand: 'Energy.Active.Import.Register', value: '502000' }],
+        },
+      ],
+    });
+    await msCall('ms-stop', 'StopTransaction', {
+      transactionId: msSid,
+      meterStop: 502500, // Wh absolute
+      timestamp: new Date().toISOString(),
+      reason: 'Local',
+    });
+    await sleep(150);
+    assert.equal(store.sessions.get(msSid).state, 'COMPLETED');
+    const bill = await api(`/sessions/${msSid}/bill`, {
+      method: 'POST',
+      headers: H,
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(bill.status, 201, `bill must be 201, got ${bill.status} ${JSON.stringify(bill.j)}`);
+    const energyLine = store.lines.find((l) => l.invoice_id === bill.j.invoice.invoice_id && l.kind === 'ENERGY');
+    assert.ok(energyLine, 'invoice must carry an ENERGY line');
+    assert.ok(
+      Math.abs(energyLine.quantity - 2.5) < 0.001,
+      `delivered energy is 2.5 kWh (502.5 - 500), billed ${energyLine.quantity}`
+    );
+    console.log('  close 10 - meterStart is captured: a 500 kWh register base is not billed (2.5 kWh delivered)');
+
+    // --- t11: BUG-061 + BUG-062 — power-only frames persist; NoError clears faults ---
+    const ms2 = await msCall('ms2-start', 'StartTransaction', {
+      connectorId: free.connector_no,
+      idTag: `TAG-${drvUid}`,
+      meterStart: 700000, // register base 700 kWh
+      timestamp: new Date().toISOString(),
+    });
+    const ms2Sid = ms2.transactionId;
+    assert.ok(ms2Sid > 0, `second StartTransaction must be Accepted, got ${JSON.stringify(ms2)}`);
+    await msCall('ms2-mv', 'MeterValues', {
+      transactionId: ms2Sid,
+      meterValue: [
+        {
+          timestamp: new Date().toISOString(),
+          sampledValue: [{ measurand: 'Power.Active.Import', value: '11000' }], // NO energy measurand
+        },
+      ],
+    });
+    const powRows = store.readings.filter((r) => r.session_id === ms2Sid);
+    assert.equal(powRows.length, 1, 'a power-only MeterValues frame must be recorded, not ACKed-and-dropped');
+    assert.ok(Math.abs(powRows[0].meter_kwh - 700) < 0.001, 'energy register carries forward from the start register');
+    assert.ok(Math.abs(powRows[0].power_kw - 11) < 0.001, 'the power sample itself must survive');
+    await msCall('ms2-fault', 'StatusNotification', {
+      connectorId: free.connector_no,
+      errorCode: 'GroundFailure',
+      status: 'Faulted',
+      timestamp: new Date().toISOString(),
+    });
+    const openFault = [...store.faults.values()].find(
+      (f) => f.connector_ref === `${fcp.cp_id}:${free.connector_no}` && !f.cleared_at
+    );
+    assert.ok(openFault, 'the GroundFailure must create an open fault row');
+    await msCall('ms2-clear', 'StatusNotification', {
+      connectorId: free.connector_no,
+      errorCode: 'NoError',
+      status: 'Available',
+      timestamp: new Date().toISOString(),
+    });
+    assert.ok(openFault.cleared_at, 'a NoError report must clear the open OCPP fault (BUG-062)');
+    await msCall('ms2-stop', 'StopTransaction', {
+      transactionId: ms2Sid,
+      meterStop: 700500,
+      timestamp: new Date().toISOString(),
+      reason: 'Local',
+    });
+    await sleep(150);
+    console.log('  close 11 - power-only frames recorded (register carry-forward); NoError clears open faults');
+    wsMs.close();
+
     ws6.close();
     await sleep(250);
-    console.log('\nOCPP gateway-close tests: 8 passed');
+    console.log('\nOCPP gateway-close tests: 11 passed');
   } finally {
+    clearTimeout(watchdog);
     await new Promise((res) => server.close(res));
   }
   process.exitCode = 0;

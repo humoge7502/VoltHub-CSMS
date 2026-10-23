@@ -52,6 +52,29 @@ Object.assign(spec.paths, {
   '/auth/logout': { post: P('Revoke the refresh family + clear the cookie (cookie or body)') },
   '/me': { get: P('Profile + wallet') },
   '/me/wallet/topup': { post: P('Prepaid top-up (append-only ledger)') },
+  // ---- ADR-0016: signed wallet rail (EIP-191 authorisation, ledger settlement) ----
+  '/me/wallet': { get: P('Wallet: balance, active wallet links, recent intents, ledger tail + rail parameters') },
+  '/me/wallet/challenge': {
+    post: P('Single-use EIP-4361 challenge for an address (5-min TTL, bound to the requesting origin)', {
+      responses: { 201: { description: 'challenge' }, '4xx': { description: 'client error' } },
+    }),
+  },
+  '/me/wallet/link': {
+    post: P('Link an address whose EIP-191 signature verifies (409 WALLET_TAKEN, 401 SIGNATURE_MISMATCH)', {
+      responses: { 201: { description: 'linked' }, '4xx': { description: 'client error' } },
+    }),
+  },
+  '/me/wallet/link/{address}': { delete: P('Revoke a link (Oracle stamps revoked_at — the role has no DELETE)') },
+  '/me/wallet/intent': {
+    post: P('Create an amount-bearing top-up authorisation to sign (10-min TTL)', {
+      responses: { 201: { description: 'intent' }, '4xx': { description: 'client error' } },
+    }),
+  },
+  '/me/wallet/settle': {
+    post: P('Verify the signature, then credit the ledger exactly once (409 ALREADY_SETTLED)', {
+      responses: { 201: { description: 'receipt' }, '4xx': { description: 'client error' } },
+    }),
+  },
   '/me/vehicles': { get: P('My EVs'), post: P('Register EV (battery 5..250 kWh)') },
   '/me/vehicles/{id}': { patch: P('Rename / set default EV') },
   '/me/notifications': { get: P('In-app events (reservation/session/invoice)') },

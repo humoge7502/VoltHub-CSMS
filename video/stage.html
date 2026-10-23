@@ -1,0 +1,947 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>VoltHub — stage</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0b0e11;
+        --s1: #11151a;
+        --s2: #171c23;
+        --hair: rgba(255, 255, 255, 0.09);
+        --hair2: rgba(255, 255, 255, 0.18);
+        --tx: #e8eaed;
+        --tx2: #a7b0ba;
+        --tx3: #6b7681;
+        --cream: #fffdd0;
+        --lime: #c6f24e;
+        --ok: #3ecf8e;
+        --bad: #e5484d;
+        --blue: #6e96b8;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--bg);
+      }
+      body {
+        color: var(--tx);
+        font:
+          400 22px/1.5 Inter,
+          'Segoe UI',
+          system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .scene {
+        position: absolute;
+        inset: 0;
+        padding: 96px 120px;
+        display: none;
+      }
+      .scene.on {
+        display: block;
+      }
+      /* #title/#terminal/#close set their own display, and an id selector outranks
+         `.scene` — so "hidden" has to win explicitly or every id-scene renders at once. */
+      .scene:not(.on) {
+        display: none !important;
+      }
+      /* Slow camera push: a 15–35 s hold on a static frame reads as a slide, not a film. */
+      .scene.on {
+        transform-origin: 50% 46%;
+        animation: drift var(--dur, 30s) linear both;
+      }
+      @keyframes drift {
+        from {
+          transform: scale(1) translate3d(0, 0, 0);
+        }
+        to {
+          transform: scale(1.035) translate3d(-6px, -8px, 0);
+        }
+      }
+      /* ---------- HUD ---------- */
+      .hud {
+        position: absolute;
+        left: 120px;
+        right: 120px;
+        bottom: 46px;
+        z-index: 5;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: end;
+        gap: 0 24px;
+        pointer-events: none;
+      }
+      .hud-l {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+      }
+      .hud-n {
+        font:
+          500 14px/1 'IBM Plex Mono',
+          monospace;
+        letter-spacing: 0.22em;
+        color: var(--lime);
+      }
+      .hud-t {
+        font:
+          500 14px/1 'IBM Plex Mono',
+          monospace;
+        letter-spacing: 0.22em;
+        color: var(--tx3);
+        text-transform: uppercase;
+      }
+      .hud-tc {
+        font:
+          500 14px/1 'IBM Plex Mono',
+          monospace;
+        letter-spacing: 0.1em;
+        color: var(--tx3);
+      }
+      .hud-bar {
+        grid-column: 1 / -1;
+        height: 2px;
+        background: rgba(255, 255, 255, 0.09);
+        margin-top: 16px;
+        position: relative;
+        overflow: hidden;
+      }
+      .hud-bar i {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 0;
+        background: var(--lime);
+      }
+      .mono {
+        font-family: 'IBM Plex Mono', ui-monospace, monospace;
+      }
+      .grotesk {
+        font-family: 'Space Grotesk', Inter, sans-serif;
+      }
+      .eyebrow {
+        font:
+          500 15px/1 'IBM Plex Mono',
+          monospace;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--tx3);
+      }
+      h1 {
+        font-family: 'Space Grotesk', Inter, sans-serif;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: -0.03em;
+        line-height: 0.95;
+        margin: 0;
+      }
+      .rule {
+        height: 1px;
+        background: var(--hair);
+      }
+      .grain {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+        background-size: 96px 96px;
+        mask-image: radial-gradient(ellipse at 30% 20%, #000 10%, transparent 78%);
+      }
+      .rise {
+        opacity: 0;
+        transform: translateY(26px);
+        animation: rise 900ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+      }
+      @keyframes rise {
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .d1 {
+        animation-delay: 0.12s;
+      }
+      .d2 {
+        animation-delay: 0.28s;
+      }
+      .d3 {
+        animation-delay: 0.44s;
+      }
+      .d4 {
+        animation-delay: 0.6s;
+      }
+      .d5 {
+        animation-delay: 0.76s;
+      }
+      .d6 {
+        animation-delay: 0.92s;
+      }
+      .d7 {
+        animation-delay: 1.08s;
+      }
+      .d8 {
+        animation-delay: 1.24s;
+      }
+      .d9 {
+        animation-delay: 1.4s;
+      }
+
+      /* ---------- title ---------- */
+      #title {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 460px;
+        align-content: center;
+        gap: 0 80px;
+      }
+      #title .left {
+        display: grid;
+        gap: 34px;
+        align-content: center;
+      }
+      .spec {
+        display: grid;
+        align-content: center;
+        border-left: 1px solid var(--hair);
+        padding-left: 40px;
+      }
+      .spec .row {
+        display: grid;
+        gap: 6px;
+        padding: 20px 0;
+        border-bottom: 1px solid var(--hair);
+      }
+      .spec .row:last-child {
+        border-bottom: 0;
+      }
+      .spec .k {
+        font:
+          500 46px/1 'Space Grotesk',
+          Inter,
+          sans-serif;
+        color: var(--cream);
+        letter-spacing: -0.02em;
+      }
+      .spec .l {
+        font:
+          500 13px/1.4 'IBM Plex Mono',
+          monospace;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--tx3);
+      }
+      .spec .k i {
+        font-style: normal;
+        color: var(--lime);
+      }
+      .wordmark {
+        font-family: 'Space Grotesk', Inter, sans-serif;
+        font-weight: 700;
+        font-size: 190px;
+        line-height: 0.86;
+        letter-spacing: -0.04em;
+        display: flex;
+        align-items: baseline;
+        gap: 0;
+      }
+      .wordmark b {
+        background: var(--cream);
+        color: #10130a;
+        padding: 0 18px 8px;
+        border-radius: 10px;
+        margin-left: 6px;
+      }
+      .tagline {
+        font-family: 'Space Grotesk', Inter, sans-serif;
+        font-weight: 500;
+        font-size: 64px;
+        line-height: 1.05;
+        letter-spacing: -0.02em;
+        color: var(--cream);
+        text-transform: uppercase;
+        max-width: 1180px;
+      }
+      .chips {
+        display: flex;
+        gap: 12px;
+        margin-top: 6px;
+      }
+      .chip {
+        border: 1px solid var(--hair2);
+        border-radius: 999px;
+        padding: 10px 20px;
+        font:
+          500 16px/1 'IBM Plex Mono',
+          monospace;
+        letter-spacing: 0.06em;
+        color: var(--tx2);
+        text-transform: uppercase;
+      }
+      .chip.lime {
+        color: var(--lime);
+        border-color: rgba(198, 242, 78, 0.4);
+      }
+      .sweep {
+        height: 3px;
+        width: 0;
+        background: linear-gradient(90deg, var(--lime), transparent);
+        animation: sweep 1.6s cubic-bezier(0.23, 1, 0.32, 1) 0.3s forwards;
+      }
+      @keyframes sweep {
+        to {
+          width: 78%;
+        }
+      }
+
+      /* ---------- problem ---------- */
+      #problem .head {
+        display: grid;
+        gap: 22px;
+        max-width: 1200px;
+      }
+      #problem h1 {
+        font-size: 86px;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 24px;
+        margin-top: 74px;
+      }
+      .pcard {
+        background: var(--s1);
+        border: 1px solid var(--hair);
+        border-radius: 12px;
+        padding: 34px 32px 38px;
+        display: grid;
+        gap: 14px;
+        align-content: start;
+        min-height: 390px;
+      }
+      .pcard .n {
+        font:
+          500 15px/1 'IBM Plex Mono',
+          monospace;
+        color: var(--lime);
+        letter-spacing: 0.18em;
+      }
+      .pcard h3 {
+        margin: 0;
+        font-family: 'Space Grotesk', Inter, sans-serif;
+        text-transform: uppercase;
+        font-size: 34px;
+        letter-spacing: -0.01em;
+        line-height: 1.05;
+      }
+      .pcard p {
+        margin: 0;
+        color: var(--tx2);
+        font-size: 19px;
+        line-height: 1.55;
+      }
+      .pcard .tag {
+        margin-top: auto;
+        padding-top: 16px;
+        font:
+          500 13px/1.5 'IBM Plex Mono',
+          monospace;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--tx3);
+      }
+      .pcard .tag b {
+        color: var(--lime);
+        font-weight: 500;
+      }
+      .band {
+        margin-top: 46px;
+        border-top: 1px solid var(--hair);
+        padding-top: 22px;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 40px;
+      }
+      .band .q {
+        font:
+          500 26px/1.3 'Space Grotesk',
+          Inter,
+          sans-serif;
+        color: var(--tx2);
+        letter-spacing: -0.01em;
+      }
+      .band .q b {
+        color: var(--cream);
+        font-weight: 500;
+      }
+      .band .r {
+        font:
+          500 14px/1.6 'IBM Plex Mono',
+          monospace;
+        color: var(--tx3);
+        letter-spacing: 0.08em;
+        text-align: right;
+      }
+      .pcard .bar {
+        height: 2px;
+        background: var(--hair);
+        margin-top: 8px;
+      }
+      .pcard .bar i {
+        display: block;
+        height: 2px;
+        width: 0;
+        background: var(--bad);
+        animation: grow 1.4s ease-out 1.1s forwards;
+      }
+      .pcard:nth-child(2) .bar i {
+        background: var(--cream);
+        animation-delay: 1.35s;
+      }
+      .pcard:nth-child(3) .bar i {
+        background: var(--blue);
+        animation-delay: 1.6s;
+      }
+      @keyframes grow {
+        to {
+          width: 100%;
+        }
+      }
+
+      /* ---------- idea ---------- */
+      #idea h1 {
+        font-size: 78px;
+        max-width: 1250px;
+      }
+      #idea .head {
+        display: grid;
+        gap: 20px;
+      }
+      .diagram {
+        margin-top: 44px;
+      }
+      .diagram svg {
+        width: 100%;
+        height: 600px;
+      }
+      .node {
+        opacity: 0;
+        animation: rise 800ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+      }
+      .node text {
+        font-family: 'IBM Plex Mono', monospace;
+      }
+      .draw {
+        stroke-dasharray: 900;
+        stroke-dashoffset: 900;
+        animation: draw 1.6s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+      }
+      @keyframes draw {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      /* ---------- terminal ---------- */
+      #terminal {
+        display: grid;
+        align-content: center;
+      }
+      .term {
+        background: #0d1116;
+        border: 1px solid var(--hair2);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 40px 120px rgba(0, 0, 0, 0.6);
+      }
+      .term-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--hair);
+        background: #12171d;
+      }
+      .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+      .term-title {
+        margin-left: 14px;
+        font:
+          500 15px/1 'IBM Plex Mono',
+          monospace;
+        color: var(--tx3);
+      }
+      .term-body {
+        padding: 38px 42px 44px;
+        font:
+          400 29px/1.9 'IBM Plex Mono',
+          monospace;
+        min-height: 520px;
+      }
+      .term-body .prompt {
+        color: var(--lime);
+      }
+      .term-body .cmd {
+        color: var(--cream);
+      }
+      .term-line {
+        opacity: 0;
+        transform: translateY(6px);
+        animation: rise 260ms ease-out forwards;
+      }
+      .ok {
+        color: var(--lime);
+      }
+      .bad {
+        color: var(--bad);
+      }
+      .dim {
+        color: var(--tx3);
+      }
+      .cursor {
+        display: inline-block;
+        width: 12px;
+        height: 26px;
+        background: var(--lime);
+        vertical-align: -4px;
+        animation: blink 1s steps(1) infinite;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+
+      /* ---------- receipts ---------- */
+      #receipts .head {
+        display: grid;
+        gap: 18px;
+      }
+      #receipts h1 {
+        font-size: 80px;
+      }
+      .nums {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 26px;
+        margin-top: 66px;
+      }
+      .num {
+        border-top: 2px solid var(--hair2);
+        padding-top: 18px;
+        display: grid;
+        gap: 8px;
+      }
+      .num .v {
+        font-family: 'Space Grotesk', Inter, sans-serif;
+        font-size: 76px;
+        line-height: 1;
+        letter-spacing: -0.03em;
+        color: var(--cream);
+      }
+      .num .l {
+        font:
+          500 15px/1.4 'IBM Plex Mono',
+          monospace;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--tx3);
+      }
+      .gates {
+        margin-top: 54px;
+        display: grid;
+        gap: 12px;
+      }
+      .gate {
+        display: flex;
+        gap: 16px;
+        align-items: baseline;
+        color: var(--tx2);
+        font-size: 20px;
+      }
+      .gate b {
+        color: var(--lime);
+        font:
+          500 16px/1 'IBM Plex Mono',
+          monospace;
+      }
+
+      /* ---------- close ---------- */
+      #close {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 440px;
+        align-content: center;
+        gap: 0 80px;
+      }
+      #close .left {
+        display: grid;
+        justify-items: start;
+        align-content: center;
+        gap: 30px;
+      }
+      #close .wordmark {
+        font-size: 168px;
+      }
+      #close .tagline {
+        font-size: 54px;
+      }
+      .links {
+        display: flex;
+        gap: 40px;
+        margin-top: 18px;
+        font:
+          500 19px/1 'IBM Plex Mono',
+          monospace;
+        color: var(--tx3);
+      }
+      .links b {
+        color: var(--cream);
+        font-weight: 500;
+      }
+      .read {
+        display: grid;
+        align-content: center;
+        border-left: 1px solid var(--hair);
+        padding-left: 40px;
+        gap: 22px;
+      }
+      .read .item {
+        display: grid;
+        gap: 4px;
+      }
+      .read .h {
+        font:
+          500 16px/1.4 'IBM Plex Mono',
+          monospace;
+        color: var(--cream);
+        letter-spacing: 0.04em;
+      }
+      .read .s {
+        font:
+          400 15px/1.5 'IBM Plex Mono',
+          monospace;
+        color: var(--tx3);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="grain"></div>
+
+    <div class="hud" aria-hidden="true">
+      <div class="hud-l">
+        <span class="hud-n" id="hud-n">01 / 09</span>
+        <span class="hud-t" id="hud-t">TITLE</span>
+      </div>
+      <div class="hud-tc" id="hud-tc">00:00</div>
+      <div class="hud-bar"><i id="hud-i"></i></div>
+    </div>
+
+    <!-- 1 · TITLE -->
+    <section class="scene" id="title">
+      <div class="left">
+        <div class="eyebrow rise">EV CHARGING MANAGEMENT · ORACLE 23AI · TIMESCALEDB · OCPP 1.6J</div>
+        <div class="wordmark rise d1">VOLT<b>HUB</b></div>
+        <div class="sweep"></div>
+        <div class="tagline rise d3">Certainty is a<br />database property.</div>
+        <div class="chips rise d5">
+          <span class="chip lime">201 + 409</span>
+          <span class="chip">29 relations</span>
+          <span class="chip">7 PL/SQL packages</span>
+          <span class="chip">one outbox</span>
+        </div>
+      </div>
+      <div class="spec rise d4">
+        <div class="row">
+          <div class="k"><i>1</i> × 201</div>
+          <div class="l">exactly one winner, every race</div>
+        </div>
+        <div class="row">
+          <div class="k">72</div>
+          <div class="l">spec'd API paths, drift-gated</div>
+        </div>
+        <div class="row">
+          <div class="k">137</div>
+          <div class="l">tests on every push</div>
+        </div>
+        <div class="row">
+          <div class="k">2</div>
+          <div class="l">engines, one transaction boundary</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2 · PROBLEM -->
+    <section class="scene" id="problem">
+      <div class="head">
+        <div class="eyebrow rise">01 · THE PROBLEM</div>
+        <h1 class="rise d1">Three hard problems,<br />wearing one coat.</h1>
+      </div>
+      <div class="cards">
+        <article class="pcard rise d3">
+          <div class="n">01</div>
+          <h3>Double booking</h3>
+          <p>
+            Two drivers reserve the same connector in the same second. A check in application code is a race with a
+            delay fuse.
+          </p>
+          <div class="bar"><i></i></div>
+          <div class="tag">cost of getting it wrong · <b>a connector sold twice</b></div>
+        </article>
+        <article class="pcard rise d5">
+          <div class="n">02</div>
+          <h3>Billing drift</h3>
+          <p>
+            Money must be billed once, and only once. Retries, replays and restarts are exactly where invoices double.
+          </p>
+          <div class="bar"><i></i></div>
+          <div class="tag">cost of getting it wrong · <b>a driver billed twice</b></div>
+        </article>
+        <article class="pcard rise d7">
+          <div class="n">03</div>
+          <h3>Telemetry flood</h3>
+          <p>
+            Ninety percent of the rows are immutable meter ticks. A row-store asked to answer “last seven days by hour”
+            will fold.
+          </p>
+          <div class="bar"><i></i></div>
+          <div class="tag">cost of getting it wrong · <b>analytics that lie</b></div>
+        </article>
+      </div>
+      <div class="band rise d9">
+        <div class="q">None of these is a <b>workflow</b> problem. All three are a <b>transaction</b> problem.</div>
+        <div class="r">so the boundary moves<br />into the database</div>
+      </div>
+    </section>
+
+    <!-- 3 · IDEA -->
+    <section class="scene" id="idea">
+      <div class="head">
+        <div class="eyebrow rise">02 · THE DESIGN</div>
+        <h1 class="rise d1">Two engines.<br />One transaction boundary.</h1>
+      </div>
+      <div class="diagram">
+        <svg viewBox="0 0 1680 620" fill="none">
+          <!-- API / gateway -->
+          <g class="node" style="animation-delay: 0.5s">
+            <rect x="600" y="0" width="480" height="96" rx="10" fill="#171c23" stroke="#ffffff22" />
+            <text x="628" y="40" fill="#E8EAED" font-size="25" font-weight="500">API + OCPP 1.6J gateway</text>
+            <text x="628" y="72" fill="#6B7681" font-size="17">one port · 72 spec'd paths · WS upgrades</text>
+          </g>
+          <!-- fan-out -->
+          <path class="draw" style="animation-delay: 1s" d="M760 96 L760 146" stroke="#C6F24E" stroke-width="2" />
+          <path class="draw" style="animation-delay: 1s" d="M920 96 L920 146" stroke="#6E96B8" stroke-width="2" />
+          <!-- Oracle -->
+          <g class="node" style="animation-delay: 1.3s">
+            <rect x="140" y="146" width="660" height="300" rx="12" fill="#11151a" stroke="#C6F24E44" />
+            <text x="172" y="192" fill="#C6F24E" font-size="16" letter-spacing="3">ENGINE A · MONEY PATH</text>
+            <text x="172" y="248" fill="#FFFDD0" font-size="40" font-family="Space Grotesk">Oracle 23ai</text>
+            <text x="172" y="296" fill="#A7B0BA" font-size="21">reservations · sessions · invoices</text>
+            <text x="172" y="330" fill="#A7B0BA" font-size="21">wallet ledger (append-only)</text>
+            <text x="172" y="364" fill="#A7B0BA" font-size="21">7 PL/SQL packages · guard trigger</text>
+            <text x="172" y="416" fill="#6B7681" font-size="17">SELECT … FOR UPDATE ⇒ 201 or 409</text>
+          </g>
+          <!-- Timescale -->
+          <g class="node" style="animation-delay: 1.6s">
+            <rect x="880" y="146" width="660" height="300" rx="12" fill="#11151a" stroke="#6E96B844" />
+            <text x="912" y="192" fill="#6E96B8" font-size="16" letter-spacing="3">ENGINE B · TELEMETRY</text>
+            <text x="912" y="248" fill="#FFFDD0" font-size="40" font-family="Space Grotesk">TimescaleDB</text>
+            <text x="912" y="296" fill="#A7B0BA" font-size="21">hypertables · 1m / 1h continuous aggregates</text>
+            <text x="912" y="330" fill="#A7B0BA" font-size="21">7-day compression · 90-day retention</text>
+            <text x="912" y="364" fill="#A7B0BA" font-size="21">immutable, time-ordered meter ticks</text>
+            <text x="912" y="416" fill="#6B7681" font-size="17">billing never waits on analytics</text>
+          </g>
+          <!-- both engines report to one outbox bus, drawn below the boxes so nothing overlaps -->
+          <path
+            class="draw"
+            style="animation-delay: 2s"
+            d="M470 446 L470 496 L1210 496 L1210 446"
+            stroke="#3a4650"
+            stroke-width="2"
+          />
+          <path class="draw" style="animation-delay: 2.3s" d="M840 496 L840 540" stroke="#C6F24E66" stroke-width="2" />
+          <g class="node" style="animation-delay: 2.4s">
+            <rect x="600" y="540" width="480" height="56" rx="28" fill="#0f1a10" stroke="#C6F24E66" />
+            <text x="840" y="575" fill="#C6F24E" font-size="19" text-anchor="middle" font-family="IBM Plex Mono">
+              outbox → relay (2 s) → effectively-once
+            </text>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <!-- 4 · TERMINAL -->
+    <section class="scene" id="terminal">
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background: #e5484d"></span>
+          <span class="dot" style="background: #e8a13c"></span>
+          <span class="dot" style="background: #3ecf8e"></span>
+          <span class="term-title">volthub — race suite · oracle 23ai · live stack</span>
+        </div>
+        <div class="term-body" id="term-body"></div>
+      </div>
+    </section>
+
+    <!-- 5 · RECEIPTS -->
+    <section class="scene" id="receipts">
+      <div class="head">
+        <div class="eyebrow rise">03 · THE RECEIPTS</div>
+        <h1 class="rise d1">Claims with receipts,<br />not adjectives.</h1>
+      </div>
+      <div class="nums">
+        <div class="num rise d3">
+          <div class="v" data-count="137">0</div>
+          <div class="l">tests on every push</div>
+        </div>
+        <div class="num rise d4">
+          <div class="v" data-count="72">0</div>
+          <div class="l">spec'd API paths</div>
+        </div>
+        <div class="num rise d5">
+          <div class="v" data-count="16">0</div>
+          <div class="l">decision records</div>
+        </div>
+        <div class="num rise d6">
+          <div class="v" data-count="2">0</div>
+          <div class="l">database engines</div>
+        </div>
+      </div>
+      <div class="gates">
+        <div class="gate rise d7"><b>✓</b> race suite — parallel double-reserve and double-pay, on both engines</div>
+        <div class="gate rise d8"><b>✓</b> OpenAPI drift gate — the spec and the routes cannot disagree</div>
+        <div class="gate rise d9">
+          <b>✓</b> published failure — the taper experiment that missed, and the fix that repaired it
+        </div>
+      </div>
+      <div class="band rise d9">
+        <div class="q">Measured, not estimated — every number above comes from a command in the repo.</div>
+        <div class="r">npm test<br />npm run test:race<br />node scripts/check-openapi.js</div>
+      </div>
+    </section>
+
+    <!-- 6 · CLOSE -->
+    <section class="scene" id="close">
+      <div class="left">
+        <div class="eyebrow rise">VOLTHUB CSMS · MIT</div>
+        <div class="wordmark rise d1">VOLT<b>HUB</b></div>
+        <div class="tagline rise d3">Certainty is not a feature<br />you add later.</div>
+        <div class="links rise d5">
+          <span><b>github.com/humoge7502/VoltHub-CSMS</b></span>
+          <span>72 paths · 137 tests · 2 engines</span>
+        </div>
+      </div>
+      <div class="read rise d6">
+        <div class="item">
+          <div class="h">ARCHITECTURE.md</div>
+          <div class="s">the two engines, the outbox, and why the boundary sits where it does</div>
+        </div>
+        <div class="item">
+          <div class="h">docs/adr/</div>
+          <div class="s">sixteen decision records — including the experiment that failed</div>
+        </div>
+        <div class="item">
+          <div class="h">docs/benchmarks.md</div>
+          <div class="s">measured, with the machine and the method named</div>
+        </div>
+        <div class="item">
+          <div class="h">docker compose up</div>
+          <div class="s">fresh clone to a seeded, running demo</div>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const scene = params.get('s') || 'title';
+      const dur = Number(params.get('d') || 20);
+      document.querySelectorAll('.scene').forEach((el) => el.classList.toggle('on', el.id === scene));
+      document.documentElement.style.setProperty('--dur', `${dur}s`);
+
+      // HUD: chapter, running timecode, and a progress hairline that fills over the
+      // segment's narration length — so a held frame still reads as "in progress".
+      document.getElementById('hud-n').textContent = params.get('ch') || '01 / 09';
+      document.getElementById('hud-t').textContent = params.get('t') || 'TITLE';
+      const tc = document.getElementById('hud-tc');
+      const bar = document.getElementById('hud-i');
+      const t0 = performance.now();
+      const tick = (now) => {
+        const p = Math.min(1, (now - t0) / (dur * 1000));
+        const s = Math.floor((now - t0) / 1000);
+        tc.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+        bar.style.width = `${(p * 100).toFixed(2)}%`;
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+
+      // The terminal scene types the *real* captured output of the race scenario.
+      // No mock text: the lines below are what the command printed against Oracle.
+      if (scene === 'terminal') {
+        const raw = window.__RACE_TEXT__ || '';
+        const body = document.getElementById('term-body');
+        const lines = [
+          {
+            html: '<span class="prompt">$</span> <span class="cmd">node apps/simulator/src/index.js --scenario race</span>',
+          },
+        ];
+        raw
+          .split('\n')
+          .filter(Boolean)
+          .forEach((l) => {
+            const cls = l.startsWith('RACE-OK')
+              ? 'ok'
+              : /^201|BOOKED/.test(l)
+                ? ''
+                : /^409|OVERLAP/.test(l)
+                  ? 'bad'
+                  : 'dim';
+            lines.push({ html: `<span class="${cls}">${l.replace(/</g, '&lt;')}</span>` });
+          });
+        lines.push({ html: '<span class="prompt">$</span> <span class="cursor"></span>' });
+        // Spread the typing across the narration instead of dumping it in the first 5 s:
+        // the 201 lands as the voice says "201", the 409 as it says "409".
+        const from = 0.06 * dur * 1000;
+        const to = 0.72 * dur * 1000;
+        const step = (to - from) / Math.max(lines.length - 1, 1);
+        lines.forEach((l, i) => {
+          const el = document.createElement('div');
+          el.className = 'term-line';
+          el.style.animationDelay = `${Math.round(from + step * i)}ms`;
+          el.innerHTML = l.html;
+          body.appendChild(el);
+        });
+      }
+
+      // Counters on the receipts scene.
+      if (scene === 'receipts') {
+        document.querySelectorAll('[data-count]').forEach((el) => {
+          const target = Number(el.dataset.count);
+          const t0 = performance.now() + 1200;
+          const step = (now) => {
+            const p = Math.min(1, Math.max(0, (now - t0) / 1400));
+            const eased = 1 - Math.pow(1 - p, 3);
+            el.textContent = Math.round(target * eased);
+            if (p < 1) requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        });
+      }
+    </script>
+  </body>
+</html>

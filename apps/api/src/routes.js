@@ -33,6 +33,8 @@ const {
 } = require('./middleware/auth');
 const { checkLoginThrottle, routerBarrier } = require('./middleware/security');
 const { oraStatus } = require('./errors');
+// Telemetry reads: Timescale when wired, in-process rollup otherwise (ADR-0002).
+const ts = require('./db/timescale');
 
 module.exports = function routes(store) {
   const r = express.Router();
@@ -127,6 +129,9 @@ module.exports = function routes(store) {
       const t = c.token;
       t.revoked_at = new Date().toISOString(); // rotation
       const u = store.users.get(t.user_id);
+      // BUG-055: a valid refresh token whose user was removed must 401, not 500 on
+      // `u.user_id` below. The rotation above already burned the token either way.
+      if (!u) return res.status(401).json({ error: { code: 'BAD_REFRESH', message: 'user no longer exists' } });
       const rt = issueRefresh(store, u, t.device_label, t.family_id);
       setRefreshCookie(res, rt);
       res.json({
@@ -169,6 +174,21 @@ module.exports = function routes(store) {
     '/me/wallet/topup',
     authRequired,
     safe(async (req, res) => {
+      // SEC-043 (review 2026-10-24): ADR-0016's contract is "the signature is the
+      // authorisation" — an always-on unsigned crediting route contradicted it. The
+      // unsigned path is now opt-in: allowed for local/dev/test by default, and only
+      // with WALLET_UNSIGNED_TOPUP=1 (or never with =0) in production deployments.
+      const unsignedOk =
+        process.env.WALLET_UNSIGNED_TOPUP === '1' ||
+        (process.env.NODE_ENV !== 'production' && process.env.WALLET_UNSIGNED_TOPUP !== '0');
+      if (!unsignedOk)
+        return res.status(403).json({
+          error: {
+            code: 'SIGNED_RAIL_REQUIRED',
+            message:
+              'unsigned top-ups are disabled — credit via the signed wallet rail (ADR-0016), or set WALLET_UNSIGNED_TOPUP=1 for a demo',
+          },
+        });
       // BUG-032: the store caps per-transaction (<=10000) but `NaN`/non-numeric
       // bodies must fail as a client error, not 500. Guard before the store call.
       const amt = Number(req.body.amount);
@@ -246,7 +266,9 @@ module.exports = function routes(store) {
         rows.sort((a, b) => a.distance_km - b.distance_km);
       }
       const per = 20,
-        p = Math.max(1, Number(page));
+        // BUG-056: Number('abc') is NaN and Math.max(1, NaN) is NaN — slice(NaN, NaN)
+        // silently emptied the list. Coerce malformed page params to 1.
+        p = Math.max(1, parseInt(page, 10) || 1);
       res.json({ stations: rows.slice((p - 1) * per, p * per), page: p, total: rows.length });
     })
   );
@@ -430,7 +452,20 @@ module.exports = function routes(store) {
     authRequired,
     safe(async (req, res) => {
       try {
-        const planId = req.body.planId ? Number(req.body.planId) : store.defaultPlanId ? store.defaultPlanId() : 2;
+        // BUG-057: an unvalidated planId became tariff_plan_id: NaN — a 422 only at
+        // bill time, far from the cause. Validate the number AND the plan's existence
+        // here, where the client can still correct it.
+        const rawPlan = req.body.planId;
+        if (rawPlan !== undefined && rawPlan !== null && rawPlan !== '' && !Number.isFinite(Number(rawPlan)))
+          return res.status(422).json({ error: { code: 'INVALID_PLAN', message: 'planId must be a number' } });
+        const planId =
+          rawPlan === undefined || rawPlan === null || rawPlan === ''
+            ? store.defaultPlanId
+              ? store.defaultPlanId()
+              : 2
+            : Number(rawPlan);
+        if (!store.plans.has(Number(planId)))
+          return res.status(422).json({ error: { code: 'INVALID_PLAN', message: `plan ${planId} not found` } });
         const s = await store.startSession({
           uid: req.user.id,
           vehicleId: req.body.vehicleId,
@@ -550,8 +585,10 @@ module.exports = function routes(store) {
       if (!cp) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'charge point' } });
       // BUG-031: same station-scope contract as the operator state transition —
       // remote commands are station mutations, so an operator assigned to station A
-      // must not drive chargers on station B.
-      if (!(req.user.stationScope || []).includes(cp.station_id))
+      // must not drive chargers on station B. ADMIN bypasses (BUG-058: the check ran
+      // for every role, so an ADMIN without an explicit operator assignment was 403'd
+      // out of remote-start entirely — inconsistent with every sibling surface).
+      if (req.user.role === 'OPERATOR' && !(req.user.stationScope || []).includes(cp.station_id))
         return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
       const m = /^TAG-(\d+)$/.exec(idTag);
       if (!m || !store.users.has(Number(m[1])))
@@ -793,6 +830,23 @@ module.exports = function routes(store) {
     authRequired,
     safe(async (req, res) => {
       const { station, from, to, bucket = '5m' } = req.query;
+      // TS_HOST set => read the engine the response names. A restart must not empty the
+      // chart: the durable telemetry lives in Timescale, not in this process's memory.
+      // Any TS failure falls through to the in-process rollup, and `source` says which
+      // one actually answered — the chart never claims a source it did not use.
+      if (ts.available()) {
+        try {
+          const points = await ts.loadCurve({
+            stationId: station ? Number(station) : null,
+            from: from ? new Date(from) : new Date(Date.now() - 6 * 3600 * 1000),
+            to: to ? new Date(to) : new Date(),
+            bucket,
+          });
+          if (points.length) return res.json({ points, source: 'timescaledb' });
+        } catch {
+          /* fall through to the local rollup */
+        }
+      }
       let ticks = store.ticks;
       if (station) {
         const keys = new Set(
@@ -820,7 +874,7 @@ module.exports = function routes(store) {
             peak_kw: +o.max.toFixed(2),
           }))
           .sort((a, b) => a.bucket.localeCompare(b.bucket)),
-        source: process.env.TS_HOST ? 'timescaledb' : 'local-rollup',
+        source: 'local-rollup',
       });
     })
   );
@@ -828,13 +882,22 @@ module.exports = function routes(store) {
     '/telemetry/utilization-heatmap',
     authRequired,
     safe(async (req, res) => {
-      // 7x24 matrix from stateEvents (prod: state_1m cagg)
+      // 7x24 matrix: distinct connectors drawing power per hour bucket. Timescale when
+      // wired (a week of ticks), otherwise the transition log this process has seen.
+      if (ts.available()) {
+        try {
+          const grid = await ts.heatmap({ stationId: req.query.station ? Number(req.query.station) : null });
+          if (grid) return res.json({ heatmap: grid, source: 'timescaledb' });
+        } catch {
+          /* fall through */
+        }
+      }
       const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
       store.stateEvents.forEach((e) => {
         const d = new Date(e.ts);
         grid[d.getDay()][d.getHours()] += e.to_state === 'OCCUPIED' ? 1 : 0;
       });
-      res.json({ heatmap: grid });
+      res.json({ heatmap: grid, source: 'local-rollup' });
     })
   );
 

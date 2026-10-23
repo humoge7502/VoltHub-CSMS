@@ -828,6 +828,114 @@ async function main() {
     assert.equal(gcs.j.error.code, 'CP_OFFLINE');
   });
 
+  await t('review 2026-10-24: control-plane operator scope (BUG-059) + input hardening (B-16..19)', async () => {
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+    });
+    const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
+    const stations = await api('/admin/stations', { headers: AH });
+    const stId = Math.max(...stations.j.stations.map((s) => s.station_id));
+    const op = await api('/admin/users', {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({
+        email: `ctlscope.${Date.now()}@volthub.in`,
+        role: 'OPERATOR',
+        stationId: stId,
+        full_name: 'Control Scope Op',
+      }),
+    });
+    assert.equal(op.status, 201);
+    const opLogin = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: op.j.user.email, password: 'Temp@1234' }),
+    });
+    const OH = { Authorization: `Bearer ${opLogin.j.accessToken}` };
+    const other = stations.j.stations.find((s) => s.station_id !== stId);
+
+    // BUG-059: the control plane had no operator scope checks — an operator could plan
+    // (and in ENFORCED mode actuate) another station's chargers. Foreign = 403,
+    // assigned = readable.
+    if (other) {
+      const plan = await api(`/control/plan/${other.station_id}`, {
+        method: 'POST',
+        headers: OH,
+        body: JSON.stringify({}),
+      });
+      assert.equal(plan.status, 403, 'planning a foreign station must be OUT_OF_SCOPE');
+      assert.equal(plan.j.error.code, 'OUT_OF_SCOPE');
+      assert.equal((await api(`/control/decisions?siteId=${other.station_id}`, { headers: OH })).status, 403);
+      assert.equal((await api(`/control/enforcement?siteId=${other.station_id}`, { headers: OH })).status, 403);
+      const foreignCp = [...store.cps.values()].find((c) => c.station_id === other.station_id);
+      if (foreignCp)
+        assert.equal(
+          (await api(`/control/cp/${foreignCp.cp_id}/composite-schedule`, { headers: OH })).status,
+          403,
+          'foreign CP diagnostics must be OUT_OF_SCOPE before any gateway call'
+        );
+    }
+    assert.equal((await api(`/control/decisions?siteId=${stId}`, { headers: OH })).status, 200);
+
+    // B-16: ADMIN is not station-scoped — remote-start fails on gateway grounds
+    // (CP_OFFLINE here), never 403 OUT_OF_SCOPE.
+    const anyCp = [...store.cps.values()][0];
+    const rs = await api('/sessions/remote-start', {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({ cpId: anyCp.cp_id, connectorNo: 1, idTag: 'TAG-1' }),
+    });
+    assert.notEqual(rs.status, 403, 'ADMIN must not be scope-blocked on remote-start');
+    assert.equal(rs.j.error?.code, 'CP_OFFLINE');
+
+    // B-17: ?page=abc coerces to 1 instead of NaN-emptying the list.
+    const pg = await api('/stations?page=abc');
+    assert.equal(pg.status, 200);
+    assert.equal(pg.j.page, 1);
+
+    // B-18: malformed/unknown planId is a 422 at the door, not a NaN tariff at bill time.
+    const badPlan = await api('/sessions/start', {
+      method: 'POST',
+      headers: H(),
+      body: JSON.stringify({ planId: 'x', cpId: anyCp.cp_id, connectorNo: 1 }),
+    });
+    assert.equal(badPlan.status, 422);
+    assert.equal(badPlan.j.error.code, 'INVALID_PLAN');
+    assert.equal(
+      (
+        await api('/sessions/start', {
+          method: 'POST',
+          headers: H(),
+          body: JSON.stringify({ planId: 999999, cpId: anyCp.cp_id, connectorNo: 1 }),
+        })
+      ).status,
+      422,
+      'unknown plan must 422 before the session exists'
+    );
+
+    // B-19: refresh for a removed user is a 401, never a 500 TypeError.
+    const gone = await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email: `gone.${Date.now()}@example.in`, password: 'Driver@123', full_name: 'Gone Soon' }),
+    });
+    assert.equal(gone.status, 201);
+    store.users.delete(gone.j.user.user_id);
+    const rr = await api('/auth/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ refreshToken: gone.j.refreshToken }),
+    });
+    assert.equal(rr.status, 401, `removed user's refresh must 401, got ${rr.status}`);
+    assert.equal(rr.j.error.code, 'BAD_REFRESH');
+
+    // B-46: the mutex's cleanup compared against the wrong promise, so every key ever
+    // locked leaked into the Map forever. After these runs, every drain:* key must be
+    // gone from the queue map.
+    for (let i = 0; i < 50; i++) await store.mutex.run(`drain:${i % 7}`, async () => {});
+    await new Promise((r) => setImmediate(r));
+    const leaked = [...store.mutex.q.keys()].filter((k) => k.startsWith('drain:'));
+    assert.equal(leaked.length, 0, `mutex keys must drain after release, leaked: ${leaked.join(',')}`);
+  });
+
   await t('observability: /metrics exposes a well-formed, live Prometheus exposition', async () => {
     // observability.js is the one surface Grafana scrapes and the README advertises as
     // a real metrics endpoint, yet nothing asserted it. A scraper that silently gets

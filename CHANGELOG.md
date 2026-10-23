@@ -2,7 +2,160 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
-## [Unreleased]
+## [1.8.1] — 2026-10-24
+
+> Ships the 2026-10-24 security/money-path review fixes and the console polish pass, plus the
+> 1.8.0 wallet-rail content below, which was built but never tagged. Everything in this
+> section landed with regression tests; the full chain (16 suites) is green.
+
+### Added
+
+- **Console motion + honesty layer (UI/UX polish pass).** Live-session hero number
+  glides between polls (`useCountUp`, snaps under `prefers-reduced-motion`); charts
+  draw in once on mount and the live power trace carries a pulsing last point; polled
+  dashboards keep the last good charts when a poll fails and show a `reconnecting —
+showing last good data` chip instead of wiping the view; route-level
+  `error.js`/`global-error.js` boundaries replace Next's default white-screen crash.
+
+### Fixed
+
+- **Contrast:** `--tx3` raised #6b7681 → #8a94a0 (3.9:1 → 5.9:1 on the panel surface) —
+  it was commented "decorative only" but used for real 11px content (`kv` labels,
+  hints, placeholders) and chart axis labels; the heatmap "peak" label (1.9:1) now uses
+  the same safe tone. Chart/heatmap time labels render in a **fixed** `Asia/Kolkata`
+  zone, so the "IST" suffix is truthful for non-IST visitors (was browser-local time
+  labelled IST).
+- **Heatmap legend** renders the exported `HEAT_RAMP` (it had drifted from the actual
+  render scale), and peak labels sit inside the AA threshold.
+- **Session page:** polls sequence-guard every response (no stale overwrites) and stop
+  once the session ends; the `aria-live` region is scoped to the hero number (the old
+  whole-page region re-announced the entire view every 5 s).
+- **Deep link `/invoices?id=`** actually opens the itemized panel (the param was dead);
+  the itemized panel gained a close button; **Pay** has a busy state (double-POST
+  guard); the invoices tab title no longer says "Wallet".
+- **Reservations:** "Plug in" sends the **active** tariff plan from the public
+  `/tariffs/active` preview instead of a hardcoded `planId: 2`; reservation windows
+  render both endpoints with date + zone (midnight-crossing windows read correctly).
+- **History "Load more"** guards against double clicks (duplicated rows).
+- **Analytics / Notifications / Station detail** gained real loading and error states
+  (previously: blank-forever page, empty-grid blink, and an eternal skeleton on fetch
+  failure respectively).
+- **Wallet signer picker** implements the ARIA radio pattern (arrow-key movement,
+  roving tab index).
+
+### Changed
+
+- **OCPP gateway:** a `MeterValues` frame carrying only `Power.Active.Import` is now
+  recorded (register carried forward from the start register / last reading) instead of
+  being ACKed and dropped — the power trace keeps its cadence and billing is unchanged
+  (BUG-061). A `NoError` StatusNotification now **clears open OCPP faults** on that
+  connector; previously only the manual maintenance route ever set `cleared_at`
+  (BUG-062). Regression: gateway-close t11.
+- **Store mutex cleanup** actually releases keys now (the comparison ran against a
+  never-stored promise, so every locked key leaked into the map for the process
+  lifetime) (BUG-046). Regression: run.js drain assertion.
+- **Legacy `$scrypt$` password verify** runs on the thread pool (`crypto.scrypt`
+  async) — a pre-Argon2 user logging in no longer blocks the event loop, closing the
+  gap the PERF-002 async path was built for.
+- **Release verification is no longer lighter than a push:** `release.yml` now runs the
+  npm audit gates (both lockfiles), the OpenAPI drift + snapshot checks, and the web
+  build alongside the hermetic suites (B-59).
+- Docs drift reconciled: ARCHITECTURE.md stats (72 paths · 35 tables · 8 packages),
+  the worker README's `COPY … ON CONFLICT` claim (Postgres COPY has no ON CONFLICT;
+  the sink is a multi-row INSERT), and the k6 smoke threshold comment (5 s, matching
+  the assertion).
+
+### Security
+
+- **OCPP gateway refuses secretless charge points (SEC-041).** A CP row without an
+  `auth_secret` was previously accepted with _no credentials at all_ in `per-cp` mode —
+  on any seeded/hydrated deployment (identities are guessable), anyone could connect as
+  any charger and fabricate `StartTransaction`/`MeterValues` billing input. Such
+  connections now close with `4401`. Regression: gateway-close t9.
+- **Control plane is operator station-scoped (BUG-059).** `/control/plan/:siteId`,
+  `certify`, `enforcement`, `decisions`(+`/:id`), `certificates`(+`/:id`), grid-asset
+  reads and `composite-schedule` enforced the role wall but not the station wall — an
+  operator assigned to station A could actuate station B's chargers. Foreign sites are
+  now `403 OUT_OF_SCOPE`; unfiltered reads return only the operator's own stations.
+  ADMIN bypasses, mirroring every sibling surface. Regression: run.js scope block.
+- **Unsigned wallet top-up is opt-in (SEC-043).** `POST /me/wallet/topup` contradicted
+  ADR-0016's "the signature is the authorisation" story. It is now disabled in
+  production (and in the public-demo preset; `WALLET_UNSIGNED_TOPUP=1` re-enables,
+  `=0` force-disables everywhere). `scripts/share-demo.sh` sets the hardening flag.
+  Regression: wallet W12.
+
+### Fixed
+
+- **Absolute-register overbilling (BUG-054).** `StartTransaction.meterStart` was
+  ignored and `start_meter_kwh` hardcoded 0 while `meterStop` is an absolute register —
+  every charger whose meter did not start at zero was overbilled by the register
+  offset. The register base is now captured end-to-end (gateway → local store →
+  Oracle `charge_session_pkg.start_session` via `V010__meter_start.sql`, default 0 for
+  existing callers). Regression: gateway-close t10 (500 kWh base, 2.5 kWh delivered,
+  invoice says 2.5).
+- **Wallet double-credit race (W5 under concurrency).** `settleTopup` checked intent
+  status synchronously, then awaited real mirror I/O before flipping to `SETTLED` —
+  two concurrent settles of one intent both credited. Settle now runs under the
+  intent's mutex and the receipt row is identified by its unique note, not array
+  position. Regression: wallet W11 (`Promise.all` settles → exactly one 201 + one 409,
+  balance rises by exactly the intent amount).
+- **ADMIN locked out of remote-start (B-16).** The station-scope check ran for every
+  role, so an ADMIN without an operator assignment always got `403 OUT_OF_SCOPE`.
+  Scope now applies to OPERATOR only, matching all sibling surfaces.
+- **NaN pagination emptied `/stations` (B-17)** — `?page=abc` now coerces to 1.
+- **Unvalidated `planId` poisoned sessions (B-18)** — malformed or unknown plans are a
+  `422 INVALID_PLAN` at the door instead of a `NO_TARIFF_BAND` failure at bill time.
+- **`/auth/refresh` 500 for removed users (B-19)** — now a clean `401 BAD_REFRESH`.
+- **Gateway send-window crashes (SEC-042)** — the pre-try rate-limit/FormationViolation
+  sends and the catch block's own `InternalError` send could throw on a dying socket
+  and reject the async listener (process-fatal). All guarded.
+- **Wallet page toasts never rendered (B-32)** — the page called `toast()` but never
+  mounted the `<Toasts/>` outlet; linked/credited/copied feedback silently vanished.
+
+### Changed
+
+- `.env.example` documents `WALLET_UNSIGNED_TOPUP` and the strict OCPP secretless-CP
+  policy; `scripts/share-demo.sh` public preset prints the charger-secret caveat.
+
+## [1.8.0] — 2026-10-23
+
+### Added
+
+- **Wallet signature rail (EIP-191 / EIP-4361).** Authorisation and settlement are now
+  two separate ceremonies. A single-use, 5-minute-TTL challenge is signed with
+  `personal_sign`; the amount is bound inside the signature (10-minute-TTL intent) so a
+  quote cannot be reused for a different sum; the server recovers the signer and refuses
+  replays with `409 ALREADY_SETTLED`. A function-based unique index keeps exactly one
+  active wallet address per user. ADR-0016 records the decision (and the experiment that
+  failed); `docs/wallet.md` is the operator/dev guide. A labelled demo key lives in
+  `sessionStorage` so the flow is filmable without MetaMask.
+- **Demo film pipeline + final cut.** `video/record.mjs` (Playwright staged scenes + live
+  console tour) and `video/assemble.mjs` (ffmpeg normalise → concat → edge-tts narration →
+  burned ASS captions) produce `video/out/volthub-demo.mp4` — 9 chapters, ~242 s, neural
+  en-IN narration, 47 caption cues. `video/tts.py` is cache-aware over `narration.json`.
+- **Simulator upgrades.** Physics-consistent metering (`energy = ∫power·dt`, draw capped at
+  82% of connector nameplate); a `race` scenario that prints a transcript proving exactly
+  one reservation wins under contention (`201 BOOKED` + `409 OVERLAP`); `--driver/--password`
+  to drive an existing seed driver so the live session shows in the console.
+
+### Changed
+
+- **Session detail page** rebuilt: live energy big-number, "● receiving" badge, 4 KPI cards,
+  power trace, a session-facts `<dl>`, and a meter-frames table.
+- **Charts** (`lib/ui.js`): `Line` widened to 960px with a peak label; `Heatmap` normalised
+  over the observed range (gamma 0.6) so quiet hours are visible instead of collapsing.
+- **Stations reservation**: the `datetime-local` default now uses local wall-clock (was UTC,
+  which put "start" in the past in IST and failed the future-start check).
+- **Wallet page** keeps the signed-challenge evidence on screen after linking.
+- **Invoices table** IDs switched to monospace `num` alignment.
+- **Stats reconciled** across README, `docs/index.html`, and the film: **137 tests, 72 REST
+  paths, 16 ADRs, 2 engines, 7 packages** (the film previously claimed 251 tests / 9 ADRs).
+
+### Fixed
+
+- **Metering physics:** a fixed-tick meter register implied ~12 MW at 0.7 s cadence and
+  exceeded connector nameplate (49 kW on a 22 kW bay). Both now consistent with displayed
+  power and capped at the connector rating.
 
 ## [1.7.0] — 2026-09-15
 

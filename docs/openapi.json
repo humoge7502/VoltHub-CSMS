@@ -200,6 +200,84 @@
         }
       }
     },
+    "/me/wallet": {
+      "get": {
+        "summary": "Wallet: balance, active wallet links, recent intents, ledger tail + rail parameters",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/me/wallet/challenge": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        },
+        "summary": "Single-use EIP-4361 challenge for an address (5-min TTL, bound to the requesting origin)"
+      }
+    },
+    "/me/wallet/link": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        },
+        "summary": "Link an address whose EIP-191 signature verifies (409 WALLET_TAKEN, 401 SIGNATURE_MISMATCH)"
+      }
+    },
+    "/me/wallet/link/{address}": {
+      "delete": {
+        "summary": "Revoke a link (Oracle stamps revoked_at — the role has no DELETE)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/me/wallet/intent": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        },
+        "summary": "Create an amount-bearing top-up authorisation to sign (10-min TTL)"
+      }
+    },
+    "/me/wallet/settle": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        },
+        "summary": "Verify the signature, then credit the ledger exactly once (409 ALREADY_SETTLED)"
+      }
+    },
     "/me/vehicles": {
       "get": {
         "summary": "My EVs",

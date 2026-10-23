@@ -1,6 +1,6 @@
 {
   "name": "@volthub/web",
-  "version": "1.7.0",
+  "version": "1.8.1",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
@@ -8,6 +8,7 @@
     "start": "next start -p 3000"
   },
   "dependencies": {
+    "ethers": "^6.17.0",
     "next": "^16.3.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

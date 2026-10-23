@@ -28,6 +28,9 @@ export function SessionLinks({ className }) {
   }
   return (
     <span className={className}>
+      {/* Alerts live here, not in the primary nav: the driver cluster is already at the
+          width limit at 1280, and an inbox is an account-level surface, not a section. */}
+      <Link href="/notifications">Alerts</Link>
       <Link href="/profile">Profile</Link>
       <button
         type="button"
