@@ -5,8 +5,8 @@
 //   BASE_URL=https://<host> node test/e2e.mjs
 //   BASE_URL=https://<host> ADMIN_PASSWORD='...' node test/e2e.mjs   # adds the admin leg
 //
-// Driver/operator credentials are the published demo logins; the admin leg is
-// opt-in so this can run in CI without storing the provisioned secret.
+// The driver credential is a published demo login; the admin leg is opt-in so CI
+// can run this without storing the provisioned secret (SEC-050).
 import { chromium } from 'playwright';
 
 const BASE = (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
@@ -14,7 +14,10 @@ const DRIVER = {
   email: process.env.DRIVER_EMAIL || 'divya.shankar1@example.in',
   password: process.env.DRIVER_PASSWORD || 'Driver@123',
 };
-const ADMIN = { email: process.env.ADMIN_EMAIL || 'admin@volthub.in', password: process.env.ADMIN_PASSWORD || '' };
+// ADMIN_BOOTSTRAP_PASSWORD is the name the seed/migrate path already uses, so CI
+// passes that one rather than maintaining a second copy of the secret.
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || process.env.ADMIN_BOOTSTRAP_PASSWORD || '';
+const ADMIN = { email: process.env.ADMIN_EMAIL || 'admin@volthub.in', password: ADMIN_PASSWORD };
 
 let failed = 0;
 const check = (name, ok, detail = '') => {

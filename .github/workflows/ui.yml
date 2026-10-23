@@ -17,6 +17,11 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # SEC-050: one value for every consumer — migrate.sh provisions the Oracle
+    # hash from it, the api container seeds its local store from it, and the E2E
+    # admin leg signs in with it. Unset -> all three no-op consistently.
+    env:
+      ADMIN_BOOTSTRAP_PASSWORD: ${{ secrets.ADMIN_BOOTSTRAP_PASSWORD }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -44,7 +49,8 @@ jobs:
           done
 
       - name: Migrate + seed
-        env: { SEED_DB: '1' }
+        env:
+          SEED_DB: '1'
         run: bash scripts/migrate.sh
 
       - name: Boot stack
@@ -71,7 +77,6 @@ jobs:
         env:
           BASE_URL: http://localhost:3000
           PW_CHANNEL: ''
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_BOOTSTRAP_PASSWORD }}
         run: node test/e2e.mjs
 
       - name: Teardown
