@@ -1,0 +1,84 @@
+name: ui
+
+# Browser suite: boots the stack and runs the smoke + authenticated E2E against
+# the real console. Kept separate from `ci` so a browser flake never blocks a
+# merge on the correctness gates; still visible on every PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # SEC-050: one value for every consumer — migrate.sh provisions the Oracle
+    # hash from it, the api container seeds its local store from it, and the E2E
+    # admin leg signs in with it. Unset -> all three no-op consistently.
+    env:
+      ADMIN_BOOTSTRAP_PASSWORD: ${{ secrets.ADMIN_BOOTSTRAP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm install --no-audit --no-fund
+      - run: npm install --no-save playwright
+      - run: npx playwright install --with-deps chromium
+
+      - name: Boot databases
+        run: docker compose -f infra/docker-compose.yml up -d oracle timescale
+
+      - name: Wait for databases
+        run: |
+          for i in $(seq 1 60); do
+            ok=1
+            for c in volthub-oracle volthub-timescale; do
+              st=$(docker inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null || echo none)
+              [ "$st" = healthy ] || ok=0
+            done
+            [ "$ok" = 1 ] && break
+            echo "wait db $i"; sleep 5
+          done
+
+      - name: Migrate + seed
+        env:
+          SEED_DB: '1'
+        run: bash scripts/migrate.sh
+
+      - name: Boot stack
+        run: docker compose -f infra/docker-compose.yml up -d --build
+
+      - name: Wait for API + web
+        run: |
+          for i in $(seq 1 48); do
+            curl -sf http://localhost:4000/api/v1/health/deep | grep -q '"status":"ok"' &&
+              curl -sf -o /dev/null http://localhost:3000/ && exit 0
+            echo "wait stack $i"; sleep 5
+          done
+          echo 'stack never became healthy'; exit 1
+
+      - name: Smoke
+        working-directory: apps/web
+        env:
+          BASE_URL: http://localhost:3000
+          PW_CHANNEL: ''
+        run: node test/smoke.mjs
+
+      - name: Authenticated E2E
+        working-directory: apps/web
+        env:
+          BASE_URL: http://localhost:3000
+          PW_CHANNEL: ''
+        run: node test/e2e.mjs
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down

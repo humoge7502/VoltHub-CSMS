@@ -50,9 +50,13 @@ docker compose -f infra/docker-compose.yml up --build
 # so a root .env is otherwise ignored (DEPLOY.md §1 has the measured detail).
 ```
 
-Demo logins: `admin@volthub.in` / `Admin@123` · `arjun@volthub.in` /
-`Operator@123` · any seeded driver / `Driver@123`. Node 20 or 22 (`.nvmrc` has
-22); everything must keep working on both — CI enforces the matrix.
+Demo logins: `arjun@volthub.in` / `Operator@123` · any seeded driver /
+`Driver@123`. The admin account is **provisioned, not published** (SEC-050): the
+local store falls back to `Admin@123` when `ADMIN_BOOTSTRAP_PASSWORD` is unset,
+and any real deployment seeds the Oracle row with the `!unprovisioned` sentinel
+and lets `scripts/migrate.sh` (or `scripts/rotate-admin.js`) set the hash from
+that env var. Node 20 or 22 (`.nvmrc` has 22); everything must keep working on
+both — CI enforces the matrix.
 
 ## The testing ladder (run what your change touches, CI runs it all)
 

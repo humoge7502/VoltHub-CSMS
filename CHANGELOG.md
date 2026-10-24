@@ -2,6 +2,66 @@
 
 All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- **Web smoke suite** — `apps/web/test/smoke.mjs` (+ `npm run test:smoke` in `apps/web`).
+  16 outcome-based checks (hero, font, nav, no uncaught exceptions, no horizontal
+  overflow at 375/1280, login fields, discover render, a11y floor: every input labelled,
+  every button named, exactly one `h1`) runnable against any origin via `BASE_URL`.
+  First automated test for the console (closes the ISS-02 gap).
+- **Authenticated UI E2E** (`apps/web/test/e2e.mjs`, + `npm run test:e2e`) — 12 checks
+  covering the signed-in driver tour (`/discover`, `/wallet`, `/invoices`,
+  `/reservations`) with zero-uncaught-exception assertions. The admin leg is opt-in via
+  `ADMIN_PASSWORD` so CI never stores the provisioned secret.
+- **`ui` workflow** (`.github/workflows/ui.yml`) — boots the stack, then runs smoke + E2E
+  against the real console.
+- **AI sidecar is deployable and tested**: `apps/ai/Dockerfile` (CPU torch), pinned
+  `requirements.txt`, an opt-in `ai` compose profile, and an `ai` CI job running pytest.
+- **Nightly load workflow** (`.github/workflows/load.yml`) running the 10-minute k6
+  profile against a booted stack.
+- **Coverage thresholds** (`codecov.yml`, 70% project / 60% patch).
+- **`docs/STRATEGY-AND-ROADMAP.md`** — full analysis: differentiation vectors, issue
+  catalogue (severity/priority/effort/dependencies/timeline), per-module enhancements,
+  advanced features, integrations, test strategy, and a 90-day plan.
+
+### Changed
+
+- **Landing page de-slopped** per the Impeccable detector: removed the hero eyebrow chip,
+  the "TAKE IT FROM THE TOP" kicker, and the three numbered section labels; reduced
+  em-dash saturation; corrected the stale **66 paths → 72 paths** figure.
+- **Type system**: body Inter → **IBM Plex Sans** (pairs with IBM Plex Mono numerals);
+  display Space Grotesk → **Bricolage Grotesque**. Removes the two most over-used
+  AI-default faces while keeping the carbon/cream/lime identity. The detector now exits
+  clean on the live site.
+- **Compose healthchecks** on `api` and `web` (both now report `(healthy)`).
+- `apps/ai` binds `AI_HOST` (default loopback; containers set `0.0.0.0`).
+
+### Security
+
+- **SEC-050 — admin credential is provisioned, not published.** The demo admin password
+  is now read from `ADMIN_BOOTSTRAP_PASSWORD` at seed time, rotated in the live Oracle
+  row and `seed.sql`, and removed from the landing page, login hint, README, DEPLOY,
+  SECURITY, CONTRIBUTING and `share-demo.sh`. The Oracle seed writes the admin row with
+  the `!unprovisioned` sentinel (which can never verify), and `scripts/migrate.sh`
+  provisions the real hash from the env var via
+  `scripts/rotate-admin.js --if-unprovisioned` — idempotent, so a restart never clobbers
+  a rotated credential. The previous default now returns `401`.
+- **`body-parser` 2.3.0 → 2.4.0** (GHSA-27r3-jxmh-p828, high): DoS via trailing bytes
+  after a compressed request body. The API is an Express 5 app, so this was reachable on
+  every JSON route. `npm audit` is now clean on both lockfiles.
+- **AI sidecar runs unprivileged** — the image had no `USER`, so a model-parsing bug was
+  a root container compromise (Trivy DS-0002). Now `uid 10001` with `/app` chowned.
+
+### Fixed
+
+- `scripts/rotate-admin.js` no longer echoes the plaintext password (CodeQL
+  `js/clear-text-logging`); it prints the hash and a redacted instruction instead.
+- `scripts/migrate.sh` waits (up to 2 min) for `freepdb1` to register with the listener
+  before applying V001…, instead of racing it with ORA-12514 on a fast runner — the
+  Docker healthcheck can already read `healthy` while the PDB is still closed.
+
 ## [1.8.1] — 2026-10-24
 
 > Ships the 2026-10-24 security/money-path review fixes and the console polish pass, plus the

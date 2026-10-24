@@ -1,0 +1,18 @@
+# Coverage policy (ISS-10). The badge is a receipt, not a target: we gate on a
+# floor that the money path already clears, and allow a small tolerance so a
+# refactor that removes lines does not fail spuriously.
+coverage:
+  status:
+    project:
+      default:
+        target: 70%
+        threshold: 2%
+        if_ci_failed: error
+    patch:
+      default:
+        target: 60%
+        threshold: 5%
+
+comment:
+  layout: 'reach, diff, flags, files'
+  require_changes: true

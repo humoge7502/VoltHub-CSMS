@@ -66,6 +66,13 @@ services:
       # SEC-043: unsigned wallet top-ups are demo/test-only. Compose only injects .env
       # variables the yaml references, so this must be listed for the .env flag to work.
       WALLET_UNSIGNED_TOPUP: ${WALLET_UNSIGNED_TOPUP:-}
+      # SEC-050: admin bootstrap password. Set this in .env for any public
+      # deployment; the code's built-in default is local-dev only.
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+      # AI advisory sidecar (ADR-0008). If it is not running, /ai/* returns 503 by
+      # design rather than fabricating a forecast.
+      AI_URL: ${AI_URL:-http://ai:8100}
+      AI_TOKEN: ${AI_TOKEN:-dev-internal}
       # CORS allow-list for the web console. Extend via .env (--env-file) when the
       # console is served from a tunnel/prod origin (DEPLOY.md §2) — e.g.
       # WEB_ORIGIN=https://app.example.com,http://localhost:3000
@@ -81,6 +88,19 @@ services:
     depends_on:
       oracle: { condition: service_healthy }
       timescale: { condition: service_healthy }
+    # Liveness: /health must answer 200 (mode + outbox lag included).
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:4000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     # API drains in-flight requests on SIGTERM (10 s failsafe) — grace must sit above it.
     stop_grace_period: 15s
     restart: unless-stopped
@@ -104,6 +124,19 @@ services:
     stop_grace_period: 12s
     restart: unless-stopped
 
+  # Optional advisory sidecar. Opt in with `--profile ai`; the API degrades to
+  # 503 AI_UNAVAILABLE when it is absent, so the core stack never depends on it.
+  ai:
+    build: { context: .., dockerfile: apps/ai/Dockerfile }
+    container_name: volthub-ai
+    profiles: ['ai']
+    environment:
+      AI_HOST: 0.0.0.0
+      AI_PORT: '8100'
+      AI_TOKEN: ${AI_TOKEN:-dev-internal}
+    ports: ['127.0.0.1:${AI_HOST_PORT:-8100}:8100']
+    restart: unless-stopped
+
   web:
     build:
       context: ..
@@ -120,6 +153,18 @@ services:
       NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:4000/api/v1}
     ports: ['${BIND_ADDR:-0.0.0.0}:${WEB_HOST_PORT:-3000}:3000']
     depends_on: [api]
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   # Optional: --profile observability (1 hr setup, big demo payoff, §34 SHOULD)

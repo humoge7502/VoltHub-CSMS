@@ -1,18 +1,20 @@
 import './globals.css';
 import Link from 'next/link';
-import { Inter, Space_Grotesk, IBM_Plex_Mono } from 'next/font/google';
+import { IBM_Plex_Sans, Bricolage_Grotesque, IBM_Plex_Mono } from 'next/font/google';
 import { Nav } from './nav';
 import { SessionLinks } from './session-links';
 
 // Self-hosted fonts (next/font): removes the render-blocking fonts.googleapis.com
 // round-trip and lets CSP drop the Google font origins entirely.
-const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
-const grotesk = Space_Grotesk({
+// Body: IBM Plex Sans — pairs with the mono numerals, corporate but not generic.
+const sans = IBM_Plex_Sans({
   subsets: ['latin'],
-  weight: ['500', '700'],
-  variable: '--font-grotesk',
+  weight: ['400', '500', '600'],
+  variable: '--font-sans',
   display: 'swap',
 });
+// Display: Bricolage Grotesque — a display face with personality at large sizes.
+const display = Bricolage_Grotesque({ subsets: ['latin'], variable: '--font-display', display: 'swap' });
 const plexMono = IBM_Plex_Mono({
   subsets: ['latin'],
   weight: ['400', '500'],
@@ -48,7 +50,7 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className={`${inter.variable} ${grotesk.variable} ${plexMono.variable}`}>
+    <html lang="en" className={`${sans.variable} ${display.variable} ${plexMono.variable}`}>
       <body>
         <a className="skip" href="#main">
           Skip to content

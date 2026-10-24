@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
-    "start": "next start -p 3000"
+    "start": "next start -p 3000",
+    "test:smoke": "node test/smoke.mjs",
+    "test:e2e": "node test/e2e.mjs"
   },
   "dependencies": {
     "ethers": "^6.17.0",

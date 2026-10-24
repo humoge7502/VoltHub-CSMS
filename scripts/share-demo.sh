@@ -185,8 +185,8 @@ cat <<EOF
     API:      ${API_URL}/api/v1/health
 
   Demo logins:
-    admin@volthub.in / Admin@123      (admin)
-    arjun@volthub.in / Operator@123   (operator)
+    admin@volthub.in / <ADMIN_BOOTSTRAP_PASSWORD from .env>   (admin, provisioned — SEC-050)
+    arjun@volthub.in / Operator@123                          (operator)
     any seeded driver / Driver@123
 
   Notes:

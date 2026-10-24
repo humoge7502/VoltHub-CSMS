@@ -3,7 +3,7 @@
    Identity: carbon (#0B0E11) / cream (#FFFDD0) / lime (#C6F24E)
    Voice:    uppercase grotesk headlines, mono numerals, hairlines
    Fonts are self-hosted via next/font (layout.js) — this file only
-   consumes --font-inter / --font-grotesk / --font-plex-mono.
+   consumes --font-sans / --font-display / --font-plex-mono.
    Dark-only by design (ops surface). Masterplan §21.
    ============================================================ */
 
@@ -88,8 +88,8 @@ body {
   background: var(--bg);
   color: var(--tx);
   font:
-    14px/1.5 var(--font-inter),
-    Inter,
+    14px/1.5 var(--font-sans),
+    'IBM Plex Sans',
     system-ui,
     sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -106,7 +106,7 @@ h1,
 h2,
 h3,
 .display {
-  font-family: var(--font-grotesk), 'Space Grotesk', Inter, sans-serif;
+  font-family: var(--font-display), 'Bricolage Grotesque', sans-serif;
   text-transform: uppercase;
   letter-spacing: -0.02em;
   margin: 0;
@@ -145,7 +145,7 @@ p {
 
 .micro {
   font:
-    600 11px/1.4 var(--font-inter),
+    600 11px/1.4 var(--font-sans),
     Inter,
     sans-serif;
   text-transform: uppercase;
@@ -248,7 +248,7 @@ a {
 }
 
 .brand {
-  font-family: var(--font-grotesk), 'Space Grotesk', sans-serif;
+  font-family: var(--font-display), 'Bricolage Grotesque', sans-serif;
   font-weight: 700;
   letter-spacing: 0.02em;
   text-decoration: none;
@@ -341,7 +341,7 @@ a {
   height: 36px;
   padding: 0 12px;
   font:
-    600 12px/1 var(--font-inter),
+    600 12px/1 var(--font-sans),
     Inter,
     sans-serif;
   letter-spacing: 0.06em;
@@ -417,7 +417,7 @@ a {
   background: transparent;
   color: var(--tx);
   font:
-    600 13px/1 var(--font-inter),
+    600 13px/1 var(--font-sans),
     Inter,
     sans-serif;
   cursor: pointer;
@@ -499,7 +499,7 @@ textarea {
   padding: 0 12px;
   width: 100%;
   font:
-    400 14px/1.4 var(--font-inter),
+    400 14px/1.4 var(--font-sans),
     Inter,
     sans-serif;
   caret-color: var(--cream);
@@ -584,7 +584,7 @@ table.t {
 .t th {
   text-align: left;
   font:
-    600 11px var(--font-inter),
+    600 11px var(--font-sans),
     Inter,
     sans-serif;
   text-transform: uppercase;
@@ -753,7 +753,7 @@ table.t {
   border-bottom: 1px solid var(--hair);
 }
 .idx a .t {
-  font-family: var(--font-grotesk), 'Space Grotesk', sans-serif;
+  font-family: var(--font-display), 'Bricolage Grotesque', sans-serif;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: -0.01em;
@@ -1159,7 +1159,7 @@ svg text {
 }
 .w-mode-t {
   font:
-    600 13px/1.2 var(--font-grotesk),
+    600 13px/1.2 var(--font-display),
     Inter,
     sans-serif;
   text-transform: uppercase;

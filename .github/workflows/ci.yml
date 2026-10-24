@@ -124,6 +124,10 @@ jobs:
       TS_DB: volthub
       TS_USER: volthub
       TS_PASSWORD: volthub_dev_pwd
+      # SEC-050: the Oracle seed writes admin@volthub.in with the '!unprovisioned'
+      # sentinel, and scripts/migrate.sh provisions the real hash from this. It is a
+      # throwaway CI database, so a fixed fixture password is fine here.
+      ADMIN_BOOTSTRAP_PASSWORD: Admin@123
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -168,6 +172,11 @@ jobs:
   e2e:
     needs: db-tests
     runs-on: ubuntu-latest
+    # SEC-050: migrate.sh provisions the Oracle admin hash from this and compose
+    # forwards it to the api container, so the control-plane E2E can sign in as
+    # admin. Same throwaway fixture as db-tests.
+    env:
+      ADMIN_BOOTSTRAP_PASSWORD: Admin@123
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -238,3 +247,18 @@ jobs:
       # belongs to the job that boots the stack, not to the local-store unit tier.
       - run: npm run test:e2e:control
       - run: docker compose -f infra/docker-compose.yml down
+
+  # AI advisory sidecar: CPU pytest tier. CUDA tests skip cleanly without a GPU.
+  ai:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: apps/ai/requirements.txt
+      - name: Install (CPU torch)
+        run: pip install --extra-index-url https://download.pytorch.org/whl/cpu -r apps/ai/requirements.txt
+      - name: pytest
+        run: python -m pytest apps/ai/tests -q
