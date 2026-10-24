@@ -32,7 +32,7 @@ jobs:
           # (index.html) must stay a single self-contained page.
           [ "$(du -sk docs/index.html | cut -f1)" -lt 512 ] || {
             echo 'docs/index.html grew past 512 KB — split it before shipping'; exit 1; }
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
   deploy:
