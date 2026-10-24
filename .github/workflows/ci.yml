@@ -90,7 +90,7 @@ jobs:
         env: { ORACLE_HOST: '' }
         run: npm run coverage
       - name: Upload to Codecov (tokenless for public repos)
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage/lcov.info
           fail_ci_if_error: false
