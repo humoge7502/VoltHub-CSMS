@@ -1194,9 +1194,10 @@ async function main() {
     // malformed text (or a frozen counter) is worse than no dashboard: it looks healthy.
     const first = await fetch(`${B}/metrics`);
     assert.equal(first.status, 200);
-    // Express appends its own charset, so match the Prometheus version parameter
-    // wherever it lands rather than pinning the exact header string.
-    assert.match(first.headers.get('content-type') || '', /^text\/plain;\s*version=0\.0\.4/);
+    // Express can order its appended charset BEFORE the version parameter in
+    // oracle mode ('text/plain; charset=utf-8; version=0.0.4'), so match the
+    // version parameter wherever it lands rather than pinning the header shape.
+    assert.match(first.headers.get('content-type') || '', /^text\/plain;.*version=0\.0\.4/);
     const body = await first.text();
     // Every metric must carry both HELP and TYPE, and a numeric sample line.
     for (const name of [
