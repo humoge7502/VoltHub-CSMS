@@ -1390,9 +1390,12 @@ function wrapWithOracle(local, pool) {
             p_seq: seq,
             p_at: at ? new Date(at) : new Date(),
             p_kwh: kwh,
-            p_kw: kw ?? null,
-            p_v: v ?? null,
-            p_a: a ?? null,
+            // NaN auxiliary channels become NULL on the durable side too (?? does not
+            // catch NaN — an Oracle NUMBER cannot hold it, and the local store lands
+            // them as NULL; one frame, one answer on either engine).
+            p_kw: Number.isFinite(Number(kw)) ? Number(kw) : null,
+            p_v: Number.isFinite(Number(v)) ? Number(v) : null,
+            p_a: Number.isFinite(Number(a)) ? Number(a) : null,
           }
         );
         await conn.commit();
