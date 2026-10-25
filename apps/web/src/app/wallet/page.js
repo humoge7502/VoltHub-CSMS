@@ -455,6 +455,9 @@ export default function WalletPage() {
             {data?.ledger?.length ? (
               <div className="tscroll">
                 <table className="t">
+                  <caption className="micro" style={{ textAlign: 'left', paddingBottom: 8 }}>
+                    Wallet ledger
+                  </caption>
                   <thead>
                     <tr>
                       <th scope="col">Seq</th>

@@ -37,6 +37,9 @@ export default function History() {
         {!!list.length && (
           <div className="tscroll">
             <table className="t">
+              <caption className="micro" style={{ textAlign: 'left', paddingBottom: 8 }}>
+                Completed charging sessions
+              </caption>
               <thead>
                 <tr>
                   <th scope="col">Session</th>

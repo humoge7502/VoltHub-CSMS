@@ -1,0 +1,952 @@
+{
+  "generated_at": "2026-10-25T04:51:06.147609+00:00",
+  "panel": {
+    "series": 87,
+    "station_hours": 754032,
+    "total_kwh": 1331724.4,
+    "sources": ["korea", "norway", "tennessee"]
+  },
+  "per_source": {
+    "tennessee": {
+      "raw_rows": 46575,
+      "usable_sessions": 22910,
+      "stations_kept": 40,
+      "hours_span": 9509,
+      "total_kwh": 554889.0,
+      "zero_share": 0.936,
+      "aggregation": "session energy spread over the hours it overlaps (overlap-weighted)",
+      "provenance": {
+        "title": "EV Charging Demand Prediction Dataset (public charging network sessions)",
+        "license": "CC-BY-4.0",
+        "url": "https://huggingface.co/datasets/jtupayac/EV_Charging_demand",
+        "period": "2024-01 .. 2025-01",
+        "region": "Tennessee and neighbouring US states",
+        "note": "Session records: start/end UTC + energy_kwh delivered per charging session."
+      },
+      "hours": 335195
+    },
+    "norway": {
+      "raw_rows": 469897,
+      "usable_rows": 125673,
+      "stations_kept": 7,
+      "total_kwh": 442070.1,
+      "zero_share": 0.5162,
+      "aggregation": "hourly measured energy summed per location-hour; gaps on the hour grid are true zeros",
+      "provenance": {
+        "title": "Electric vehicle charging dataset with 35,000 charging sessions from 12 residential locations in Norway",
+        "license": "CC-BY-4.0",
+        "doi": "10.5281/zenodo.13896176",
+        "url": "https://zenodo.org/records/13896176",
+        "period": "2019",
+        "region": "Norway (12 residential parking locations)",
+        "note": "Hourly per-session energy from measured load profiles (Dataset4), aggregated to location-hours."
+      },
+      "hours": 89494
+    },
+    "korea": {
+      "raw_rows": 72856,
+      "usable_sessions": 16978,
+      "stations_kept": 40,
+      "hours_span": 8768,
+      "total_kwh": 334765.3,
+      "zero_share": 0.818,
+      "aggregation": "session energy spread over the hours it overlaps (overlap-weighted), KST localised to UTC",
+      "categories": {
+        "KR:3": {
+          "location": "company",
+          "charger_type": "0"
+        },
+        "KR:5": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:13": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:19": {
+          "location": "resort",
+          "charger_type": "0"
+        },
+        "KR:20": {
+          "location": "resort",
+          "charger_type": "0"
+        },
+        "KR:21": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:25": {
+          "location": "hotel",
+          "charger_type": "0"
+        },
+        "KR:29": {
+          "location": "resort",
+          "charger_type": "0"
+        },
+        "KR:30": {
+          "location": "resort",
+          "charger_type": "0"
+        },
+        "KR:33": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:42": {
+          "location": "hotel",
+          "charger_type": "0"
+        },
+        "KR:52": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:59": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:64": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:66": {
+          "location": "resort",
+          "charger_type": "0"
+        },
+        "KR:69": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:80": {
+          "location": "public area",
+          "charger_type": "0"
+        },
+        "KR:95": {
+          "location": "hotel",
+          "charger_type": "0"
+        },
+        "KR:123": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:140": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:154": {
+          "location": "public area",
+          "charger_type": "0"
+        },
+        "KR:163": {
+          "location": "resort",
+          "charger_type": "0"
+        },
+        "KR:177": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:200": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:214": {
+          "location": "public area",
+          "charger_type": "0"
+        },
+        "KR:260": {
+          "location": "public institution",
+          "charger_type": "0"
+        },
+        "KR:273": {
+          "location": "resort",
+          "charger_type": "0"
+        },
+        "KR:287": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:291": {
+          "location": "public institution",
+          "charger_type": "0"
+        },
+        "KR:320": {
+          "location": "camping",
+          "charger_type": "0"
+        },
+        "KR:370": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:373": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:374": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:375": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:376": {
+          "location": "apartment",
+          "charger_type": "0"
+        },
+        "KR:377": {
+          "location": "public area",
+          "charger_type": "0"
+        },
+        "KR:430": {
+          "location": "camping",
+          "charger_type": "0"
+        },
+        "KR:431": {
+          "location": "camping",
+          "charger_type": "0"
+        },
+        "KR:433": {
+          "location": "camping",
+          "charger_type": "0"
+        },
+        "KR:573": {
+          "location": "market",
+          "charger_type": "0"
+        }
+      },
+      "provenance": {
+        "title": "A dataset for multi-faceted analysis of electric vehicle charging transactions",
+        "license": "CC-BY-4.0",
+        "doi": "10.6084/m9.figshare.22495141.v1",
+        "url": "https://figshare.com/articles/dataset/22495141",
+        "period": "2022-09 .. 2023-09",
+        "region": "Republic of Korea (commercial charging network, 2,119 chargers)",
+        "note": "Measured session start/end (KST, localised to UTC) and delivered kWh; aggregated to charger-hours."
+      },
+      "hours": 329343
+    }
+  },
+  "stations": [
+    {
+      "index": 0,
+      "label": "US-TN:1844191",
+      "source": "tennessee",
+      "hours": 9406,
+      "start_utc": "2024-01-03T19:00:00+00:00",
+      "mean_kwh": 1.3937
+    },
+    {
+      "index": 1,
+      "label": "US-TN:1988061",
+      "source": "tennessee",
+      "hours": 9432,
+      "start_utc": "2024-01-02T15:00:00+00:00",
+      "mean_kwh": 1.2028
+    },
+    {
+      "index": 2,
+      "label": "US-TN:1988141",
+      "source": "tennessee",
+      "hours": 9495,
+      "start_utc": "2024-01-01T01:00:00+00:00",
+      "mean_kwh": 1.1473
+    },
+    {
+      "index": 3,
+      "label": "US-TN:5122191",
+      "source": "tennessee",
+      "hours": 9461,
+      "start_utc": "2024-01-01T19:00:00+00:00",
+      "mean_kwh": 2.3313
+    },
+    {
+      "index": 4,
+      "label": "US-TN:5346231",
+      "source": "tennessee",
+      "hours": 9411,
+      "start_utc": "2024-01-03T17:00:00+00:00",
+      "mean_kwh": 2.5217
+    },
+    {
+      "index": 5,
+      "label": "US-TN:5354011",
+      "source": "tennessee",
+      "hours": 9435,
+      "start_utc": "2024-01-03T18:00:00+00:00",
+      "mean_kwh": 1.0944
+    },
+    {
+      "index": 6,
+      "label": "US-TN:7505851",
+      "source": "tennessee",
+      "hours": 9464,
+      "start_utc": "2024-01-02T14:00:00+00:00",
+      "mean_kwh": 2.4762
+    },
+    {
+      "index": 7,
+      "label": "US-TN:8851921",
+      "source": "tennessee",
+      "hours": 9498,
+      "start_utc": "2024-01-01T00:00:00+00:00",
+      "mean_kwh": 4.2998
+    },
+    {
+      "index": 8,
+      "label": "US-TN:9677521",
+      "source": "tennessee",
+      "hours": 9385,
+      "start_utc": "2024-01-05T18:00:00+00:00",
+      "mean_kwh": 1.1291
+    },
+    {
+      "index": 9,
+      "label": "US-TN:12406401",
+      "source": "tennessee",
+      "hours": 9433,
+      "start_utc": "2024-01-01T00:00:00+00:00",
+      "mean_kwh": 1.3492
+    },
+    {
+      "index": 10,
+      "label": "US-TN:12406491",
+      "source": "tennessee",
+      "hours": 9474,
+      "start_utc": "2024-01-02T03:00:00+00:00",
+      "mean_kwh": 1.3376
+    },
+    {
+      "index": 11,
+      "label": "US-TN:12720861",
+      "source": "tennessee",
+      "hours": 9447,
+      "start_utc": "2024-01-02T15:00:00+00:00",
+      "mean_kwh": 1.8766
+    },
+    {
+      "index": 12,
+      "label": "US-TN:13026471",
+      "source": "tennessee",
+      "hours": 9432,
+      "start_utc": "2024-01-02T03:00:00+00:00",
+      "mean_kwh": 0.8933
+    },
+    {
+      "index": 13,
+      "label": "US-TN:13606061",
+      "source": "tennessee",
+      "hours": 9479,
+      "start_utc": "2024-01-01T20:00:00+00:00",
+      "mean_kwh": 2.5628
+    },
+    {
+      "index": 14,
+      "label": "US-TN:13606091",
+      "source": "tennessee",
+      "hours": 9483,
+      "start_utc": "2024-01-01T20:00:00+00:00",
+      "mean_kwh": 1.3027
+    },
+    {
+      "index": 15,
+      "label": "US-TN:13606121",
+      "source": "tennessee",
+      "hours": 9482,
+      "start_utc": "2024-01-01T22:00:00+00:00",
+      "mean_kwh": 0.8018
+    },
+    {
+      "index": 16,
+      "label": "US-TN:13606141",
+      "source": "tennessee",
+      "hours": 9360,
+      "start_utc": "2024-01-05T23:00:00+00:00",
+      "mean_kwh": 1.0918
+    },
+    {
+      "index": 17,
+      "label": "US-TN:13664471",
+      "source": "tennessee",
+      "hours": 9459,
+      "start_utc": "2024-01-02T00:00:00+00:00",
+      "mean_kwh": 1.1718
+    },
+    {
+      "index": 18,
+      "label": "US-TN:13664501",
+      "source": "tennessee",
+      "hours": 9263,
+      "start_utc": "2024-01-08T18:00:00+00:00",
+      "mean_kwh": 0.9029
+    },
+    {
+      "index": 19,
+      "label": "US-TN:13861861",
+      "source": "tennessee",
+      "hours": 9363,
+      "start_utc": "2024-01-01T15:00:00+00:00",
+      "mean_kwh": 1.0368
+    },
+    {
+      "index": 20,
+      "label": "US-TN:13861891",
+      "source": "tennessee",
+      "hours": 9486,
+      "start_utc": "2024-01-01T15:00:00+00:00",
+      "mean_kwh": 1.7564
+    },
+    {
+      "index": 21,
+      "label": "US-TN:14047321",
+      "source": "tennessee",
+      "hours": 9465,
+      "start_utc": "2024-01-01T16:00:00+00:00",
+      "mean_kwh": 2.8095
+    },
+    {
+      "index": 22,
+      "label": "US-TN:14097711",
+      "source": "tennessee",
+      "hours": 9446,
+      "start_utc": "2024-01-02T20:00:00+00:00",
+      "mean_kwh": 1.0088
+    },
+    {
+      "index": 23,
+      "label": "US-TN:14337501",
+      "source": "tennessee",
+      "hours": 9123,
+      "start_utc": "2024-01-11T23:00:00+00:00",
+      "mean_kwh": 0.8414
+    },
+    {
+      "index": 24,
+      "label": "US-TN:14359531",
+      "source": "tennessee",
+      "hours": 8395,
+      "start_utc": "2024-02-16T01:00:00+00:00",
+      "mean_kwh": 0.9951
+    },
+    {
+      "index": 25,
+      "label": "US-TN:15332321",
+      "source": "tennessee",
+      "hours": 8856,
+      "start_utc": "2024-01-27T00:00:00+00:00",
+      "mean_kwh": 1.0227
+    },
+    {
+      "index": 26,
+      "label": "US-TN:15332351",
+      "source": "tennessee",
+      "hours": 8776,
+      "start_utc": "2024-01-27T00:00:00+00:00",
+      "mean_kwh": 1.1437
+    },
+    {
+      "index": 27,
+      "label": "US-TN:15548151",
+      "source": "tennessee",
+      "hours": 7681,
+      "start_utc": "2024-03-16T22:00:00+00:00",
+      "mean_kwh": 1.4527
+    },
+    {
+      "index": 28,
+      "label": "US-TN:15548181",
+      "source": "tennessee",
+      "hours": 7687,
+      "start_utc": "2024-03-16T16:00:00+00:00",
+      "mean_kwh": 1.6101
+    },
+    {
+      "index": 29,
+      "label": "US-TN:15623211",
+      "source": "tennessee",
+      "hours": 7634,
+      "start_utc": "2024-03-18T20:00:00+00:00",
+      "mean_kwh": 1.5974
+    },
+    {
+      "index": 30,
+      "label": "US-TN:15623231",
+      "source": "tennessee",
+      "hours": 6958,
+      "start_utc": "2024-04-15T22:00:00+00:00",
+      "mean_kwh": 1.2773
+    },
+    {
+      "index": 31,
+      "label": "US-TN:15640031",
+      "source": "tennessee",
+      "hours": 6939,
+      "start_utc": "2024-04-14T19:00:00+00:00",
+      "mean_kwh": 1.3949
+    },
+    {
+      "index": 32,
+      "label": "US-TN:15640171",
+      "source": "tennessee",
+      "hours": 7033,
+      "start_utc": "2024-04-11T02:00:00+00:00",
+      "mean_kwh": 1.2939
+    },
+    {
+      "index": 33,
+      "label": "US-TN:15694081",
+      "source": "tennessee",
+      "hours": 6439,
+      "start_utc": "2024-05-07T11:00:00+00:00",
+      "mean_kwh": 2.3088
+    },
+    {
+      "index": 34,
+      "label": "US-TN:15694171",
+      "source": "tennessee",
+      "hours": 6403,
+      "start_utc": "2024-05-09T00:00:00+00:00",
+      "mean_kwh": 1.8374
+    },
+    {
+      "index": 35,
+      "label": "US-TN:15836981",
+      "source": "tennessee",
+      "hours": 4967,
+      "start_utc": "2024-07-07T17:00:00+00:00",
+      "mean_kwh": 1.9363
+    },
+    {
+      "index": 36,
+      "label": "US-TN:15885151",
+      "source": "tennessee",
+      "hours": 5322,
+      "start_utc": "2024-06-22T23:00:00+00:00",
+      "mean_kwh": 2.614
+    },
+    {
+      "index": 37,
+      "label": "US-TN:15885251",
+      "source": "tennessee",
+      "hours": 5265,
+      "start_utc": "2024-06-23T20:00:00+00:00",
+      "mean_kwh": 3.2344
+    },
+    {
+      "index": 38,
+      "label": "US-TN:15885771",
+      "source": "tennessee",
+      "hours": 5349,
+      "start_utc": "2024-06-22T00:00:00+00:00",
+      "mean_kwh": 4.9324
+    },
+    {
+      "index": 39,
+      "label": "US-TN:15885791",
+      "source": "tennessee",
+      "hours": 5309,
+      "start_utc": "2024-06-22T22:00:00+00:00",
+      "mean_kwh": 1.6016
+    },
+    {
+      "index": 40,
+      "label": "NO:ASK",
+      "source": "norway",
+      "hours": 10673,
+      "start_utc": "2018-11-15T16:00:00+00:00",
+      "mean_kwh": 6.0476
+    },
+    {
+      "index": 41,
+      "label": "NO:BAR",
+      "source": "norway",
+      "hours": 25522,
+      "start_utc": "2018-09-07T14:00:00+00:00",
+      "mean_kwh": 1.5004
+    },
+    {
+      "index": 42,
+      "label": "NO:BER",
+      "source": "norway",
+      "hours": 2268,
+      "start_utc": "2019-10-31T16:00:00+00:00",
+      "mean_kwh": 1.8294
+    },
+    {
+      "index": 43,
+      "label": "NO:BOD",
+      "source": "norway",
+      "hours": 11058,
+      "start_utc": "2018-10-29T21:00:00+00:00",
+      "mean_kwh": 0.7629
+    },
+    {
+      "index": 44,
+      "label": "NO:KRO",
+      "source": "norway",
+      "hours": 2652,
+      "start_utc": "2021-01-15T14:00:00+00:00",
+      "mean_kwh": 3.3072
+    },
+    {
+      "index": 45,
+      "label": "NO:OSL",
+      "source": "norway",
+      "hours": 27515,
+      "start_utc": "2018-02-06T14:00:00+00:00",
+      "mean_kwh": 7.3658
+    },
+    {
+      "index": 46,
+      "label": "NO:TRO",
+      "source": "norway",
+      "hours": 9806,
+      "start_utc": "2018-12-21T10:00:00+00:00",
+      "mean_kwh": 11.7483
+    },
+    {
+      "index": 47,
+      "label": "KR:3",
+      "source": "korea",
+      "hours": 8727,
+      "start_utc": "2021-10-01T09:00:00+00:00",
+      "mean_kwh": 0.8717
+    },
+    {
+      "index": 48,
+      "label": "KR:5",
+      "source": "korea",
+      "hours": 8468,
+      "start_utc": "2021-10-02T11:00:00+00:00",
+      "mean_kwh": 1.1085
+    },
+    {
+      "index": 49,
+      "label": "KR:13",
+      "source": "korea",
+      "hours": 8722,
+      "start_utc": "2021-10-02T13:00:00+00:00",
+      "mean_kwh": 0.9247
+    },
+    {
+      "index": 50,
+      "label": "KR:19",
+      "source": "korea",
+      "hours": 7789,
+      "start_utc": "2021-11-10T05:00:00+00:00",
+      "mean_kwh": 1.3986
+    },
+    {
+      "index": 51,
+      "label": "KR:20",
+      "source": "korea",
+      "hours": 8727,
+      "start_utc": "2021-10-02T04:00:00+00:00",
+      "mean_kwh": 0.8572
+    },
+    {
+      "index": 52,
+      "label": "KR:21",
+      "source": "korea",
+      "hours": 8735,
+      "start_utc": "2021-10-02T04:00:00+00:00",
+      "mean_kwh": 0.8726
+    },
+    {
+      "index": 53,
+      "label": "KR:25",
+      "source": "korea",
+      "hours": 7587,
+      "start_utc": "2021-11-18T02:00:00+00:00",
+      "mean_kwh": 1.228
+    },
+    {
+      "index": 54,
+      "label": "KR:29",
+      "source": "korea",
+      "hours": 8738,
+      "start_utc": "2021-10-01T17:00:00+00:00",
+      "mean_kwh": 0.9108
+    },
+    {
+      "index": 55,
+      "label": "KR:30",
+      "source": "korea",
+      "hours": 7751,
+      "start_utc": "2021-11-10T06:00:00+00:00",
+      "mean_kwh": 1.0853
+    },
+    {
+      "index": 56,
+      "label": "KR:33",
+      "source": "korea",
+      "hours": 8744,
+      "start_utc": "2021-10-01T18:00:00+00:00",
+      "mean_kwh": 0.92
+    },
+    {
+      "index": 57,
+      "label": "KR:42",
+      "source": "korea",
+      "hours": 7565,
+      "start_utc": "2021-11-18T04:00:00+00:00",
+      "mean_kwh": 0.8693
+    },
+    {
+      "index": 58,
+      "label": "KR:52",
+      "source": "korea",
+      "hours": 8717,
+      "start_utc": "2021-10-02T02:00:00+00:00",
+      "mean_kwh": 0.8179
+    },
+    {
+      "index": 59,
+      "label": "KR:59",
+      "source": "korea",
+      "hours": 8739,
+      "start_utc": "2021-10-02T02:00:00+00:00",
+      "mean_kwh": 1.0777
+    },
+    {
+      "index": 60,
+      "label": "KR:64",
+      "source": "korea",
+      "hours": 8758,
+      "start_utc": "2021-10-01T07:00:00+00:00",
+      "mean_kwh": 0.8445
+    },
+    {
+      "index": 61,
+      "label": "KR:66",
+      "source": "korea",
+      "hours": 7800,
+      "start_utc": "2021-11-10T08:00:00+00:00",
+      "mean_kwh": 0.9432
+    },
+    {
+      "index": 62,
+      "label": "KR:69",
+      "source": "korea",
+      "hours": 8747,
+      "start_utc": "2021-10-01T14:00:00+00:00",
+      "mean_kwh": 0.9104
+    },
+    {
+      "index": 63,
+      "label": "KR:80",
+      "source": "korea",
+      "hours": 8718,
+      "start_utc": "2021-10-02T16:00:00+00:00",
+      "mean_kwh": 0.82
+    },
+    {
+      "index": 64,
+      "label": "KR:95",
+      "source": "korea",
+      "hours": 7589,
+      "start_utc": "2021-11-18T02:00:00+00:00",
+      "mean_kwh": 1.1531
+    },
+    {
+      "index": 65,
+      "label": "KR:123",
+      "source": "korea",
+      "hours": 8616,
+      "start_utc": "2021-10-06T04:00:00+00:00",
+      "mean_kwh": 0.8716
+    },
+    {
+      "index": 66,
+      "label": "KR:140",
+      "source": "korea",
+      "hours": 8721,
+      "start_utc": "2021-10-02T04:00:00+00:00",
+      "mean_kwh": 0.8463
+    },
+    {
+      "index": 67,
+      "label": "KR:154",
+      "source": "korea",
+      "hours": 8634,
+      "start_utc": "2021-10-06T02:00:00+00:00",
+      "mean_kwh": 0.8423
+    },
+    {
+      "index": 68,
+      "label": "KR:163",
+      "source": "korea",
+      "hours": 7801,
+      "start_utc": "2021-11-10T01:00:00+00:00",
+      "mean_kwh": 1.3911
+    },
+    {
+      "index": 69,
+      "label": "KR:177",
+      "source": "korea",
+      "hours": 8463,
+      "start_utc": "2021-10-02T04:00:00+00:00",
+      "mean_kwh": 0.8256
+    },
+    {
+      "index": 70,
+      "label": "KR:200",
+      "source": "korea",
+      "hours": 5684,
+      "start_utc": "2022-01-27T04:00:00+00:00",
+      "mean_kwh": 1.2695
+    },
+    {
+      "index": 71,
+      "label": "KR:214",
+      "source": "korea",
+      "hours": 8739,
+      "start_utc": "2021-10-01T22:00:00+00:00",
+      "mean_kwh": 0.7561
+    },
+    {
+      "index": 72,
+      "label": "KR:260",
+      "source": "korea",
+      "hours": 8762,
+      "start_utc": "2021-10-01T06:00:00+00:00",
+      "mean_kwh": 1.0868
+    },
+    {
+      "index": 73,
+      "label": "KR:273",
+      "source": "korea",
+      "hours": 7164,
+      "start_utc": "2021-11-10T21:00:00+00:00",
+      "mean_kwh": 1.2968
+    },
+    {
+      "index": 74,
+      "label": "KR:287",
+      "source": "korea",
+      "hours": 7438,
+      "start_utc": "2021-10-03T03:00:00+00:00",
+      "mean_kwh": 1.461
+    },
+    {
+      "index": 75,
+      "label": "KR:291",
+      "source": "korea",
+      "hours": 8719,
+      "start_utc": "2021-10-01T02:00:00+00:00",
+      "mean_kwh": 0.9621
+    },
+    {
+      "index": 76,
+      "label": "KR:320",
+      "source": "korea",
+      "hours": 8764,
+      "start_utc": "2021-10-01T03:00:00+00:00",
+      "mean_kwh": 1.1708
+    },
+    {
+      "index": 77,
+      "label": "KR:370",
+      "source": "korea",
+      "hours": 7483,
+      "start_utc": "2021-11-23T02:00:00+00:00",
+      "mean_kwh": 0.9949
+    },
+    {
+      "index": 78,
+      "label": "KR:373",
+      "source": "korea",
+      "hours": 7546,
+      "start_utc": "2021-11-20T22:00:00+00:00",
+      "mean_kwh": 1.0257
+    },
+    {
+      "index": 79,
+      "label": "KR:374",
+      "source": "korea",
+      "hours": 7510,
+      "start_utc": "2021-11-21T03:00:00+00:00",
+      "mean_kwh": 1.0489
+    },
+    {
+      "index": 80,
+      "label": "KR:375",
+      "source": "korea",
+      "hours": 7534,
+      "start_utc": "2021-11-21T09:00:00+00:00",
+      "mean_kwh": 1.3937
+    },
+    {
+      "index": 81,
+      "label": "KR:376",
+      "source": "korea",
+      "hours": 7441,
+      "start_utc": "2021-11-25T01:00:00+00:00",
+      "mean_kwh": 0.9007
+    },
+    {
+      "index": 82,
+      "label": "KR:377",
+      "source": "korea",
+      "hours": 8756,
+      "start_utc": "2021-10-01T08:00:00+00:00",
+      "mean_kwh": 0.923
+    },
+    {
+      "index": 83,
+      "label": "KR:430",
+      "source": "korea",
+      "hours": 8740,
+      "start_utc": "2021-10-02T03:00:00+00:00",
+      "mean_kwh": 1.0997
+    },
+    {
+      "index": 84,
+      "label": "KR:431",
+      "source": "korea",
+      "hours": 8718,
+      "start_utc": "2021-10-01T23:00:00+00:00",
+      "mean_kwh": 1.1852
+    },
+    {
+      "index": 85,
+      "label": "KR:433",
+      "source": "korea",
+      "hours": 8758,
+      "start_utc": "2021-10-01T04:00:00+00:00",
+      "mean_kwh": 1.0585
+    },
+    {
+      "index": 86,
+      "label": "KR:573",
+      "source": "korea",
+      "hours": 8731,
+      "start_utc": "2021-10-02T03:00:00+00:00",
+      "mean_kwh": 0.9761
+    }
+  ],
+  "raw_sha256": {
+    "ChargingRecords.csv": "d541259bed55e2a9bc3413756954e7a059b50f9c9031f1dfc6ec87cbf3afd358",
+    "Dataset1_charging_reports.csv": "48c15189e2c1acca7a34d4e3789b1d615ddd091849a9803ae39aee8aec474ed2",
+    "Dataset4_hourly_predictions.csv": "4b021d6eda6c7296dc022727fe11e25ba408e38091aae9e7b782de1702f61aa8",
+    "Se_01_2024.csv": "af19b823cdec649e3820b08e2f197677be76b1e89acb6da6e58d946758813ff5",
+    "Se_01_2025.csv": "e8ea2336d361c959c91ea397077c533ad63987c042e9fea408e486b19ca703a4",
+    "Se_02_2024.csv": "df8ad35795118310ee8bb74528312380d187b2a5dcb586b25c7d06c7d822c1b5",
+    "Se_03_2024.csv": "e1a921cfcb3f83962dc57227a48b56928ff5c6278f827f2878c0c5ab1d9870fb",
+    "Se_04_2024.csv": "c3d68f063e1a10851bb1bfa2dd3c71aaeb9c99b097d42861dad905516b0dd9e1",
+    "Se_05_2024.csv": "86eef1115d9aa329ae757bc6092d46b2709f7f11e88659f0fb4cf0148e8486fd",
+    "Se_06_2024.csv": "d906ee2856b91f0ce2c74d005a7cfc353426b8fcb83894be2be27c549e940133",
+    "Se_07_2024.csv": "a5c3dd4317bb20ccee994b99d91b125413032371eda793e71f6f47ee36d76c4b",
+    "Se_08_2024.csv": "ea9f220ca0a464df2bcf53e3fa12c7e691a30f3cf2ad7a1c3f6fa532a8dff299",
+    "Se_09_2024.csv": "38c8c164709358415b98049559f1b2db49f54571c60645824677d274122ac9cc",
+    "Se_10_2024.csv": "f85a2b2740414e0b067b459d1dee7961455ce5a89589088817b205253e7b1566",
+    "Se_11_2024.csv": "73a1fdf8abb374e076f0b39316b8ffff3df1c3d10f1ec4e7e8235f066de2cffd",
+    "Se_12_2024.csv": "d78ce4f35639809aebaf6d77f91bf16d5e5a559387b4088aa737c6485d8861f1"
+  },
+  "excluded_sources": {
+    "EduDevCommons/Global-EV-Charging-Station-Telemetry": "README states the telemetry is produced by a 'Telemetry Simulation Engine'; using it would mislabel synthetic data as real observations."
+  },
+  "citations": [
+    "EV Charging Demand Prediction Dataset, CC-BY-4.0, huggingface.co/datasets/jtupayac/EV_Charging_demand",
+    "Andersen et al., Data in Brief 55 (2024) 110883, doi:10.5281/zenodo.13896176, CC-BY-4.0",
+    "Baek, Lee & Kim, Scientific Data 11:262 (2024), doi:10.6084/m9.figshare.22495141.v1, CC-BY-4.0"
+  ]
+}

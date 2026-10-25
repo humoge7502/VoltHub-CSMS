@@ -114,10 +114,10 @@
     "scene": "receipts",
     "voice": "en-IN-PrabhatNeural",
     "rate": "-2%",
-    "text": "Every claim in this project carries a receipt. One hundred and thirty seven tests on every push, plus a race suite that runs against both database engines. An OpenAPI contract with a drift gate. Decision records that name the trade offs, including the experiment that failed, and the fix that repaired it without rewriting the result.",
+    "text": "Every claim in this project carries a receipt. One hundred and forty three tests on every push, plus a race suite that runs against both database engines. An OpenAPI contract with a drift gate. Decision records that name the trade offs, including the experiment that failed, and the fix that repaired it without rewriting the result.",
     "captions": [
       "Every claim carries a receipt.",
-      "137 tests on every push, plus a race suite on both engines.",
+      "143 tests on every push, plus a race suite on both engines.",
       "An OpenAPI contract with a drift gate.",
       "Decision records that name the trade-offs.",
       "Including the experiment that failed — and its fix."

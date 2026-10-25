@@ -23,6 +23,17 @@ function clampDtMin(v) {
   return DT_MIN_ALLOWED.includes(dt) ? dt : DEFAULT_INTERVAL_MIN;
 }
 
+// CarbonPilot: the social cost of carbon expressed in tariff units (INR/gram).
+// Kept next to the solver because it is what converts gCO2e into a comparable
+// interval price; the accounting module owns the value itself.
+const { SOCIAL_COST_INR_PER_TONNE } = require('../carbon/intensity');
+const CARBON_PRICE_PER_G = SOCIAL_COST_INR_PER_TONNE / 1e6;
+function clampUnit(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+}
+
 // Honest fallback when neither the vehicle nor a reservation declares a target:
 // a documented default beats an invented one. Callers pass requirementKwhFor()
 // to replace it (controller derives it from vehicle battery + target SoC).
@@ -199,7 +210,18 @@ function certifyVehicle({ vehicle, siteCapKw, certifiedFloorKw, now, deadlineAt,
 // reference upper bound in benchmarks (ADR-0013), and the shipped solver is the
 // one the benchmark measures (single source of truth).
 // Deterministic: every ordering breaks ties on sessionId.
-function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizon, now, acceptanceAware = false }) {
+function solveSchedule({
+  vehicles,
+  siteCapKw,
+  cpCaps,
+  priceSeries,
+  dtMin,
+  horizon,
+  now,
+  acceptanceAware = false,
+  carbonSeries = null,
+  carbonWeight = 0,
+}) {
   // Clamped at the boundary: an untrusted horizon/cadence falls back to the
   // documented defaults instead of sizing the allocation arrays below.
   dtMin = clampDtMin(dtMin);
@@ -207,6 +229,17 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
   const grid = intervalGrid(now, dtMin, horizon);
   const dtH = dtMin / 60;
   const prices = priceSeries(grid.ticks);
+  // CarbonPilot (ADR-0017): carbon is an ADDITIONAL price on the same interval grid,
+  // never a second allocator. Adding it to the cost signal means the existing
+  // feasibility passes (certified floors, EDF, room checks) remain the only writers
+  // of the schedule — carbon can move energy within a window, never past a deadline.
+  // With no series (or weight 0) `score` IS `prices`, so every pre-carbon receipt
+  // and test remains bit-identical.
+  const carbonEnabled = Array.isArray(carbonSeries) && carbonSeries.length > 0 && Number(carbonWeight) > 0;
+  const weight = clampUnit(carbonWeight);
+  const score = carbonEnabled
+    ? prices.map((p, i) => (Number(p) || 0) + (Number(carbonSeries[i]) || 0) * CARBON_PRICE_PER_G * weight)
+    : prices;
   const deadlineSlot = new Map(
     vehicles.map((v) => [v.sessionId, v.deadlineAt ? Math.ceil((v.deadlineAt - grid.start) / grid.dt) : Infinity])
   );
@@ -313,8 +346,11 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
   }
 
   // Pass 3 — cost shift: expensive intervals give way to cheaper pre-deadline slots.
+  // When carbon is enabled, "expensive" means tariff + carbon on the same scale, so
+  // a cheap-but-dirty hour can yield to a slightly pricier clean one — within the
+  // same arrival/deadline/cap constraints as before.
   const priceOrder = Array.from({ length: horizon }, (_v, t) => t).sort(
-    (a, b) => (prices[b] ?? 0) - (prices[a] ?? 0) || a - b
+    (a, b) => (score[b] ?? 0) - (score[a] ?? 0) || a - b
   );
   let shiftedKwh = 0;
   for (const tExp of priceOrder) {
@@ -327,9 +363,9 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
       // arrival or past the deadline would be a constraint violation painted as savings.
       const cheaper = Array.from({ length: horizon }, (_v, t) => t)
         .filter(
-          (t) => t >= av(v.sessionId) && t < dl(v.sessionId) && t !== tExp && (prices[t] ?? 0) < (prices[tExp] ?? 0)
+          (t) => t >= av(v.sessionId) && t < dl(v.sessionId) && t !== tExp && (score[t] ?? 0) < (score[tExp] ?? 0)
         )
-        .sort((a, b) => (prices[a] ?? 0) - (prices[b] ?? 0) || a - b);
+        .sort((a, b) => (score[a] ?? 0) - (score[b] ?? 0) || a - b);
       for (const tCheap of cheaper) {
         if (movable <= 1e-9) break;
         // Never move energy into an interval that already holds a vehicle's floor-
@@ -367,6 +403,30 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
     for (const v of vehicles) sum += absorbedByVehicle(v, x.get(v.sessionId), dtH, planningSoc(v));
     absorbable = +sum.toFixed(4);
   }
+  // Carbon accounting for the plan actually produced. Reported even at weight 0
+  // (a caller may want the footprint of a price-only plan) but only when a series
+  // was supplied, so legacy receipts keep their exact metric set.
+  let carbon = null;
+  if (Array.isArray(carbonSeries) && carbonSeries.length) {
+    let energy = 0;
+    let grams = 0;
+    for (const arr of x.values()) {
+      arr.forEach((kwh, i) => {
+        const e = Number(kwh) || 0;
+        if (e <= 0) return;
+        energy += e;
+        grams += e * (Number(carbonSeries[i]) || 0);
+      });
+    }
+    carbon = {
+      carbon_g: +grams.toFixed(3),
+      carbon_kg: +(grams / 1000).toFixed(4),
+      carbon_intensity_g_per_kwh: energy > 0 ? +(grams / energy).toFixed(3) : null,
+      carbon_weight: weight,
+      carbon_social_cost_inr_per_tonne: SOCIAL_COST_INR_PER_TONNE,
+      carbon_cost_units: +((grams / 1e6) * SOCIAL_COST_INR_PER_TONNE).toFixed(4),
+    };
+  }
   return {
     schedule: Object.fromEntries([...x].map(([sid, arr]) => [sid, arr.map((k) => +k.toFixed(4))])),
     metrics: {
@@ -378,6 +438,7 @@ function solveSchedule({ vehicles, siteCapKw, cpCaps, priceSeries, dtMin, horizo
       // Emitted ONLY for the acceptance-aware allocator: a legacy receipt must regenerate
       // byte-for-byte from its own script (ADR-0013), and these fields are AES-only.
       ...(acceptanceAware ? { absorbable_kwh: absorbable, acceptance_aware: true } : {}),
+      ...(carbon || {}),
       deadline_slots: Object.fromEntries([...deadlineSlot].map(([sid, s2]) => [sid, s2 === Infinity ? null : s2])),
       arrival_slots: Object.fromEntries([...arrivalSlot]),
       horizon,

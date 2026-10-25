@@ -10,12 +10,22 @@ const http = require('http');
 
 async function main() {
   // ---- stub AI sidecar (records the x-internal token handling too) ----
-  const seen = { auth: [] };
+  const seen = { auth: [], forecast: [], drift: [], explain: [] };
   const stub = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       seen.auth.push(req.headers['x-internal']);
+      const parsed = (() => {
+        try {
+          return JSON.parse(body);
+        } catch {
+          return null;
+        }
+      })();
+      if (req.url === '/v1/forecast') seen.forecast.push(parsed);
+      if (req.url === '/v1/drift') seen.drift.push(parsed);
+      if (req.url === '/v1/explain') seen.explain.push(parsed);
       const j =
         req.url === '/v1/forecast'
           ? { advisory: true, stations: { 1: { hours: [1, 2, 3], model: 'mlp_128x64' } } }
@@ -23,7 +33,29 @@ async function main() {
             ? { advisory: true, checked: 2, flagged: [{ session_id: 1, reasons: ['meter delta z=9.00'] }] }
             : req.url === '/v1/optimize'
               ? { advisory: true, feasible: true, objective_cost: 42.5, schedule_kwh: { v1: [11, 11, 11, 0] } }
-              : { ok: true };
+              : req.url === '/v1/model-card'
+                ? {
+                    advisory: true,
+                    model: { name: 'vh-demand-mlp', loaded: true },
+                    training_data: { stations: 87, sources: ['korea', 'norway', 'tennessee'] },
+                    evaluation: { intervals: { empirical_coverage: 0.8029 } },
+                  }
+                : req.url === '/v1/drift'
+                  ? {
+                      advisory: true,
+                      verdict: 'stable',
+                      retrain_recommended: false,
+                      psi: 0.04,
+                      reasons: ['no material distribution shift detected'],
+                    }
+                  : req.url === '/v1/explain'
+                    ? {
+                        advisory: true,
+                        forecast_kwh: [10, 11],
+                        attributions: [{ group: 'history_last_6h', mean_delta_kwh: 4.2 }],
+                        top_driver: 'history_last_6h',
+                      }
+                    : { ok: true };
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(j));
     });
@@ -151,6 +183,92 @@ async function main() {
     const r = await api('/ai/optimize', { method: 'POST', headers: OH, body: JSON.stringify({ stationId: stId }) });
     assert.equal(r.status, 422);
     assert.equal(r.j.error.code, 'INVALID_VEHICLES');
+  });
+
+  await t(
+    'TEST-AI-7: forecast sends timestamped hourly kWh on a contiguous grid, clamped to the trained horizon',
+    async () => {
+      // The model is trained on hourly ENERGY with real clock anchors. This route once
+      // sent hourly session COUNTS with no timestamps, so the sidecar scored a
+      // different quantity than it was fitted for and derived hour-of-day from the
+      // array length. This test is the pin that keeps the two halves in step.
+      const r = await api(`/ai/forecast?stationId=${stId}&hours=48`, { headers: OH });
+      assert.equal(r.status, 200);
+      assert.equal(r.j.history_hours, 240, 'the proxy must state how much history it sent');
+      const sent = seen.forecast[seen.forecast.length - 1];
+      assert.equal(sent.hours, 24, 'hours must clamp to contract.HORIZON (24), not 48');
+      const h = sent.history[String(stId)];
+      assert.ok(h && Array.isArray(h.timestamps) && Array.isArray(h.kwh), 'history must be {timestamps, kwh}');
+      assert.equal(h.timestamps.length, h.kwh.length);
+      assert.ok(h.kwh.length >= 168, `contract.MIN_HISTORY_H is 168, sent ${h.kwh.length}`);
+      assert.ok(
+        h.kwh.every((v) => Number.isFinite(v) && v >= 0),
+        'kWh history must be finite and non-negative'
+      );
+      for (let i = 1; i < h.timestamps.length; i++) {
+        const gap = Date.parse(h.timestamps[i]) - Date.parse(h.timestamps[i - 1]);
+        // The sidecar rejects a holed grid outright (422), so the proxy must never send one.
+        assert.equal(gap, 3600000, `history grid must be contiguous hourly, gap at ${i}: ${gap} ms`);
+        assert.equal(h.timestamps[i].slice(-1), 'Z', 'timestamps must be UTC-anchored RFC-3339');
+      }
+    }
+  );
+
+  await t('TEST-AI-8: model card is staff-only and exposes the receipt, not just a version', async () => {
+    const driver = await api('/ai/model-card', { headers: DH });
+    assert.equal(driver.status, 403);
+    const r = await api('/ai/model-card', { headers: OH });
+    assert.equal(r.status, 200, JSON.stringify(r.j));
+    assert.equal(r.j.advisory, true);
+    assert.equal(r.j.model.loaded, true);
+    assert.equal(r.j.training_data.stations, 87);
+    assert.ok(r.j.evaluation.intervals.empirical_coverage > 0.7);
+    assert.ok(seen.auth.every((tok) => tok === 'dev-internal'));
+  });
+
+  await t('TEST-AI-9: drift proxy splits a contiguous 21-day grid into baseline + recent', async () => {
+    const out = await api(`/ai/drift?stationId=${other.station_id}`, { headers: OH });
+    assert.equal(out.status, 403);
+    const r = await api(`/ai/drift?stationId=${stId}&baselineDays=14&recentDays=7`, { headers: OH });
+    assert.equal(r.status, 200, JSON.stringify(r.j));
+    assert.equal(r.j.station_id, stId);
+    assert.equal(r.j.baseline_days, 14);
+    assert.equal(r.j.recent_days, 7);
+    const sent = seen.drift[seen.drift.length - 1];
+    assert.equal(sent.station_id, stId);
+    assert.equal(sent.baseline.timestamps.length, 14 * 24);
+    assert.equal(sent.recent.timestamps.length, 7 * 24);
+    assert.equal(sent.baseline.timestamps.length, sent.baseline.kwh.length);
+    assert.equal(sent.recent.timestamps.length, sent.recent.kwh.length);
+    // The split must be the SAME series: recent starts where baseline ended, one hour later.
+    assert.equal(
+      Date.parse(sent.recent.timestamps[0]) - Date.parse(sent.baseline.timestamps.at(-1)),
+      3600000,
+      'baseline and recent must be contiguous halves of one hourly grid'
+    );
+  });
+
+  await t('TEST-AI-10: explain is station-scoped and sends the same 240 h history as forecast', async () => {
+    const out = await api('/ai/explain', {
+      method: 'POST',
+      headers: OH,
+      body: JSON.stringify({ stationId: other.station_id, hours: 6 }),
+    });
+    assert.equal(out.status, 403);
+    const r = await api('/ai/explain', {
+      method: 'POST',
+      headers: OH,
+      body: JSON.stringify({ stationId: stId, hours: 6 }),
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.j));
+    assert.equal(r.j.station_id, stId);
+    assert.equal(r.j.top_driver, 'history_last_6h');
+    assert.equal(r.j.history_hours, 240);
+    const sent = seen.explain[seen.explain.length - 1];
+    assert.equal(sent.station_id, stId);
+    assert.equal(sent.hours, 6);
+    assert.equal(sent.history.timestamps.length, 240);
+    assert.equal(sent.history.kwh.length, 240);
   });
 
   console.log(`\nAI contract tests: ${pass} passed`);

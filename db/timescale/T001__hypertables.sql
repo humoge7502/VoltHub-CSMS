@@ -38,7 +38,12 @@ CREATE TABLE IF NOT EXISTS connector_state_event (
   to_state TEXT NOT NULL,
   cause TEXT NOT NULL DEFAULT 'OCPP',
   session_id INTEGER,
-  PRIMARY KEY (connector_ref, ts)
+  -- The relay's pipeline identity. With only (connector_ref, ts) in the key, two
+  -- genuine transitions inside the same wall-clock second collided and
+  -- ON CONFLICT DO NOTHING silently deleted state history that T002's utilization
+  -- caggs read. Existing databases are upgraded by T004.
+  dedupe_key TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (connector_ref, ts, dedupe_key)
 );
 SELECT create_hypertable('connector_state_event', 'ts', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 SELECT add_retention_policy('connector_state_event', INTERVAL '180 days', if_not_exists => TRUE);

@@ -772,6 +772,17 @@
       }
     },
     "/admin/charge-points": {
+      "get": {
+        "summary": "Charge-point inventory with online status (admin; never returns secrets)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      },
       "post": {
         "summary": "Provision charge point → OCPP identity (admin)",
         "responses": {
@@ -850,6 +861,45 @@
     "/ai/optimize": {
       "post": {
         "summary": "AI advisory: deterministic LP smart-charging schedule under hard station/connector constraints (operator in scope / admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/ai/model-card": {
+      "get": {
+        "summary": "Model card: dataset provenance, backtest receipt, conformal coverage, intended use and limitations (staff)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/ai/drift": {
+      "get": {
+        "summary": "Data-drift monitor from hourly demand: PSI, KS, mean/zero/volatility shifts (operator in scope / admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/ai/explain": {
+      "post": {
+        "summary": "Feature-group occlusion explanation in kWh for the next hourly forecast (operator in scope / admin)",
         "responses": {
           "200": {
             "description": "ok"
@@ -1027,6 +1077,32 @@
         }
       }
     },
+    "/control/commands": {
+      "get": {
+        "summary": "OCPP 1.6 management command catalog with accepted statuses and payload shapes (operator+)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/control/cp/{cpId}/commands/{action}": {
+      "post": {
+        "summary": "Await one OCPP 1.6 command: reset|unlockConnector|changeAvailability|getConfiguration|changeConfiguration|triggerMessage|reserveNow|cancelReservation|clearCache|dataTransfer (admin)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
     "/control/cp/{cpId}/clear-profile": {
       "post": {
         "summary": "ClearChargingProfile to a charge point (admin)",
@@ -1043,6 +1119,71 @@
     "/control/cp/{cpId}/composite-schedule": {
       "get": {
         "summary": "GetCompositeSchedule probe for a charge point (operator+)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/carbon/regions": {
+      "get": {
+        "summary": "Known grid regions with current intensity, annual average and renewable share",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/carbon/forecast": {
+      "get": {
+        "summary": "Deterministic carbon-intensity forecast (?region= or ?stationId=, 1..168 h, 15/30/60 min steps)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/stations/{id}/carbon": {
+      "get": {
+        "summary": "Station carbon card: current intensity, 48 h forecast and 30-day measured emissions (auth required)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/carbon/receipt/{sessionId}": {
+      "get": {
+        "summary": "Per-session carbon receipt from the meter trail, hashed (owner or scoped staff)",
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "4xx": {
+            "description": "client error"
+          }
+        }
+      }
+    },
+    "/carbon/summary": {
+      "get": {
+        "summary": "Site/portfolio carbon summary over a window (?siteId=&from=&to=, operator+)",
         "responses": {
           "200": {
             "description": "ok"

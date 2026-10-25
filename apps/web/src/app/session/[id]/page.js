@@ -241,6 +241,9 @@ export default function LiveSession() {
           <p>The last OCPP MeterValues frames in arrival order — the raw rows behind the trace above.</p>
         </div>
         <table className="t">
+          <caption className="micro" style={{ textAlign: 'left', paddingBottom: 8 }}>
+            Recent OCPP meter frames
+          </caption>
           <thead>
             <tr>
               <th scope="col">Frame</th>

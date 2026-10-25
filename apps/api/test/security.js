@@ -420,6 +420,52 @@ async function main() {
     assert.equal(j.error, undefined, 'logout must never reveal token validity');
   });
 
+  await t('SEC-069: production boot fails on published JWT/INTERNAL values', async () => {
+    const { spawnSync } = require('child_process');
+    const path = require('path');
+    const cwd = path.join(__dirname, '..');
+    const run = (env) =>
+      spawnSync(process.execPath, ['-e', "require('./src/server')"], {
+        cwd,
+        env: { ...process.env, NODE_ENV: 'production', ...env },
+        encoding: 'utf8',
+        timeout: 20000,
+      });
+    // The compose default is long enough to pass a length check — it must still be refused.
+    const badJwt = run({ JWT_SECRET: 'dev-only-32-byte-secret-0123456789', INTERNAL_TOKEN: 'x'.repeat(32) });
+    assert.equal(badJwt.status, 1);
+    assert.match(badJwt.stderr, /FATAL: JWT_SECRET/);
+    const badInternal = run({ JWT_SECRET: 'y'.repeat(40), INTERNAL_TOKEN: 'dev-internal' });
+    assert.equal(badInternal.status, 1);
+    assert.match(badInternal.stderr, /FATAL: INTERNAL_TOKEN/);
+  });
+
+  await t('SEC-069: production OCPP refuses dev-* secrets and ignores OCPP_AUTH=off', async () => {
+    const { checkBasic } = require('../src/ocpp/gateway');
+    const prevEnv = process.env.NODE_ENV;
+    const prevAuth = process.env.OCPP_AUTH;
+    try {
+      process.env.NODE_ENV = 'production';
+      const req = {
+        headers: { authorization: 'Basic ' + Buffer.from('CP1:dev-CP1').toString('base64') },
+      };
+      process.env.OCPP_AUTH = 'per-cp';
+      assert.equal(checkBasic(req, 'CP1', { auth_secret: 'dev-CP1' }), false, 'dev-* secret must be refused');
+      assert.equal(checkBasic(req, 'CP1', { auth_secret: 'a'.repeat(24) }), false, 'wrong secret must be refused');
+      process.env.OCPP_AUTH = 'off';
+      assert.equal(
+        checkBasic({ headers: {} }, 'CP1', { auth_secret: 'a'.repeat(24) }),
+        false,
+        'off is ignored in prod'
+      );
+    } finally {
+      if (prevEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prevEnv;
+      if (prevAuth === undefined) delete process.env.OCPP_AUTH;
+      else process.env.OCPP_AUTH = prevAuth;
+    }
+  });
+
   console.log(`\nSecurity tests: ${pass} passed`);
   server.close();
   process.exit(0);

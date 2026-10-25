@@ -53,7 +53,12 @@ def list_gpus(smi_output: str | None = None) -> list[dict]:
 
 def pick_gpu(min_free_mb: int = 4096, max_util_pct: int = 90, smi_output: str | None = None) -> int | None:
     """Least-loaded GPU with enough free memory; None when the pool is busy."""
-    gpus = list_gpus(smi_output)
+    try:
+        gpus = list_gpus(smi_output)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # No nvidia-smi on this host (CI runners, CPU-only boxes): the pool is
+        # simply not visible — callers treat None as "no GPU" and fall back.
+        return None
     candidates = [g for g in gpus if g["mem_total_mb"] - g["mem_used_mb"] >= min_free_mb and g["util_pct"] < max_util_pct]
     if not candidates:
         return None

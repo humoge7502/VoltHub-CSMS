@@ -1,5 +1,7 @@
 import Link from 'next/link';
+import { Database, Activity, ArrowRight, ShieldCheck, Layers } from 'lucide-react';
 import { LiveKpis } from './live';
+import { Reveal, Ticker, SpotCard, Marquee } from '../lib/fx';
 
 export const metadata = {
   title: { absolute: 'VoltHub CSMS — certainty is a database property' },
@@ -37,129 +39,223 @@ const FLOWS = [
 const CAPS = [
   {
     n: 'A',
+    icon: Database,
     title: 'The money path is relational and unashamed of it',
-    body: 'Oracle 23ai owns reservations, billing and the ledger. Twenty-nine relations, seven PL/SQL packages, a guard trigger that blocks direct status writes. Double-reserve the same connector from two terminals and you get exactly one 201 — proven in CI on every push.',
+    body: 'Oracle 23ai owns reservations, billing and the ledger. 35 tables, 8 PL/SQL packages, a guard trigger that blocks direct status writes. Double-reserve the same connector from two terminals and you get exactly one 201 — proven in CI on every push.',
   },
   {
     n: 'B',
+    icon: Activity,
     title: 'Telemetry is time-series, also unashamed of it',
     body: 'Ninety-plus percent of rows are immutable, time-ordered meter ticks. They land in TimescaleDB hypertables with 1-minute and 1-hour continuous aggregates, 7-day compression and 90-day retention. Billing never waits on analytics.',
   },
   {
     n: 'C',
+    icon: Layers,
     title: 'One event, two engines, zero broker',
     body: 'Every MeterValues writes a billing record and an analytics record through an in-transaction outbox. A two-second relay delivers at-least-once; idempotent replay makes it effectively-once. No Kafka, no dual-write divergence.',
   },
 ];
 
+const PROOF = [
+  'double-booking impossible by construction',
+  'invoices bill exactly once',
+  'race-tested in CI on every push',
+  'signed wallet rail — EIP-191, no card data',
+  'openapi drift-gated on every commit',
+  'every benchmark has a receipt',
+  'conformal forecast intervals with measured coverage',
+  'control loop: 2.36% shortfall vs 42.6% baseline',
+];
+
 export default function Home() {
   return (
     <div className="wrap">
-      {/* 01 — hero: what, why, who, next */}
+      {/* 01 — hero */}
       <section className="hero">
-        <h1 className="display rise d1" style={{ margin: 0 }}>
+        <div className="micro rise d1" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <ShieldCheck size={14} aria-hidden="true" style={{ color: 'var(--lime)' }} /> EVERY CLAIM CARRIES A RECEIPT
+        </div>
+        <h1 className="display rise d2" style={{ margin: 'var(--sp-3) 0 0' }}>
           Certainty is
           <br />
           a database
           <br />
           property.
         </h1>
-        <p className="lede rise d2" style={{ marginTop: 'var(--sp-5)' }}>
-          VoltHub is a charge-point-operator system where reservations can never double-book, invoices bill exactly
+        <p className="lede rise d3" style={{ marginTop: 'var(--sp-5)', maxWidth: '58ch' }}>
+          VoltHub is the charge-point-operator platform where reservations can never double-book, invoices bill exactly
           once, and every meter tick lands in both the money path and the analytics pipeline. Simulated chargers, real
-          constraints.
+          constraints, published proofs.
         </p>
         <div
-          className="rise d3"
+          className="rise d4"
           style={{ display: 'flex', gap: 'var(--sp-2)', marginTop: 'var(--sp-5)', flexWrap: 'wrap' }}
         >
           <Link href="/discover" className="btn pri">
-            Find a charger
+            Find a charger <ArrowRight size={14} aria-hidden="true" style={{ verticalAlign: '-2px' }} />
           </Link>
           <Link href="/dashboard" className="btn">
             Operator view
           </Link>
         </div>
+        <p className="micro rise d4" style={{ marginTop: 'var(--sp-3)', color: 'var(--tx3)' }}>
+          Power users: press <kbd className="cmdk-kbd">ctrl k</kbd> anywhere for the command palette.
+        </p>
       </section>
 
-      {/* 02 — live system state (client island, the only JS on this page) */}
-      <section className="sec" aria-label="Live system state">
-        <div className="sec-h">
-          <h2>Live from the gateway</h2>
-          <p>Polling /health on the API. Outbox lag is the distance between a meter tick and its analytics copy.</p>
-        </div>
-        <LiveKpis />
-      </section>
+      {/* 02 — live system state (client island) */}
+      <Reveal>
+        <section className="sec" aria-label="Live system state">
+          <div className="sec-h">
+            <h2>Live from the gateway</h2>
+            <p>Polling /health on the API. Outbox lag is the distance between a meter tick and its analytics copy.</p>
+          </div>
+          <LiveKpis />
+        </section>
+      </Reveal>
 
-      {/* 03 — proof numbers */}
-      <section className="sec">
-        <div className="statband rise d1">
-          <div>
-            <div className="micro">Engine A · Oracle 23ai</div>
-            <div className="v num">29 rel</div>
-            <div className="micro">7 PL/SQL packages</div>
+      {/* 03 — market band (investor receipts, sourced in docs/business-model.md) */}
+      <Reveal>
+        <section className="sec" aria-label="Market">
+          <div className="sec-h">
+            <h2>The market is moving; the software isn&apos;t trusted yet</h2>
+            <p>
+              Sources: GM Insights 2025 base, MRFR pricing survey, public vendor pages — receipts in{' '}
+              <code className="num">docs/business-model.md</code>.
+            </p>
           </div>
-          <div>
-            <div className="micro">Engine B · TimescaleDB</div>
-            <div className="v num">1m caggs</div>
-            <div className="micro">10–20× compression</div>
+          <div className="statband">
+            <div>
+              <div className="micro">CSMS SOFTWARE MARKET, 2025</div>
+              <div className="v num">
+                <Ticker value={3.4} kind="b" />
+              </div>
+              <div className="micro">growing 24.8%/yr through 2035</div>
+            </div>
+            <div>
+              <div className="micro">TYPICAL SAAS PRICE</div>
+              <div className="v num">
+                <Ticker value={10} kind="k" suffix="–50/port/mo" />
+              </div>
+              <div className="micro">enterprise quotes are opaque</div>
+            </div>
+            <div>
+              <div className="micro">VOLTHUB WEDGE</div>
+              <div className="v num">transparent</div>
+              <div className="micro">per-connector pricing, self-host, proofs</div>
+            </div>
           </div>
-          <div>
-            <div className="micro">Race-proof</div>
-            <div className="v num">201+409</div>
-            <div className="micro">FOR UPDATE + CI</div>
-          </div>
-          <div>
-            <div className="micro">API surface</div>
-            <div className="v num">72 paths</div>
-            <div className="micro">OpenAPI drift-gated</div>
-          </div>
-        </div>
-      </section>
+        </section>
+      </Reveal>
 
-      {/* 04 — the north-star flow, as an index */}
+      {/* 04 — proof marquee */}
+      <Reveal>
+        <Marquee items={PROOF} ariaLabel="VoltHub guarantees, scrolling" />
+      </Reveal>
+
+      {/* 05 — the north-star flow */}
       <section className="sec">
         <div className="sec-h">
           <h2>Four steps, two clicks to live kWh</h2>
           <p>The demo path a first-time user takes; every step is a real route in this console.</p>
         </div>
         <div className="idx">
-          {FLOWS.map((f) => (
-            <Link key={f.n} href={f.href}>
-              <span className="secnum">{f.n}</span>
-              <span className="t">{f.t}</span>
-              <span className="d">{f.d}</span>
-              <span className="go" aria-hidden="true">
-                →
-              </span>
-            </Link>
+          {FLOWS.map((f, i) => (
+            <Reveal key={f.n} delay={i * 0.06} className="idx-reveal">
+              <Link href={f.href}>
+                <span className="secnum">{f.n}</span>
+                <span className="t">{f.t}</span>
+                <span className="d">{f.d}</span>
+                <span className="go" aria-hidden="true">
+                  →
+                </span>
+              </Link>
+            </Reveal>
           ))}
         </div>
       </section>
 
-      {/* 05 — what makes it different */}
+      {/* 06 — what makes it different */}
       <section className="sec">
         <div className="sec-h">
           <h2>Two engines. One transaction boundary.</h2>
           <p>Each choice names its trade-off; the full set lives in the ADR index.</p>
         </div>
         <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
-          {CAPS.map((c) => (
-            <article key={c.n} className="card">
-              <div className="secnum">{c.n}</div>
-              <h3 style={{ margin: 'var(--sp-2) 0', fontSize: '1.05rem', textTransform: 'none', letterSpacing: 0 }}>
-                {c.title}
-              </h3>
-              <p style={{ color: 'var(--tx2)', margin: 0, fontSize: 13, lineHeight: 1.6 }}>{c.body}</p>
-            </article>
-          ))}
+          {CAPS.map((c, i) => {
+            const Icon = c.icon;
+            return (
+              <Reveal key={c.n} delay={i * 0.07}>
+                <SpotCard className="card" style={{ height: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span
+                      className="secnum"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 34,
+                        height: 34,
+                      }}
+                    >
+                      <Icon size={16} aria-hidden="true" />
+                    </span>
+                    <span className="micro">
+                      {c.n === 'A' ? 'ORACLE 23AI' : c.n === 'B' ? 'TIMESCALEDB' : 'OUTBOX RELAY'}
+                    </span>
+                  </div>
+                  <h3 style={{ margin: 'var(--sp-3) 0', fontSize: '1.05rem', textTransform: 'none', letterSpacing: 0 }}>
+                    {c.title}
+                  </h3>
+                  <p style={{ color: 'var(--tx2)', margin: 0, fontSize: 13, lineHeight: 1.6 }}>{c.body}</p>
+                </SpotCard>
+              </Reveal>
+            );
+          })}
         </div>
       </section>
 
-      {/* 06 — boot */}
+      {/* 07 — business model strip */}
+      <Reveal>
+        <section className="sec" aria-label="Business model">
+          <div className="card hl" style={{ padding: 'var(--sp-6) var(--sp-5)' }}>
+            <div className="sec-h" style={{ marginBottom: 'var(--sp-3)' }}>
+              <h2 style={{ fontSize: '1.2rem' }}>Priced like infrastructure, not like a quote</h2>
+              <p>
+                Per connector, per month, published. The receipts discipline that proves the engineering also proves the
+                bill: full receipt in <code className="num">docs/business-model.md</code>.
+              </p>
+            </div>
+            <div className="statband">
+              <div>
+                <div className="micro">GARAGE</div>
+                <div className="v num">free</div>
+                <div className="micro">≤ 10 connectors · self-host</div>
+              </div>
+              <div>
+                <div className="micro">NETWORK</div>
+                <div className="v num">
+                  <Ticker value={12} kind="k" suffix="/port" />
+                </div>
+                <div className="micro">per connector / month · SaaS or self-host</div>
+              </div>
+              <div>
+                <div className="micro">GRID (CONTROL LOOP)</div>
+                <div className="v num">
+                  <Ticker value={29} kind="k" suffix="/port" />
+                </div>
+                <div className="micro">adds FC-HCC smart charging + forecast rail</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </Reveal>
+
+      {/* 08 — boot */}
       <section className="sec" style={{ paddingBottom: 0 }}>
         <div
-          className="card hl"
+          className="card"
           style={{
             display: 'flex',
             flexWrap: 'wrap',

@@ -24,9 +24,15 @@
   The browser still holds only the 15-min access token in `localStorage` — the blast radius of
   an XSS token theft is one access-token window, not a 30-day refresh session.
 - Boot discipline: production (`NODE_ENV=production`) refuses
-  to start with a missing/default `JWT_SECRET` or `INTERNAL_TOKEN` (fail-fast, `auth.js:secret`,
-  `routes.js:internalOk`). Demo compose (ORACLE_HOST set, NODE_ENV unset) boots with a loud
-  warning instead — one-command demo must work; production must not.
+  to start with a missing/short/**published** `JWT_SECRET` or `INTERNAL_TOKEN`
+  (`apps/api/src/middleware/auth.js:assertBootSecrets`, fail-fast before the listener binds;
+  `routes.js:internalOk` fails such tokens closed on every request; the worker refuses the
+  same values in `apps/worker/src/index.js`). Published means the literals in `.env.example`
+  and `infra/docker-compose.yml` — length alone is not enough. `infra/docker-compose.prod.yml`
+  is the production overlay: `NODE_ENV=production`, `${VAR:?}` required secrets, no demo seed,
+  no welcome credit, no unsigned top-ups. Demo compose (`NODE_ENV` unset) boots with a loud
+  warning instead — one-command demo must work; production must not. In production the OCPP
+  gateway also refuses `dev-*` charge-point secrets and ignores `OCPP_AUTH=off`.
 - RBAC: `authRequired` + `roles()` + operator station-scope on session state
   (`extended.js`). Session/live/telemetry/admin endpoints require auth; drivers see only their
   own sessions (403 otherwise). See `TEST-SEC-AUTHZ5` in `apps/api/test/security.js`.

@@ -27,6 +27,25 @@ config` renders `JWT_SECRET: dev-only-32-byte-secret-0123456789` with a root `.e
 > container-to-container wiring (`ORACLE_HOST: oracle`, `TS_HOST: timescale`) is not
 > clobbered by the `localhost` values `.env.example` carries for bare-metal runs.
 
+### Production overlay (required for anything reachable from the internet)
+
+The base compose file is the laptop demo: `NODE_ENV` is unset, demo data is seeded, and
+missing secrets fall back to published dev values. For a real deployment, add the
+overlay — it sets `NODE_ENV=production`, requires `JWT_SECRET` / `INTERNAL_TOKEN` /
+`AI_TOKEN` via `${VAR:?}` interpolation, disables welcome credit and unsigned top-ups,
+and seeds no demo charge points (whose `dev-*` OCPP secrets are public):
+
+```bash
+docker compose --env-file .env \
+  -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d --build
+```
+
+With `NODE_ENV=production` the API refuses to boot on a missing/short/published
+`JWT_SECRET` or `INTERNAL_TOKEN` (`apps/api/src/middleware/auth.js:assertBootSecrets`),
+the worker refuses a published `INTERNAL_TOKEN`, the OCPP gateway rejects `dev-*`
+charge-point secrets and ignores `OCPP_AUTH=off`, and the unsigned wallet top-up route
+stays closed.
+
 ## 2. TLS (Caddy, auto-HTTPS, WS pass-through)
 
 OCPP Basic-auth over `ws://` is plaintext — TLS is not optional once SEC-003 lands.
@@ -82,9 +101,27 @@ the local store rather than pretending).
 ## 4. Observability
 
 - `GET /api/v1/health/deep` — `SELECT 1 FROM DUAL` + pool + Timescale reachability.
-- `GET /api/v1/metrics` — Prometheus text (req rate, p95 ring, outbox depth, pool, OCPP).
+- `GET /api/v1/metrics` — Prometheus text (req rate, p95 ring, outbox depth/age, dead
+  letters, relay heartbeat, pool, OCPP).
 - Grafana profile: `docker compose --env-file .env -f infra/docker-compose.yml --profile observability up -d`
   (Timescale datasource + load dashboard, provisioned from `infra/grafana/`).
+
+Three rules cover the telemetry pipeline; the old `lag_probe=ok` log line is gone because
+it could not distinguish "the relay is busy" from "the relay is dead".
+
+| Signal                              | Page when                                 | What it means                                                                                                                                             |
+| ----------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `volthub_outbox_oldest_age_seconds` | > `RELAY_LAG_SLO_SECONDS` (120) for 5 min | The queue is not draining at fleet rate. Depth alone never fires a page — a busy fleet is legitimately deep.                                              |
+| `volthub_relay_last_poll_seconds`   | `== -1`, or > 30                          | No worker has polled this API since boot / the worker stopped. Distinguishes a dead relay from a slow sink.                                               |
+| `volthub_dead_letter_depth`         | any increase                              | The sink refused a row and the relay quarantined it. Triage at `GET /api/v1/ops/dead-letters` (replay or dismiss); the payload is stored with the letter. |
+
+Queue size is bounded by `OUTBOX_RETENTION_HOURS` (acked rows age out; **unacked rows are
+never dropped**), `OUTBOX_SOFT_CAP`/`OUTBOX_HARD_CAP` (memory guards — past the hard cap the
+oldest _acked_ rows are shed) and `DEAD_LETTER_CAP`. The worker side is
+`STATION_MAP_SYNC_SECONDS` (station metadata is re-synced per interval, not per 2 s poll) and
+`TS_POOL_MAX` (one shared Timescale pool per worker process). All of them are in
+`.env.example` and referenced from `infra/docker-compose.yml` — compose only passes variables
+the YAML actually names, so a knob that is missing there is silently at its default.
 
 ## 5. AI sidecar (optional)
 
@@ -99,6 +136,9 @@ python3 train.py     # writes reports/model.pt (skip: forecast degrades to seaso
 python3 service.py   # uvicorn :8100, internal-token gated
 # then point the API at it: AI_URL / AI_TOKEN in .env (same values both sides)
 ```
+
+Use `python` instead of `python3` on Windows — the `python3` on PATH there is the
+Microsoft Store stub, which opens the store instead of running the script.
 
 `AI_TOKEN` must match on both sides and is fail-fast in production, like the other
 secrets. Keep it off the public internet — compose binds it to the private network and

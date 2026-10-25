@@ -26,3 +26,5 @@ VoltHub-CSMS_Master_Transformation_Blueprint.docx
 .workbuddy-ai/
 # demo-film build artifacts (record.mjs/assemble.mjs sources ARE committed)
 video/out/
+# local screenshot/verification scratch frames (not project source)
+.tmp-frames/

@@ -66,6 +66,9 @@ export default function Faults() {
         {list.length ? (
           <div className="tscroll">
             <table className="t">
+              <caption className="micro" style={{ textAlign: 'left', paddingBottom: 8 }}>
+                Open charging faults
+              </caption>
               <thead>
                 <tr>
                   <th scope="col">ID</th>

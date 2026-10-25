@@ -9,27 +9,44 @@ const { verifyPassword } = require('../db/store');
 const JWT_TTL = '15m';
 const REFRESH_TTL_DAYS = 30;
 const REFRESH_COOKIE = 'vh_rt';
-const DEV_SECRET = 'dev-only-32-byte-secret-0123456789';
-// SEC-002: fail-fast when a production deploy boots with a missing/known-default secret.
-// Demo compose (ORACLE_HOST set, NODE_ENV unset) boots with a loud warning instead —
-// one-command demo must work; production (`NODE_ENV=production`) must not.
+// SEC-002/SEC-060: there is NO known default signing key. Production fails closed;
+// development gets a per-process random key (unguessable, but tokens do not survive a
+// restart — acceptable for the local demo, never for a multi-replica deployment).
+// SEC-069: values that ship in .env.example / infra/docker-compose.yml are long enough to
+// pass a length check but are public — they must never sign tokens in production.
+const PUBLIC_DEV_SECRETS = new Set(['dev-only-32-byte-secret-0123456789', 'replace_with_32_random_bytes', 'change_me']);
+let _secretCache = null;
 function secret() {
+  if (_secretCache) return _secretCache;
   const s = process.env.JWT_SECRET;
   const prod = process.env.NODE_ENV === 'production';
-  if (!s || s === DEV_SECRET) {
-    if (prod) {
-      console.error(
-        '[auth] FATAL: JWT_SECRET missing or default with NODE_ENV=production. Set a 32-byte random secret.'
-      );
-      process.exit(1);
-    }
-    if (!secret._warned) {
-      secret._warned = true;
-      console.warn('[auth] WARNING: JWT_SECRET is default/missing (demo only — set a 32-byte secret for any deploy).');
-    }
-    return DEV_SECRET;
+  if (s && s.length >= 32 && !PUBLIC_DEV_SECRETS.has(s)) {
+    _secretCache = s;
+    return _secretCache;
   }
-  return s;
+  if (prod) {
+    console.error(
+      '[auth] FATAL: JWT_SECRET missing, shorter than 32 bytes, or a published dev value with NODE_ENV=production. Set a random 32+ byte secret.'
+    );
+    process.exit(1);
+  }
+  _secretCache = crypto.randomBytes(32).toString('hex');
+  console.warn('[auth] JWT_SECRET missing/weak — generated an ephemeral per-process key (tokens reset on restart).');
+  return _secretCache;
+}
+
+// Boot-time secret discipline: production must fail before the first request, not when a
+// driver first tries to log in. Also refuses a dead /internal surface (worker relay).
+function assertBootSecrets() {
+  secret();
+  if (process.env.NODE_ENV !== 'production') return;
+  const t = process.env.INTERNAL_TOKEN;
+  if (!t || t.length < 24 || t === 'dev-internal' || /^replace_with_/.test(t)) {
+    console.error(
+      '[auth] FATAL: INTERNAL_TOKEN missing, shorter than 24 chars, or a published dev value with NODE_ENV=production.'
+    );
+    process.exit(1);
+  }
 }
 
 function stationScopeFor(store, user) {
@@ -114,13 +131,32 @@ function authRequired(req, res, next) {
   const h = req.headers.authorization || '';
   const tok = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!tok) return res.status(401).json({ error: { code: 'NO_TOKEN', message: 'missing bearer token' } });
+  let p;
   try {
-    const p = jwt.verify(tok, secret(), { algorithms: ['HS256'] });
-    req.user = { id: p.sub, role: p.role, stationScope: p.stationScope || [] };
-    next();
+    p = jwt.verify(tok, secret(), { algorithms: ['HS256'] });
   } catch {
     return res.status(401).json({ error: { code: 'BAD_TOKEN', message: 'invalid/expired token' } });
   }
+  // SEC-061: a 15-minute bearer token must not outlive the account it names. Login
+  // already rejects suspended users, but without this check a suspension (or a role
+  // downgrade) had no effect until the token expired — and refresh could renew forever.
+  const store = global.__store;
+  const user = store?.users?.get?.(Number(p.sub));
+  if (store?.users && !user) {
+    return res.status(401).json({ error: { code: 'USER_GONE', message: 'account no longer exists' } });
+  }
+  if (user && user.status !== 'ACTIVE') {
+    return res.status(403).json({ error: { code: 'SUSPENDED', message: 'account suspended' } });
+  }
+  // The database is authoritative for role and station scope: an ADMIN can revoke an
+  // operator's station without waiting for a token to expire.
+  const role = user?.role || p.role;
+  req.user = {
+    id: p.sub,
+    role,
+    stationScope: role === 'OPERATOR' && store ? stationScopeFor(store, user || { user_id: p.sub }) : [],
+  };
+  next();
 }
 function roles(...allowed) {
   return (req, res, next) => {
@@ -158,7 +194,9 @@ function requireOwned(store, kind) {
         return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your session' } });
       if (req.user.role === 'OPERATOR') {
         const stationId = store.cps.get(Number(String(s.connector_ref).split(':')[0]))?.station_id;
-        if (stationId && !(req.user.stationScope || []).includes(stationId))
+        // SEC-062: fail closed. The old `stationId &&` guard let an orphaned/unknown
+        // connector (no CP row in the read cache) bypass the operator scope check.
+        if (!stationId || !(req.user.stationScope || []).includes(stationId))
           return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
       }
     }
@@ -172,12 +210,26 @@ function requireOwned(store, kind) {
         return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your invoice' } });
       if (req.user.role === 'OPERATOR') {
         const stationId = store.cps.get(Number(String(sess.connector_ref).split(':')[0]))?.station_id;
-        if (stationId && !(req.user.stationScope || []).includes(stationId))
+        if (!stationId || !(req.user.stationScope || []).includes(stationId))
           return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
       }
     }
     next();
   };
+}
+
+// Shared station-scope predicate for list endpoints (reservations/invoices/faults),
+// so operator tenancy is enforced identically everywhere instead of per-route ad hoc.
+function stationInScope(store, user, connectorRefOrStationId) {
+  if (user.role === 'ADMIN') return true;
+  if (user.role !== 'OPERATOR') return false;
+  let stationId = Number(connectorRefOrStationId);
+  if (!Number.isFinite(stationId)) return false;
+  if (!store.stations.has(stationId)) {
+    const cp = store.cps.get(Number(String(connectorRefOrStationId).split(':')[0]));
+    stationId = cp?.station_id;
+  }
+  return Number.isFinite(stationId) && (user.stationScope || []).includes(stationId);
 }
 
 module.exports = {
@@ -188,8 +240,10 @@ module.exports = {
   roles,
   scopeCheck,
   requireOwned,
+  stationInScope,
   verifyPassword,
   secret,
+  assertBootSecrets,
   stationScopeFor,
   setRefreshCookie,
   clearRefreshCookie,

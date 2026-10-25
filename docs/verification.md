@@ -4,6 +4,38 @@ Evidence discipline: **EXECUTED** (ran in this repo's environment) vs
 **STRONGLY INFERRED** (CI config verified line-by-line; execution on runners)
 vs **PENDING** (blocked here; exact command given). No claim without a receipt.
 
+## 2026-10-25 — three-dataset AI, CarbonPilot, OCPP day-2, PWA (EXECUTED)
+
+Fresh synthesis of the six review categories, implemented rather than filed. The prior
+audits under `docs/reviews/` and `docs/STRATEGY-AND-ROADMAP.md` are historical inputs.
+
+| Gate                   | Command                                                       | Result                                                                            |
+| ---------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| JS suite (local store) | `npm test`                                                    | **181 tests, exit 0** across 15 suites                                            |
+| AI sidecar             | `cd apps/ai; python -m pytest tests -q`                       | **98 passed, 2 skipped**                                                          |
+| Lint                   | `npm run lint`                                                | clean (`--max-warnings 0`)                                                        |
+| Formatting             | `npm run format:check`                                        | clean                                                                             |
+| Dependency audit       | `npm audit --omit=dev`                                        | **0 vulnerabilities**                                                             |
+| OpenAPI                | `npm run openapi:gen` + `node scripts/gen-openapi.js --check` | 82 paths, snapshot in sync, no drift                                              |
+| Web production build   | `cd apps/web; npm run build`                                  | 23 routes incl. `/carbon`, `/manifest.webmanifest`, `/offline`                    |
+| AI training receipt    | `cd apps/ai; python train.py`                                 | 87 stations / 754,032 station-hours; MAE 1.906 kWh; skill 36.02 %; coverage 0.803 |
+
+Suite breakdown: relay 14 · API 44 · simulator 2 · security 19 · rate-limit 8 · OCPP remote 2
+· gateway-close 11 · control 17 · control-AES 6 · **OCPP commands 10/10** · **carbon 8/8** ·
+wallet 14 · Oracle adapter 4 · AI contract 10 · twin 12 · local invariants 12 checks / 0 rows.
+Python: 98 passed, 2 GPU-optional skips.
+
+What this does **not** prove:
+
+- The durable path (Oracle + Timescale containers) was not booted in this session; the JS run
+  used the documented local store. Prior durable receipts remain in the sections below and in
+  CI (`db-tests`, `e2e` jobs). Run `docker compose -f infra/docker-compose.yml up --build`
+  plus `npm run test:e2e:control` to reproduce.
+- OCPP interop is proven against the simulator, not certified against third-party hardware.
+- Carbon intensity is a deterministic model calibrated to public annual averages, not a live
+  grid feed; receipts say `source: model` and carry `model-v1`.
+- AI drift is monitoring only; `retrain_recommended` is not an automatic retrain.
+
 ## GUARD-2026-09-15 — the connector guard was open, and V006 undid the expiry fix (EXECUTED)
 
 Two defects found by probing the live Oracle directly rather than reading the SQL. Both are

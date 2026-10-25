@@ -40,6 +40,22 @@ function apiFetch(url, opts = {}) {
 
 // opts.fetchImpl / opts.outFile are test seams (RESIL: chaos tests inject failures
 // and a temp mirror file without touching the real data/ path or global fetch).
+let lastStationSync = 0;
+// O.2 / §11.4: relay lag the console and Grafana page on. The queue is drained by
+// this loop, so "pending" here is the operator-visible definition of staleness.
+const LAG_SLO_SECONDS = Math.max(5, Number(process.env.RELAY_LAG_SLO_SECONDS || 120));
+let lastLagWarn = 0;
+function lagWarn(out) {
+  if (!out || !out.oldest_age_s || out.oldest_age_s < LAG_SLO_SECONDS) return;
+  const now = Date.now();
+  if (now - lastLagWarn < 30000) return; // one warning per 30 s, not one per 2 s poll
+  lastLagWarn = now;
+  console.warn(
+    `[worker] LAG SLO BREACH: oldest unacked event is ${out.oldest_age_s}s old (SLO ${LAG_SLO_SECONDS}s), ` +
+      `pending=${out.pending} — sink down or relay slower than the fleet`
+  );
+}
+
 async function relayOnce(opts = {}) {
   const doFetch = opts.fetchImpl || apiFetch;
   const outFile = opts.outFile || OUT;
@@ -49,15 +65,34 @@ async function relayOnce(opts = {}) {
     // Masterplan §26.5: keep Timescale station_map in step with Oracle-owned station
     // metadata (cheap full upsert; powers v_tick_*_enriched + Grafana). Failures log
     // and back off with the loop — they must not stall event relay.
-    await syncStationMap(API, TOKEN, doFetch).catch((e) => {
-      console.error('[worker] station-map sync:', e.message);
-    });
-    return relayToTimescale(API, TOKEN, doFetch);
+    // PERF: station metadata changes when a commissioning engineer edits a station,
+    // not every 2 seconds, so the full upsert is throttled. Before this the worker
+    // re-synced every connector on every poll: 30 HTTP requests and 30 upserts a
+    // minute per worker for data that is essentially static.
+    const now = Date.now();
+    const throttleMs = Math.max(5000, Number(process.env.STATION_MAP_SYNC_SECONDS || 60) * 1000);
+    if (now - lastStationSync >= throttleMs) {
+      lastStationSync = now;
+      await syncStationMap(API, TOKEN, doFetch)
+        .then((r) => {
+          if (r.skipped) console.warn(`[worker] station-map: ${r.skipped} row(s) rejected by Timescale`);
+        })
+        .catch((e) => {
+          lastStationSync = 0; // a failed sync must be retried on the next cycle
+          console.error('[worker] station-map sync:', e.message);
+        });
+    }
+    const out = await relayToTimescale(API, TOKEN, doFetch);
+    lagWarn(out);
+    if (out.quarantined) console.warn(`[worker] quarantined ${out.quarantined} poison event(s) -> /ops/dead-letters`);
+    return out;
   }
   const r = await doFetch(`${API}/internal/outbox`, { headers: { 'x-internal': TOKEN } });
   if (!r.ok) throw new Error(`outbox poll ${r.status}`);
-  const { events } = await r.json();
-  if (!events.length) return { relayed: 0 };
+  const body = await r.json();
+  const events = body.events || [];
+  const lag = { pending: Number(body.pending || 0), oldest_age_s: Number(body.oldest_age_s || 0) };
+  if (!events.length) return { relayed: 0, ...lag };
   // prod: INSERT into meter_tick / connector_state_event with ON CONFLICT DO NOTHING (relay-timescale.js).
   // local: append to mirror file (idempotent on dedupe_key).
   const seen = loadSeen(outFile);
@@ -85,7 +120,8 @@ async function relayOnce(opts = {}) {
     body: JSON.stringify({ ids: events.map((e) => e.event_id), keys: events.map((e) => e.dedupe_key) }),
   });
   if (!ack.ok) throw new Error(`ack ${ack.status}`);
-  return { relayed: events.length };
+  lagWarn(lag);
+  return { relayed: events.length, ...lag };
 }
 
 async function sweepOnce() {
@@ -95,6 +131,20 @@ async function sweepOnce() {
 
 if (require.main === module) {
   (async () => {
+    // SEC-069: the published dev token must not drive a production relay. Without this
+    // the worker would poll forever and every /internal call would be refused (the API
+    // fails such tokens closed), looking like a silent telemetry outage.
+    if (
+      process.env.NODE_ENV === 'production' &&
+      (!process.env.INTERNAL_TOKEN ||
+        process.env.INTERNAL_TOKEN.length < 24 ||
+        /^(dev-internal|change_me|replace_with_)/.test(process.env.INTERNAL_TOKEN))
+    ) {
+      console.error(
+        '[worker] FATAL: INTERNAL_TOKEN missing, shorter than 24 chars, or a published dev value with NODE_ENV=production.'
+      );
+      process.exit(1);
+    }
     console.log(`[worker] relay -> ${API} (2s loop)`);
     // Graceful shutdown (BUG-022 companion): SIGTERM ends the loop after the
     // current cycle — replay is idempotent (ack-after-COMMIT + dedupe), so stopping
@@ -111,25 +161,51 @@ if (require.main === module) {
       }, 10000);
       failsafe.unref?.();
     };
-    process.on('SIGTERM', () => {
+    const shutdown = () => {
       console.log('[worker] SIGTERM — draining');
       stop = true;
       armFailsafe();
-    });
-    process.on('SIGINT', () => {
-      stop = true;
-      armFailsafe();
-    });
+      // Close the shared Timescale pool so compose sees a clean exit instead of
+      // waiting on idle sockets (relay-timescale.js keeps one pool for the process).
+      if (process.env.TS_HOST) {
+        try {
+          require('./relay-timescale')
+            .releasePool()
+            .catch(() => {});
+        } catch {}
+      }
+    };
+    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', shutdown);
+    // PF-09: drain while the queue is behind instead of one 500-event batch per 2 s
+    // (a hard 250 events/s ceiling). The batch cap keeps a single cycle bounded so
+    // shutdown and the expiry sweep still get a turn.
+    const MAX_BATCHES_PER_CYCLE = Math.max(1, Number(process.env.RELAY_MAX_BATCHES_PER_CYCLE || 8));
     while (!stop) {
+      let drained = 0;
+      let last = null;
       try {
-        const a = await relayOnce();
+        for (let i = 0; i < MAX_BATCHES_PER_CYCLE && !stop; i++) {
+          const a = await relayOnce();
+          last = a;
+          drained += Number(a.relayed) || 0;
+          if (!a.pending || !a.relayed) break;
+        }
         const b = await sweepOnce().catch(() => ({ expired: 0 }));
-        if (a.relayed || b.expired) console.log(`[worker] relayed=${a.relayed} expired=${b.expired || 0} lag_probe=ok`);
+        if (drained || b.expired) {
+          // Measured backlog, not a probe that always prints "ok": a relay that is
+          // running but 10 minutes behind has to look different in the logs.
+          const lag = `pending=${last?.pending || 0} oldest=${last?.oldest_age_s || 0}s`;
+          console.log(`[worker] relayed=${drained} expired=${b.expired || 0} ${lag}`);
+        }
       } catch (e) {
         console.error('[worker]', e.message, '— backing off (sink-down: accumulate, stay honest)');
       }
       if (stop) break;
-      await new Promise((r) => setTimeout(r, 2000));
+      // Caught up: the historical 2 s heartbeat. Behind: keep the pressure on, but
+      // yield the loop so a stop signal and the expiry sweep are not starved.
+      const behind = last && Number(last.pending) > 0;
+      await new Promise((r) => setTimeout(r, behind ? 250 : 2000));
     }
     console.log('[worker] stopped cleanly');
   })();

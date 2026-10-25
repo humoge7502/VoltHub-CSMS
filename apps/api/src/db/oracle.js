@@ -6,7 +6,7 @@
 // read-through is out of scope — see ADR-0005). All SQL uses named binds, zero concat.
 // Requires: ORACLE_HOST set + `oracledb` installed. Otherwise factory returns local.
 'use strict';
-const { fromDriver } = require('../errors');
+const { fromDriver, oraError } = require('../errors');
 
 let _oracledb = null;
 function driver() {
@@ -544,10 +544,14 @@ async function hydrate(local, pool) {
           created_at: r.CREATED_AT ? new Date(r.CREATED_AT).toISOString() : new Date().toISOString(),
           processed_at: r.PROCESSED_AT ? new Date(r.PROCESSED_AT).toISOString() : null,
         });
+        // The emit-side dedupe index must know about rows that came from the durable
+        // table, or a re-emit of the same key inserts a second copy of one event.
+        local._outboxKeys?.add(r.DEDUPE_KEY);
         local.seq.outbox = Math.max(local.seq.outbox, id);
       },
       () => {
         local.outbox.length = 0;
+        local._outboxKeys?.clear();
       }
     );
     await q('SELECT key_value, status_code, response_body FROM idempotency_key', 'idem', (r) => {
@@ -590,6 +594,17 @@ async function hydrate(local, pool) {
 // behaviour for the outbox.)
 function truncateTo(arr, savedLen) {
   if (arr.length > savedLen) arr.length = savedLen;
+}
+
+// Same undo for the outbox, plus index hygiene: an event rolled back by a failed
+// durable write must NOT keep its dedupe key, or the retry of that emit is silently
+// dropped and the tick never reaches Timescale. Rebuilding the Set from the
+// survivors is O(n) but only runs on the mirror-failure path.
+function truncateOutbox(local, savedLen) {
+  truncateTo(local.outbox, savedLen);
+  if (!local._outboxKeys) return;
+  local._outboxKeys.clear();
+  for (const e of local.outbox) local._outboxKeys.add(e.dedupe_key);
 }
 
 // BUG-049: explicit-id mirror tables (app_user, wallet_account, wallet_ledger,
@@ -1045,7 +1060,15 @@ function wrapWithOracle(local, pool) {
         for (const ev of local.outbox)
           if (ev.payload && ev.payload.reservation_id === Number(localId)) {
             ev.payload.reservation_id = Number(out);
+            const prevKey = ev.dedupe_key;
             ev.dedupe_key = String(ev.dedupe_key).replace(/:\d+$/, `:${Number(out)}`);
+            // The dedupe index is keyed by the string, so a remapped row must move
+            // with it — otherwise the old key still blocks re-emits and the new one
+            // is unindexed, letting a duplicate of this event through later.
+            if (local._outboxKeys && prevKey !== ev.dedupe_key) {
+              local._outboxKeys.delete(prevKey);
+              local._outboxKeys.add(ev.dedupe_key);
+            }
           }
         local.seq.res = Math.max(local.seq.res, Number(out));
         return r;
@@ -1177,7 +1200,7 @@ function wrapWithOracle(local, pool) {
       if (rBefore && rStatusBefore) rBefore.status = rStatusBefore;
       truncateTo(local.stateEvents, stateEventsLen);
       truncateTo(local.audit, auditLen);
-      truncateTo(local.outbox, outboxLen);
+      truncateOutbox(local, outboxLen);
       throw fromDriver(e);
     }
   };
@@ -1351,6 +1374,13 @@ function wrapWithOracle(local, pool) {
 
   const origRecordTick = local.recordTick.bind(local);
   local.recordTick = async (sid, seq, at, kwh, kw, v, a) => {
+    // Same guard the local store applies. An Oracle NUMBER column cannot hold NaN, so
+    // an unvalidated frame dies inside the driver as an opaque NJS bind error while the
+    // local store answers TICK_REJECTED — one frame must get one answer on either
+    // engine (ADR-0005), so the register is validated before the package call.
+    if (!Number.isFinite(Number(kwh))) {
+      throw oraError(-20603, 'TICK_REJECTED', 'TICK_REJECTED: meter register is not a finite number');
+    }
     try {
       await withConn(async (conn) => {
         await conn.execute(
@@ -1360,9 +1390,12 @@ function wrapWithOracle(local, pool) {
             p_seq: seq,
             p_at: at ? new Date(at) : new Date(),
             p_kwh: kwh,
-            p_kw: kw ?? null,
-            p_v: v ?? null,
-            p_a: a ?? null,
+            // NaN auxiliary channels become NULL on the durable side too (?? does not
+            // catch NaN — an Oracle NUMBER cannot hold it, and the local store lands
+            // them as NULL; one frame, one answer on either engine).
+            p_kw: Number.isFinite(Number(kw)) ? Number(kw) : null,
+            p_v: Number.isFinite(Number(v)) ? Number(v) : null,
+            p_a: Number.isFinite(Number(a)) ? Number(a) : null,
           }
         );
         await conn.commit();
@@ -1371,6 +1404,37 @@ function wrapWithOracle(local, pool) {
       throw fromDriver(e);
     }
     return origRecordTick(sid, seq, at, kwh, kw, v, a);
+  };
+
+  // SEC-067: stopSession must reach the durable engine. Without this wrapper the
+  // Oracle row kept end_meter_kwh = NULL, so billing_pkg priced `NVL(end,start)` = 0
+  // kWh and every durable invoice charged only the session fee. The package computes
+  // MAX(meter_reading) when p_meter_stop is absent; OCPP's meterStop is authoritative
+  // when present. Local state is applied with the un-decorated transition (the durable
+  // engine already transitioned inside stop_session).
+  const origStopSession = local.stopSession.bind(local);
+  local.stopSession = async (sid, reason, endMeterKwh) => {
+    const meter = Number(endMeterKwh);
+    try {
+      await withConn(async (conn) => {
+        if (Number.isFinite(meter)) {
+          await conn.execute('BEGIN charge_session_pkg.stop_session(:p_session, :p_reason, :p_meter_stop); END;', {
+            p_session: Number(sid),
+            p_reason: reason || 'REMOTE_STOP',
+            p_meter_stop: meter,
+          });
+        } else {
+          await conn.execute('BEGIN charge_session_pkg.stop_session(:p_session, :p_reason); END;', {
+            p_session: Number(sid),
+            p_reason: reason || 'REMOTE_STOP',
+          });
+        }
+        await conn.commit();
+      });
+    } catch (e) {
+      throw fromDriver(e);
+    }
+    return origStopSession(sid, reason, endMeterKwh);
   };
 
   const origBill = local.billSession.bind(local);
@@ -1384,11 +1448,33 @@ function wrapWithOracle(local, pool) {
         await conn.commit();
         return r.outBinds.p_invoice;
       });
+      let localInv;
       try {
-        return await origBill(sid);
+        localInv = await origBill(sid);
       } catch {
-        return local.invoices.get(invId) || { invoice_id: invId, session_id: Number(sid), oracle: true };
+        localInv = local.invoices.get(invId);
       }
+      if (!localInv) return { invoice_id: Number(invId), session_id: Number(sid), oracle: true };
+      // SEC-068: Oracle owns invoice identity. The local mirror used to return its own
+      // sequence id, so a diverged id (identity cache / restart) made POST
+      // /invoices/:id/pay target a DIFFERENT durable invoice. Remap the mirror — and
+      // every line/audit/notification that points at it — to the Oracle id before
+      // returning, exactly as startSession/reservation already do.
+      const localId = Number(localInv.invoice_id);
+      const oracleId = Number(invId);
+      if (localId !== oracleId) {
+        local.invoices.delete(localId);
+        localInv.invoice_id = oracleId;
+        local.invoices.set(oracleId, localInv);
+        for (const line of local.lines) if (Number(line.invoice_id) === localId) line.invoice_id = oracleId;
+        for (const pay of local.payments.values()) if (Number(pay.invoice_id) === localId) pay.invoice_id = oracleId;
+        for (const a of local.audit)
+          if (a.entity_name === 'INVOICE' && String(a.entity_id) === String(localId)) a.entity_id = String(oracleId);
+        for (const n of local.notifs)
+          if (n.payload && Number(n.payload.invoice_id) === localId) n.payload.invoice_id = oracleId;
+        local.seq.inv = Math.max(Number(local.seq.inv) || 0, oracleId);
+      }
+      return localInv;
     } catch (e) {
       throw fromDriver(e);
     }

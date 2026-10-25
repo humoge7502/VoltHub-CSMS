@@ -28,6 +28,8 @@ module.exports = [
       '.zcode/**',
       '.workbuddy-ai/**',
       'video/**',
+      // Local screenshot/verification scratch frames (gitignored, not source).
+      '.tmp-frames/**',
     ],
   },
   js.configs.recommended,
@@ -49,6 +51,15 @@ module.exports = [
       eqeqeq: ['error', 'smart'],
       'no-throw-literal': 'error',
       'prefer-const': 'error',
+    },
+  },
+  {
+    // Service worker: its own global scope (self, caches, clients), not Node/browser.
+    files: ['apps/web/public/sw.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'script',
+      globals: globals.serviceworker,
     },
   },
   {

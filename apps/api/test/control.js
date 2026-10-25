@@ -519,6 +519,47 @@ async function main() {
     assert.equal(gw.unknownResultCount(), before + 1);
   });
 
+  await t('F-13: acks bind to the commanded charge point; malformed/rejected results are triageable', async () => {
+    const s9 = createStore();
+    seedStore(s9, 'demo');
+    const uid = 'ack-bind-1';
+    gw.registerPendingCall(uid, { action: 'RemoteStopTransaction', identity: 'CP-A', cpId: null });
+    const pendingBefore = gw.pendingCallCount();
+    const spoofed = gw.handleCsmsResult(s9, { kind: 'RESULT', uid, payload: { status: 'Accepted' } }, null, {
+      identity: 'CP-B',
+      cpId: 999,
+    });
+    assert.equal(spoofed.handled, false);
+    assert.equal(spoofed.mismatch, true);
+    assert.equal(gw.pendingCallCount(), pendingBefore, 'a foreign answer must not consume the pending call');
+    assert.ok(gw.foreignResultCount() >= 1, 'spoofed acks are counted');
+    // The legitimate charge point can still answer.
+    const real = gw.handleCsmsResult(s9, { kind: 'RESULT', uid, payload: { status: 'Accepted' } }, null, {
+      identity: 'CP-A',
+    });
+    assert.equal(real.handled, true);
+    assert.equal(real.ack, 'Accepted');
+
+    // A CALLRESULT without status is malformed — never assumed Accepted.
+    gw.registerPendingCall('ack-bind-2', { action: 'RemoteStopTransaction', identity: 'CP-A', cpId: null });
+    const malformed = gw.handleCsmsResult(s9, { kind: 'RESULT', uid: 'ack-bind-2', payload: {} }, null, {
+      identity: 'CP-A',
+    });
+    assert.equal(malformed.ack, 'MALFORMED');
+    assert.ok(s9.listDeadLetters().some((l) => l.reason_code === 'MISSING_STATUS'));
+
+    // A rejected command is a poison event with an owner.
+    gw.registerPendingCall('ack-bind-3', { action: 'RemoteStartTransaction', identity: 'CP-A', cpId: null });
+    const rejected = gw.handleCsmsResult(
+      s9,
+      { kind: 'RESULT', uid: 'ack-bind-3', payload: { status: 'Rejected' } },
+      null,
+      { identity: 'CP-A' }
+    );
+    assert.equal(rejected.ack, 'Rejected');
+    assert.ok(s9.listDeadLetters().some((l) => l.reason_code === 'REJECTED'));
+  });
+
   await t('P14 verify: enforcement ticks compare schedule to meter; nothing in force => no tick', async () => {
     const s8 = createStore();
     seedStore(s8, 'demo');

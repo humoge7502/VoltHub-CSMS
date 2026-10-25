@@ -89,6 +89,9 @@ export default function Invoices() {
           {invs.length ? (
             <div className="tscroll">
               <table className="t">
+                <caption className="micro" style={{ textAlign: 'left', paddingBottom: 8 }}>
+                  Invoices
+                </caption>
                 <thead>
                   <tr>
                     <th scope="col">Invoice</th>

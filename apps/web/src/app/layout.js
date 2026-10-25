@@ -3,6 +3,8 @@ import Link from 'next/link';
 import { IBM_Plex_Sans, Bricolage_Grotesque, IBM_Plex_Mono } from 'next/font/google';
 import { Nav } from './nav';
 import { SessionLinks } from './session-links';
+import { PwaRegister } from '../components/pwa-register';
+import { CommandPalette } from './cmdk';
 
 // Self-hosted fonts (next/font): removes the render-blocking fonts.googleapis.com
 // round-trip and lets CSP drop the Google font origins entirely.
@@ -32,6 +34,10 @@ export const metadata = {
   },
   description:
     'Two-engine EV charging management — Oracle 23ai money path, TimescaleDB telemetry, OCPP 1.6J gateway — race-tested in CI.',
+  applicationName: 'VoltHub CSMS',
+  formatDetection: { telephone: false, email: false, address: false },
+  appleWebApp: { capable: true, title: 'VoltHub', statusBarStyle: 'black-translucent' },
+  icons: { apple: '/icons/apple-touch-icon.png' },
   alternates: { canonical: '/' },
   robots: { index: true, follow: true },
   openGraph: {
@@ -46,6 +52,13 @@ export const metadata = {
     title: 'VoltHub CSMS',
     description: 'Oracle money-path + TimescaleDB telemetry + OCPP 1.6J — race-tested in CI',
   },
+};
+
+export const viewport = {
+  themeColor: '#0B0E11',
+  colorScheme: 'dark',
+  width: 'device-width',
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }) {
@@ -65,6 +78,8 @@ export default function RootLayout({ children }) {
           </div>
         </header>
         <main id="main">{children}</main>
+        <PwaRegister />
+        <CommandPalette />
         <footer className="sitefooter">
           <div className="sitefooter-in micro">
             <span>

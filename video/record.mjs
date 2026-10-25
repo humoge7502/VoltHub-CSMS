@@ -20,6 +20,14 @@ const SEG = path.join(OUT, 'seg');
 const WEB = (process.env.WEB_BASE || 'http://localhost:3120').replace(/\/$/, '');
 const API = (process.env.API_BASE || 'http://localhost:4000/api/v1').replace(/\/$/, '');
 
+// SEC-050: the admin password is provisioned, not published. The operator segment signs in
+// as staff, so take the credential from the same env var the seed uses; the local-dev
+// default keeps `npm run demo` working out of the box.
+const STAFF = {
+  email: process.env.STAFF_EMAIL || 'admin@volthub.in',
+  password: process.env.STAFF_PASSWORD || process.env.ADMIN_BOOTSTRAP_PASSWORD || 'Admin@123',
+};
+
 const argv = process.argv.slice(2);
 const onlyArg = argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : '';
 const ONLY = onlyArg.split(',').filter(Boolean);
@@ -80,7 +88,7 @@ const run = async () => {
   fs.mkdirSync(SEG, { recursive: true });
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const driver = await token('divya.shankar1@example.in', 'Driver@123');
-  const staff = await token('admin@volthub.in', 'Admin@123');
+  const staff = await token(STAFF.email, STAFF.password);
   const asDriver = authFetch(driver);
   const asStaff = authFetch(staff);
 

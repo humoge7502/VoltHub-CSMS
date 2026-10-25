@@ -15,3 +15,5 @@ docs/openapi.json
 coverage/
 __pycache__/
 .pytest_cache/
+# Trainer-written AI receipts: byte-reproducible from train.py (same rule as bench/results).
+apps/ai/reports/

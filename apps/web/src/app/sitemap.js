@@ -10,6 +10,7 @@ const PATHS = [
   '/dashboard',
   '/telemetry',
   '/analytics',
+  '/carbon',
   '/admin',
   '/login',
   '/signup',

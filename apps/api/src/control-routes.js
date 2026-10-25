@@ -8,6 +8,7 @@ const { makeLimiter, routerBarrier } = require('./middleware/security');
 const { oraStatus } = require('./errors');
 const control = require('./control/controller');
 const smartCharging = require('./ocpp/smart-charging');
+const ocppCommands = require('./ocpp/commands');
 
 module.exports = function controlRoutes(store, registry, log) {
   const r = express.Router();
@@ -112,7 +113,8 @@ module.exports = function controlRoutes(store, registry, log) {
       // BUG-059: planning (and in ENFORCED mode, actuation) is a station mutation.
       if (outOfScope(req, siteId)) return scopeDeny(res);
       try {
-        const { mode, decision, solved, pushes, certifications } = control.planSite(store, siteId, req.body || {});
+        const plan = control.planSite(store, siteId, req.body || {});
+        const { mode, decision, solved, pushes, certifications, carbon } = plan;
         const actuated = [];
         if (mode === 'ENFORCED') {
           for (const p of pushes) {
@@ -137,6 +139,7 @@ module.exports = function controlRoutes(store, registry, log) {
           certifications,
           compiled: pushes.map((p) => ({ cp_id: p.cpId, clamped: p.clamped, sha256: p.payloadSha256 })),
           actuated,
+          ...(carbon ? { carbon } : {}),
         });
       } catch (e) {
         res.status(oraStatus(e)).json({ error: { code: e.code, message: e.message, ora: e.num || null } });
@@ -263,6 +266,56 @@ module.exports = function controlRoutes(store, registry, log) {
         res.json({ letter: d });
       } catch (e) {
         res.status(oraStatus(e)).json({ error: { code: e.code, message: e.message, ora: e.num || null } });
+      }
+    })
+  );
+
+  // ---- OCPP 1.6 management command suite (ADR-0018) ----
+  // The catalog is readable by operators (so the console can render the right form),
+  // but every actuation is admin-only: Reset/ChangeConfiguration/DataTransfer are
+  // firmware-adjacent and must not be reachable from a compromised operator token.
+  r.get(
+    '/control/commands',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => res.json(ocppCommands.catalog()))
+  );
+  r.post(
+    '/control/cp/:cpId/commands/:action',
+    ...adminWrite,
+    safe(async (req, res) => {
+      const cp = store.cps.get(Number(req.params.cpId));
+      if (!cp) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'charge point' } });
+      let built;
+      try {
+        built = ocppCommands.buildCommand(req.params.action, req.body || {});
+      } catch (e) {
+        return res.status(e.status || 400).json({
+          error: { code: e.code || 'VALIDATION', message: e.message, field: e.field || null },
+        });
+      }
+      try {
+        const result = await ocppCommands.send(store, registry, log, { cpId: cp.cp_id, ...built });
+        store.auditLog(req.user.id, 'OCPP_COMMAND', cp.cp_id, built.action, null, {
+          uid: result.uid,
+          status: result.status,
+          accepted: result.accepted,
+        });
+        res.json({ command: result });
+      } catch (e) {
+        store.auditLog(req.user.id, 'OCPP_COMMAND', cp.cp_id, built.action, null, {
+          status: 'FAILED',
+          code: e.code || 'COMMAND_FAILED',
+        });
+        res.status(e.status || 502).json({
+          error: {
+            code: e.code || 'COMMAND_FAILED',
+            message: e.message,
+            cp_id: cp.cp_id,
+            action: built.action,
+            ocpp: e.ocpp || null,
+          },
+        });
       }
     })
   );

@@ -43,7 +43,9 @@ const loginWindows = new Map(); // B2G-010: per-IP login throttle buckets
 // B2G-010: login tier — key 'login:'+ip, limit 10/min, checked inside POST /auth/login.
 function checkLoginThrottle(req, res) {
   if (process.env.RATE_LIMIT_OFF === '1') return true;
-  const id = `login:${req.ip}`;
+  // SEC-066: normalize IPv6 to a /64 bucket. Keying the raw address let one client
+  // rotate through its /64 to reset the 10/min login tier at will.
+  const id = `login:${ipKeyGenerator(req.ip)}`;
   const now = Date.now();
   const arr = (loginWindows.get(id) || []).filter((t) => now - t < 60000);
   arr.push(now);
@@ -102,7 +104,7 @@ const customWindows = new Map(); // key -> [timestamps] shared by makeLimiter ti
 function makeLimiter({ key, limit }) {
   return function limited(req, res, next) {
     if (process.env.RATE_LIMIT_OFF === '1') return next();
-    const id = `${key}:${req.user?.id ?? req.ip}`;
+    const id = `${key}:${req.user?.id != null ? `u:${req.user.id}` : `ip:${ipKeyGenerator(req.ip)}`}`;
     const now = Date.now();
     const arr = (customWindows.get(id) || []).filter((t) => now - t < 60000);
     arr.push(now);
@@ -173,7 +175,8 @@ function throttle(req, res, next) {
   const sub = claims ? claims.sub : null;
   const limit = Number(process.env.RATE_LIMIT_USER || (role === 'DRIVER' || role === 'ANON' ? 60 : 120));
   // SEC-006: key by verified sub when available, else IP — distinct tokens for one user share a bucket.
-  const id = sub != null ? `u:${sub}` : `ip:${req.ip}`;
+  // SEC-066: the anonymous tier must use the same IPv6 /64 normalization as the barriers.
+  const id = sub != null ? `u:${sub}` : `ip:${ipKeyGenerator(req.ip)}`;
   const now = Date.now();
   const arr = (windows.get(id) || []).filter((t) => now - t < 60000);
   arr.push(now);

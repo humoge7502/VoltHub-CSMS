@@ -69,6 +69,20 @@ class Mutex {
 // `$scrypt$…` shape so hydrated durable rows (and old seeds) keep logging in.
 const ARGON2_POLICY = { memoryCost: 19456, timeCost: 2, parallelism: 1 };
 
+// Relay queue bounds. The outbox is the only structure in the store that grows on
+// every telemetry tick, so it needs an explicit retention window (acked rows are
+// already durable in Timescale) and a hard cap (a sink outage must not OOM the API).
+const OUTBOX_RETENTION_HOURS = Math.max(1, Number(process.env.OUTBOX_RETENTION_HOURS || 24));
+const OUTBOX_RETENTION_MS = OUTBOX_RETENTION_HOURS * 3600 * 1000;
+const OUTBOX_SOFT_CAP = Math.max(1000, Number(process.env.OUTBOX_SOFT_CAP || 20000));
+const OUTBOX_HARD_CAP = Math.max(OUTBOX_SOFT_CAP, Number(process.env.OUTBOX_HARD_CAP || 50000));
+// PF-01: retention pruning is housekeeping, not part of the emit contract. Running it
+// on every emit while acked rows are younger than the retention window made the queue
+// stay above the soft cap forever, so each tick paid a full sort/scan (measured 106
+// ticks/s at 20k rows). Debounce the soft-cap attempt; the hard cap still forces it.
+const OUTBOX_PRUNE_INTERVAL_MS = Math.max(1000, Number(process.env.OUTBOX_PRUNE_INTERVAL_MS || 60000));
+const DEAD_LETTER_CAP = Math.max(50, Number(process.env.DEAD_LETTER_CAP || 1000));
+
 function hashPassword(pw) {
   return argon2.hashSync(String(pw), ARGON2_POLICY);
 }
@@ -199,6 +213,16 @@ function createStore() {
     notifs: [],
     audit: [],
     outbox: [],
+    // Dedupe index for the outbox. Every emit used to scan the whole array with
+    // .some(); at simulator cadence a week-old process holds ~10^5 events and the
+    // scan made emission O(n) per event (O(n^2) over the process lifetime) while
+    // /health and /metrics re-filtered the same array on every poll.
+    _outboxKeys: new Set(),
+    _outboxStats: { emitted: 0, pruned: 0, quarantined: 0 },
+    _outboxNextPruneAt: 0,
+    // Set by GET /internal/outbox. Nothing polls before the first worker cycle, so 0
+    // means "no relay has touched this process", which /health must report as null.
+    _relayLastPollAt: 0,
     idem: new Map(),
     refresh: new Map(),
     // DA3 projection (TimescaleDB in prod; in-process rollup locally)
@@ -259,7 +283,8 @@ function createStore() {
     });
   };
   s.emitOutbox = (kind, dedupe, payload) => {
-    if (s.outbox.some((e) => e.dedupe_key === dedupe)) return; // idempotent
+    if (s._outboxKeys.has(dedupe)) return; // idempotent, O(1)
+    s._outboxKeys.add(dedupe);
     s.outbox.push({
       event_id: ++s.seq.outbox,
       kind,
@@ -268,6 +293,102 @@ function createStore() {
       created_at: new Date().toISOString(),
       processed_at: null,
     });
+    s._outboxStats.emitted++;
+    if (s.outbox.length > OUTBOX_SOFT_CAP) s.pruneOutboxIfDue();
+  };
+
+  // PF-01: housekeeping on a clock, not on every emit/ack. The hard cap is a safety
+  // valve: overflow is pruned immediately even if the interval has not elapsed.
+  s.pruneOutboxIfDue = (now = Date.now()) => {
+    if (s.outbox.length <= OUTBOX_HARD_CAP && now < s._outboxNextPruneAt) return [];
+    s._outboxNextPruneAt = now + OUTBOX_PRUNE_INTERVAL_MS;
+    return s.pruneOutbox(now);
+  };
+
+  // Retention for the relay queue. ACKED events have already been written to
+  // Timescale, so keeping them forever only costs memory and boot hydration; they
+  // age out after OUTBOX_RETENTION_HOURS. Unacked events are NEVER dropped — the
+  // relay's at-least-once guarantee depends on them. Returns the ids that left so
+  // the caller can delete the same rows durably (Oracle mode).
+  s.pruneOutbox = (now = Date.now()) => {
+    const horizon = now - OUTBOX_RETENTION_MS;
+    const removed = [];
+    // A sink down longer than the retention window must still not grow the queue
+    // without bound, so past the hard cap the OLDEST ACKED rows are shed too.
+    // Unacked events are never eligible: the relay's at-least-once needs them.
+    const acked = s.outbox.filter((e) => e.processed_at).sort((a, b) => a.event_id - b.event_id);
+    const overflow = Math.max(0, s.outbox.length - OUTBOX_HARD_CAP);
+    const shed = new Set(acked.slice(0, overflow).map((e) => e.event_id));
+    const drop = new Set();
+    for (const e of s.outbox) {
+      if (!e.processed_at) continue;
+      if (new Date(e.processed_at).getTime() < horizon || shed.has(e.event_id)) drop.add(e.event_id);
+    }
+    let cursor = 0;
+    for (const e of s.outbox) {
+      if (drop.has(e.event_id)) {
+        s._outboxKeys.delete(e.dedupe_key);
+        removed.push({ event_id: e.event_id, dedupe_key: e.dedupe_key });
+      } else {
+        s.outbox[cursor++] = e;
+      }
+    }
+    s.outbox.length = cursor; // compact in place: readers hold a reference to this array
+    s._outboxStats.pruned += removed.length;
+    return removed;
+  };
+
+  // Real relay lag, measured — not a hardcoded "ok" printed by the worker.
+  s.outboxLag = () => {
+    let pending = 0;
+    let oldest = Infinity;
+    for (const e of s.outbox) {
+      if (e.processed_at) continue;
+      pending++;
+      const t = new Date(e.created_at || 0).getTime();
+      if (Number.isFinite(t) && t < oldest) oldest = t;
+    }
+    return {
+      pending,
+      depth: s.outbox.length,
+      oldest_age_s: pending ? Math.max(0, Math.round((Date.now() - oldest) / 1000)) : 0,
+      dead_letters_open: [...s.deadLetters.values()].filter((d) => d.status === 'OPEN').length,
+      emitted: s._outboxStats.emitted,
+      pruned: s._outboxStats.pruned,
+      quarantined: s._outboxStats.quarantined,
+      retention_hours: OUTBOX_RETENTION_HOURS,
+    };
+  };
+
+  // Poison isolation: the relay quarantines an event it cannot write instead of
+  // rolling the batch back forever. Without this, ONE bad row at the head of the
+  // queue blocks every later event (head-of-line blocking) and the whole telemetry
+  // pipeline silently stops — the failure looks like an outage, not a bug.
+  s.quarantineOutbox = ({ ids = [], keys = [], reason = 'RELAY_POISON' } = {}) => {
+    const want = new Set(ids.map(Number).filter(Number.isFinite));
+    const wantKeys = new Set(keys.map(String).filter(Boolean));
+    const letters = [];
+    const marked = [];
+    for (const e of s.outbox) {
+      if (e.processed_at) continue;
+      if (!want.has(e.event_id) && !wantKeys.has(e.dedupe_key)) continue;
+      const now = new Date().toISOString();
+      e.processed_at = now;
+      e.quarantined_at = now;
+      e.quarantine_reason = String(reason).slice(0, 120);
+      letters.push(
+        s.deadLetter({
+          eventRef: e.dedupe_key,
+          kind: e.kind,
+          reasonCode: e.quarantine_reason,
+          detail: `relay could not write this event; acked to keep the queue draining`,
+          payload: e.payload,
+        })
+      );
+      marked.push({ event_id: e.event_id, dedupe_key: e.dedupe_key });
+    }
+    s._outboxStats.quarantined += letters.length;
+    return { quarantined: letters.length, letters, marked };
   };
   s.notify = (uid, kind, title, payload) => {
     s.notifs.push({
@@ -643,6 +764,44 @@ function createStore() {
     });
   };
 
+  // F-05: a connector is RESERVED iff it holds at least one BOOKED window. Two
+  // non-overlapping windows may sit on the same connector, so cancelling (or expiring)
+  // one must not release the hold the other still owns. Derive the target state from
+  // the reservation table instead of assuming "the cancelled window was the last one".
+  // Callers hold the `conn:` mutex so this cannot race create_reservation/start_session.
+  const syncConnectorHold = (key, source, reservationId) => {
+    const c = s.connectors.get(key);
+    if (!c || !['AVAILABLE', 'RESERVED'].includes(c.status)) return false;
+    let booked = false;
+    for (const r of s.reservations.values()) {
+      if (r.connector_ref === key && r.status === 'BOOKED') {
+        booked = true;
+        break;
+      }
+    }
+    const to = booked ? 'RESERVED' : 'AVAILABLE';
+    if (c.status === to) return false;
+    const from = c.status;
+    c.status = to;
+    c.last_state_change_at = new Date().toISOString();
+    s.emitOutbox('CONNECTOR_STATE', `connstate:${key}:${reservationId ?? 'none'}:${source}`, {
+      connector_ref: key,
+      from,
+      to,
+      cause: 'RESERVATION',
+      ...(reservationId ? { reservation_id: Number(reservationId) } : {}),
+    });
+    s.stateEvents.push({
+      ts: new Date().toISOString(),
+      connector_ref: key,
+      from_state: from,
+      to_state: to,
+      cause: 'RESERVATION',
+      session_id: null,
+    });
+    return true;
+  };
+
   // ---- RESERVATION_PKG.create_reservation (BR-04/05/12, ORA -2050x) ----
   s.createReservation = async (uid, vehicleId, cpId, connNo, startAt, endAt) => {
     const key = ref(cpId, connNo);
@@ -737,27 +896,25 @@ function createStore() {
         throw e;
       }
       r.status = 'CANCELLED';
-      const c = s.connectors.get(r.connector_ref);
-      if (c && c.status === 'RESERVED') {
-        c.status = 'AVAILABLE';
-        c.last_state_change_at = new Date().toISOString();
-      }
+      // F-05: release only when this was the last BOOKED window on the connector.
+      await s.mutex.run('conn:' + r.connector_ref, async () => syncConnectorHold(r.connector_ref, 'release', rid));
       s.auditLog(actor, 'RESERVATION', rid, 'CANCEL', 'BOOKED', 'CANCELLED');
       return r;
     });
   };
   s.expireStale = async () => {
-    // B2G-013 note: single-threaded event loop makes this benign today; if ever moved
-    // to worker threads, wrap per-reservation 'res:' mutex (see cancelReservation).
     let n = 0;
     const cutoff = Date.now() - 15 * 60000;
-    for (const r of s.reservations.values()) {
-      if (r.status === 'BOOKED' && new Date(r.start_at).getTime() < cutoff) {
+    for (const r of [...s.reservations.values()]) {
+      if (r.status !== 'BOOKED' || !(new Date(r.start_at).getTime() < cutoff)) continue;
+      // Same lock create_reservation takes, so a booking racing the sweep sees either
+      // BOOKED or EXPIRED, never a released hold it just re-took (F-05).
+      await s.mutex.run('conn:' + r.connector_ref, async () => {
+        if (r.status !== 'BOOKED') return; // re-check under the connector lock
         r.status = 'EXPIRED';
+        syncConnectorHold(r.connector_ref, 'release', r.reservation_id);
         n++;
-        const c = s.connectors.get(r.connector_ref);
-        if (c && c.status === 'RESERVED') c.status = 'AVAILABLE';
-      }
+      });
     }
     return n;
   };
@@ -855,7 +1012,12 @@ function createStore() {
       return sess;
     });
   };
-  s.transition = async (sid, to, reason) => {
+  // `_transitionLocal` is the un-decorated implementation. The Oracle adapter replaces
+  // `transition` with a write-through wrapper, while stopSession must apply the state
+  // change locally only (the durable engine already transitioned inside stop_session).
+  // Without this split, stopSession would issue a second Oracle transition and fail
+  // with ILLEGAL_TRANSITION *after* the stop had already committed.
+  const transitionLocal = async (sid, to, reason) => {
     return s.mutex.run('sess:' + sid, async () => {
       const sess = s.sessions.get(Number(sid));
       if (!sess) throw err('NOT_FOUND', 'session not found', 404);
@@ -876,11 +1038,20 @@ function createStore() {
         if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(to)) c.status = 'AVAILABLE';
         c.last_state_change_at = new Date().toISOString();
       }
+      if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(to)) {
+        // F-05 (Oracle parity: V012): a BOOKED window still waiting on this connector
+        // keeps the RESERVED hold after the converted session ends.
+        await s.mutex.run('conn:' + sess.connector_ref, async () =>
+          syncConnectorHold(sess.connector_ref, 'release', null)
+        );
+      }
       s.emitOutbox('SESSION_EVENT', `sess:${sid}:${to}:${Date.now()}`, { session_id: Number(sid), from, to });
       s.auditLog(null, 'CHARGING_SESSION', sid, 'TRANSITION', from, to);
       return sess;
     });
   };
+  s.transition = transitionLocal;
+  s._transitionLocal = transitionLocal;
   s.recordTick = async (sid, seq, at, kwh, kw, v, a) => {
     return s.mutex.run('sess:' + sid, async () => {
       const sess = s.sessions.get(Number(sid));
@@ -892,6 +1063,26 @@ function createStore() {
         e.status = 409;
         throw e;
       }
+      // Same rule the meterStart path already applies (store.js:971) and StopTransaction
+      // applies in the gateway: MeterValue.value is a STRING from the charge point, so
+      // Number('abc') is NaN — and Timescale's float8 stores NaN happily, where NaN = NaN
+      // is TRUE, so the usual "x !== x" detector never sees it. One NaN register poisons
+      // every downstream energy SUM, while Oracle mode rejects the same frame as a driver
+      // error. The two engines must treat one frame the same way: reject at the port.
+      const register = Number(kwh);
+      if (!Number.isFinite(register)) {
+        const e = new Error('TICK_REJECTED: meter register is not a finite number');
+        e.num = ORA.TICK_REJECTED;
+        e.code = 'TICK_REJECTED';
+        e.status = 409;
+        throw e;
+      }
+      // Auxiliary channels are optional samples: a broken SoC/voltage field must not
+      // cost the session its energy register, so non-finite ones land as NULL, not NaN.
+      const chan = (x) => (x == null || !Number.isFinite(Number(x)) ? null : Number(x));
+      const power = chan(kw);
+      const volt = chan(v);
+      const amps = chan(a);
       let seen = s._seqSeen.get(Number(sid));
       if (!seen) {
         seen = new Set(s.readings.filter((r) => r.session_id === Number(sid)).map((r) => r.seq_no));
@@ -903,7 +1094,7 @@ function createStore() {
         last = s.readings.filter((r) => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), -1);
         s._maxMeter.set(Number(sid), last);
       }
-      if (kwh < last - 0.001) {
+      if (register < last - 0.001) {
         const e = new Error('METER_REGRESSION');
         e.num = ORA.METER_REGRESSION;
         e.code = 'METER_REGRESSION';
@@ -915,45 +1106,61 @@ function createStore() {
         session_id: Number(sid),
         seq_no: seq,
         taken_at: ts,
-        meter_kwh: kwh,
-        power_kw: kw ?? null,
-        voltage_v: v ?? null,
-        current_a: a ?? null,
+        meter_kwh: register,
+        power_kw: power,
+        voltage_v: volt,
+        current_a: amps,
         source: 'OCPP',
       });
       seen.add(seq);
-      if (kwh > last) s._maxMeter.set(Number(sid), kwh);
+      if (register > last) s._maxMeter.set(Number(sid), register);
       if (sess.state === 'PREPARING' && seq >= 1) sess.state = 'CHARGING';
       s.emitOutbox('METER_TICK', `tick:${sid}:${seq}`, {
         session_id: Number(sid),
         seq,
         connector_ref: sess.connector_ref,
-        meter_kwh: kwh,
-        power_kw: kw ?? null,
+        meter_kwh: register,
+        power_kw: power,
         ts,
       });
       s.ticks.push({
         ts,
         session_id: Number(sid),
         connector_ref: sess.connector_ref,
-        meter_kwh: kwh,
-        power_kw: kw ?? null,
-        voltage_v: v ?? null,
-        current_a: a ?? null,
+        meter_kwh: register,
+        power_kw: power,
+        voltage_v: volt,
+        current_a: amps,
       });
       return { ok: true };
     });
   };
-  s.stopSession = async (sid, reason) => {
+  // endMeterKwh is the OCPP StopTransaction.meterStop (kWh), authoritative when
+  // supplied. Without it we fall back to the highest recorded reading. Both engines
+  // persist the same number: this is what makes Oracle-mode billing price delivered
+  // energy instead of end_meter_kwh=NULL -> 0 kWh (SEC-067).
+  s.stopSession = async (sid, reason, endMeterKwh) => {
     const sess = s.sessions.get(Number(sid));
     if (!sess) throw err('NOT_FOUND', 'session not found', 404);
     const peak = s._maxMeter.has(Number(sid))
       ? Math.max(s._maxMeter.get(Number(sid)), 0)
       : s.readings.filter((r) => r.session_id === Number(sid)).reduce((m, r) => Math.max(m, r.meter_kwh), 0);
-    sess.end_meter_kwh = peak;
+    const explicit = Number(endMeterKwh);
+    const hasExplicit = Number.isFinite(explicit) && explicit >= 0;
+    const end = hasExplicit ? explicit : peak;
+    const start = Number(sess.start_meter_kwh || 0);
+    if (end + 0.001 < start) {
+      const e = new Error('METER_REGRESSION: stop meter is below start meter');
+      e.num = ORA.METER_REGRESSION;
+      e.code = 'METER_REGRESSION';
+      e.status = 409;
+      throw e;
+    }
+    sess.end_meter_kwh = end;
+    if (!s._maxMeter.has(Number(sid)) || end > s._maxMeter.get(Number(sid))) s._maxMeter.set(Number(sid), end);
     // CHARGING->COMPLETED directly, or via SUSPENDED
     if (sess.state === 'SUSPENDED' || sess.state === 'CHARGING' || sess.state === 'PREPARING') {
-      return s.transition(sid, sess.state === 'PREPARING' ? 'CANCELLED' : 'COMPLETED', reason || 'REMOTE_STOP');
+      return transitionLocal(sid, sess.state === 'PREPARING' ? 'CANCELLED' : 'COMPLETED', reason || 'REMOTE_STOP');
     }
     return sess;
   };
@@ -1388,6 +1595,48 @@ function createStore() {
     }
     return cap;
   };
+  // Hourly kWh per station on a contiguous UTC hour grid — the exact shape the AI
+  // forecast contract trains on (session COUNTS are not demand; the model is
+  // trained on energy, and the contract rejects a history with holes).
+  // A session's energy is spread over the hours it overlaps, weighted by the
+  // overlap, so a 90-minute charge gives half its kWh to each hour it touched.
+  s.hourlyStationKwh = (stationId, hours = 168) => {
+    const HOUR_MS = 3600000;
+    const sid = Number(stationId);
+    const n = Math.max(1, Math.min(Number(hours) || 168, 24 * 31));
+    const now = new Date();
+    const lastHour = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours());
+    const winStart = lastHour - (n - 1) * HOUR_MS;
+    const winEnd = lastHour + HOUR_MS;
+    const cpIds = new Set([...s.cps.values()].filter((c) => c.station_id === sid).map((c) => Number(c.cp_id)));
+    const kwh = new Array(n).fill(0);
+    for (const sess of s.sessions.values()) {
+      if (!cpIds.has(Number(sess.cp_id))) continue;
+      const from = Date.parse(sess.started_at);
+      if (!Number.isFinite(from)) continue;
+      const endedAt = Date.parse(sess.ended_at ?? '');
+      // An active session is still delivering: count it up to the current hour.
+      const a = Math.max(from, winStart);
+      const b = Math.min(Number.isFinite(endedAt) ? endedAt : winEnd, winEnd);
+      if (b <= a) continue;
+      let e = Number(sess.energy_kwh);
+      if (!(e > 0)) {
+        const startM = Number(sess.start_meter_kwh) || 0;
+        const endM = Number(sess.end_meter_kwh);
+        e = Number.isFinite(endM) ? Math.max(0, endM - startM) : 0;
+      }
+      if (!(e > 0)) continue;
+      const span = b - a;
+      for (let i = 0; i < n; i++) {
+        const hs = winStart + i * HOUR_MS;
+        const ov = Math.min(b, hs + HOUR_MS) - Math.max(a, hs);
+        if (ov > 0) kwh[i] += (e * ov) / span;
+      }
+    }
+    const timestamps = [];
+    for (let i = 0; i < n; i++) timestamps.push(new Date(winStart + i * HOUR_MS).toISOString());
+    return { timestamps, kwh: kwh.map((v) => Math.round(v * 1000) / 1000) };
+  };
   s.getControlMode = (siteId) => s.controlMode.get(Number(siteId)) || 'OFF';
   s.setControlMode = (siteId, mode, actor) => {
     const sid = Number(siteId);
@@ -1643,6 +1892,14 @@ function createStore() {
       status: 'OPEN',
     };
     s.deadLetters.set(letter_id, row);
+    // The gateway writes a letter for every rejected push, so an off-spec charge
+    // point (or a hostile one) would otherwise grow this Map without bound.
+    if (s.deadLetters.size > DEAD_LETTER_CAP) {
+      const byAge = [...s.deadLetters.values()].sort(
+        (a, b) => (a.status === 'OPEN') - (b.status === 'OPEN') || a.letter_id - b.letter_id
+      );
+      for (const d of byAge.slice(0, s.deadLetters.size - DEAD_LETTER_CAP)) s.deadLetters.delete(d.letter_id);
+    }
     return row;
   };
   s.listDeadLetters = (status = 'OPEN') =>

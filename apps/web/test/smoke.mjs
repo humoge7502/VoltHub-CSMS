@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global process, console, document, getComputedStyle, CSS */
+/* global process, console, document, getComputedStyle, CSS, fetch */
 // Web smoke suite — the console's first automated test (ISS-02).
 // Runs against any origin, so the same file gates local dev, CI, and the public demo:
 //
@@ -125,6 +125,30 @@ for (const width of [375, 1280]) {
   const { ctx, page } = await visit('/');
   const h1s = await page.locator('h1').count();
   check('a11y: exactly one h1 on the landing page', h1s === 1, `${h1s} h1 elements`);
+  await ctx.close();
+}
+
+// 6. PWA surface: installable metadata and an honest offline page.
+{
+  const { ctx, page } = await visit('/');
+  const manifestHref = await page.getAttribute('link[rel="manifest"]', 'href').catch(() => null);
+  check('pwa: manifest is linked', !!manifestHref, manifestHref || 'no <link rel=manifest>');
+  const manifest = manifestHref
+    ? await page.evaluate(async (href) => (await fetch(href)).json(), manifestHref).catch(() => null)
+    : null;
+  const sizes = new Set((manifest?.icons || []).map((i) => i.sizes));
+  check('pwa: 192 and 512 icons declared', sizes.has('192x192') && sizes.has('512x512'), [...sizes].join(','));
+  check('pwa: standalone display + start_url', manifest?.display === 'standalone' && manifest?.start_url === '/', '');
+  await ctx.close();
+}
+{
+  const { ctx, page, status } = await visit('/offline');
+  const h1 = await page
+    .locator('h1')
+    .first()
+    .innerText()
+    .catch(() => '');
+  check('pwa: offline page is reachable and honest', status === 200 && /offline/i.test(h1), `status ${status}`);
   await ctx.close();
 }
 

@@ -225,9 +225,11 @@ async function main() {
   // Move the session into CHARGING so the estimator sees a live charging vehicle
   // (`body.to` is the transition target; a legal transition returns 200, an illegal one
   // 409 — both leave the session in an active state, which is all the plan needs).
+  // SEC-064: state transitions are staff-only now (drivers use remote-stop), so the
+  // transition goes out under the admin token, not the driver's.
   const ticks = await api(`/sessions/${sessionId}/state`, {
     method: 'PATCH',
-    headers: DH,
+    headers: AH,
     body: JSON.stringify({ to: 'CHARGING' }),
   });
   ok('session is active for planning', [200, 409].includes(ticks.status), `status ${ticks.status}`);
