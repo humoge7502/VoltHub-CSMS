@@ -18,12 +18,12 @@
 
 **Release posture**
 
-| Context                                                                 | Verdict                                                                                                                                       |
-| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Demo, 100 chargers, fresh process, <10k sessions                        | Works. The measured test suite is green and the money path is race-tested.                                                                    |
-| Same 100-charger fleet after ~21 minutes with an active control profile | **Fragile.** The outbox crosses 50k acked rows and every emit pays a 22 ms prune; gateway frames still scan every reading.                    |
+| Context                                                                 | Verdict                                                                                                                                        |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Demo, 100 chargers, fresh process, <10k sessions                        | Works. The measured test suite is green and the money path is race-tested.                                                                     |
+| Same 100-charger fleet after ~21 minutes with an active control profile | **Fragile.** The outbox crosses 50k acked rows and every emit pays a 22 ms prune; gateway frames still scan every reading.                     |
 | ~1k stations / 1M rows                                                  | **Does not meet NFR-03** (p95 <300 ms): discovery 1.03 s, sessions 1.74 s, station analytics 6.76 s at 20k, carbon ~2.8 s (estimated) at 300k. |
-| Sink outage / Timescale down                                            | **Unbounded memory.** Unacked events are never dropped; at 40 events/s the queue grows ~3.46M events/day (estimated 1.4 GB/day).              |
+| Sink outage / Timescale down                                            | **Unbounded memory.** Unacked events are never dropped; at 40 events/s the queue grows ~3.46M events/day (estimated 1.4 GB/day).               |
 
 **What is genuinely working**
 

@@ -42,7 +42,7 @@ The Medium and Low findings are the usual second-order effects: time-of-use wind
 | 6   | AUD-06 | Cross-tenant session list/detail reads                                  | High     | 6.5  |
 | 7   | AUD-07 | Malformed OCPP upgrade URI crashes the API process                      | High     | 7.5  |
 | 8   | AUD-08 | REST start and OCPP `StartTransaction` disagree; connector stuck        | High     | —    |
-| 9   | AUD-09 | New sessions can select any historical or foreign tariff plan            | High     | 6.5  |
+| 9   | AUD-09 | New sessions can select any historical or foreign tariff plan           | High     | 6.5  |
 | 10  | AUD-10 | Provisioned users get `Temp@1234` with no forced reset                  | High     | 8.1  |
 
 ---
@@ -93,7 +93,7 @@ The Medium and Low findings are the usual second-order effects: time-of-use wind
 | Dimension                      | Grade  | Rationale                                                                                                                                                                                                                                                  |
 | ------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Authentication                 | **C**  | Strong primitives (Argon2id, dummy-hash timing equalization, HS256 pinning, refresh rotation/family revocation) undermined by a universal default password (AUD-10), a client that never refreshes (AUD-12), and token storage in `localStorage` (AUD-20). |
-| Authorization                  | **D**  | Tenant scoping is inconsistent and fails open (AUD-06, AUD-14); OCPP identity is derived from a guessable tag (AUD-04); any user can choose a historical tariff (AUD-09); invoice payer is not checked (AUD-13).                                                    |
+| Authorization                  | **D**  | Tenant scoping is inconsistent and fails open (AUD-06, AUD-14); OCPP identity is derived from a guessable tag (AUD-04); any user can choose a historical tariff (AUD-09); invoice payer is not checked (AUD-13).                                           |
 | OCPP security                  | **F**  | Charger secrets are public (AUD-01); tag authorization is spoofable (AUD-04); one malformed URI kills the process (AUD-07); REST and OCPP state machines disagree (AUD-08); measurands are silently dropped (AUD-21).                                      |
 | Money-path correctness         | **D**  | Wallet minting (AUD-03), arbitrary repricing (AUD-09), flat ToU with a timezone error (AUD-11), payer mismatch (AUD-13), and `meterStop` below peak (AUD-16). Locking and uniqueness are good, but the invariants they protect are not the right ones.     |
 | Deployment & secrets           | **F**  | Dev credentials and published data ports in the production path (AUD-02); silent local fallback (AUD-05); public metrics/health (AUD-23).                                                                                                                  |
@@ -810,19 +810,19 @@ Because IDs are sequential and exposed in session payloads (AUD-06), enumeration
 
 **Goal:** remove the exploitable perimeter and the unbacked money path; make the system safe to run behind a trusted network.
 
-| Order | Action | Findings | Effort | Exit criterion |
-|---|---|---|---|---|
-| 1 | Remove secrets from the public station DTO; rotate every exposed OCPP secret | AUD-01 | 2 h + rotation | `auth_secret` absent from all public responses; chargers reconnected with new secrets |
-| 2 | Harden the production Compose overlay: required DB/Grafana secrets, no published DB ports, no demo seed, strong Grafana admin | AUD-02 | 8 h | `docker compose config` has no known default; external port scan shows only 443 |
-| 3 | Disable the signed wallet rail in production until a real rail exists; add a boot guard | AUD-03 | 4 h (disable) | Production boot fails unless `WALLET_RAIL` is explicitly configured; no unbacked credit |
-| 4 | Replace `TAG-<uid>` with opaque, revocable id tags | AUD-04 | 8 h | `Authorize`/`StartTransaction` reject `TAG-<uid>`; migration complete |
-| 5 | Fail closed when Oracle is unavailable; 503 readiness in fallback | AUD-05 | 6 h | API exits or returns 503 on Oracle loss; no local writes in production |
-| 6 | Catch malformed OCPP URIs; add upgrade fuzzing | AUD-07 | 3 h | `%E0%A4%A` returns 400/close, process stays up |
-| 7 | Remove the universal `Temp@1234`; add forced reset/invite | AUD-10 | 4 h | No account can log in with a shared default |
-| 8 | Scope operator session list/detail; fix fail-open station checks | AUD-06, AUD-14 | 16 h | Two-operator test proves tenant isolation; missing CP denies |
-| 9 | Protect `/metrics` and detailed health; keep only liveness public | AUD-23 | 2 h | Anonymous `/metrics` and `/health/deep` return 401/404 |
-| 10 | Fix the outbox `LIKE` ack and `meterStop` below peak | AUD-15, AUD-16 | 6 h | Same-state transitions relay correctly; stop below peak is rejected |
-| 11 | Begin session state-machine unification | AUD-08 (design) | 8 h | Design reviewed; `PENDING_START` schema agreed |
+| Order | Action                                                                                                                        | Findings        | Effort         | Exit criterion                                                                          |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------- | --------------- | -------------- | --------------------------------------------------------------------------------------- |
+| 1     | Remove secrets from the public station DTO; rotate every exposed OCPP secret                                                  | AUD-01          | 2 h + rotation | `auth_secret` absent from all public responses; chargers reconnected with new secrets   |
+| 2     | Harden the production Compose overlay: required DB/Grafana secrets, no published DB ports, no demo seed, strong Grafana admin | AUD-02          | 8 h            | `docker compose config` has no known default; external port scan shows only 443         |
+| 3     | Disable the signed wallet rail in production until a real rail exists; add a boot guard                                       | AUD-03          | 4 h (disable)  | Production boot fails unless `WALLET_RAIL` is explicitly configured; no unbacked credit |
+| 4     | Replace `TAG-<uid>` with opaque, revocable id tags                                                                            | AUD-04          | 8 h            | `Authorize`/`StartTransaction` reject `TAG-<uid>`; migration complete                   |
+| 5     | Fail closed when Oracle is unavailable; 503 readiness in fallback                                                             | AUD-05          | 6 h            | API exits or returns 503 on Oracle loss; no local writes in production                  |
+| 6     | Catch malformed OCPP URIs; add upgrade fuzzing                                                                                | AUD-07          | 3 h            | `%E0%A4%A` returns 400/close, process stays up                                          |
+| 7     | Remove the universal `Temp@1234`; add forced reset/invite                                                                     | AUD-10          | 4 h            | No account can log in with a shared default                                             |
+| 8     | Scope operator session list/detail; fix fail-open station checks                                                              | AUD-06, AUD-14  | 16 h           | Two-operator test proves tenant isolation; missing CP denies                            |
+| 9     | Protect `/metrics` and detailed health; keep only liveness public                                                             | AUD-23          | 2 h            | Anonymous `/metrics` and `/health/deep` return 401/404                                  |
+| 10    | Fix the outbox `LIKE` ack and `meterStop` below peak                                                                          | AUD-15, AUD-16  | 6 h            | Same-state transitions relay correctly; stop below peak is rejected                     |
+| 11    | Begin session state-machine unification                                                                                       | AUD-08 (design) | 8 h            | Design reviewed; `PENDING_START` schema agreed                                          |
 
 **Exit gate:** all Critical and High findings closed or explicitly risk-accepted with a dated owner; external port scan clean; incident response runbook updated; no known default credentials in the deployment.
 
@@ -830,16 +830,16 @@ Because IDs are sequential and exposed in session payloads (AUD-06), enumeration
 
 **Goal:** fix billing correctness, refresh durability, invoice ownership, and the remaining request-path integrity issues.
 
-| Order | Action | Findings | Effort | Exit criterion |
-|---|---|---|---|---|
-| 1 | Implement `PENDING_START` + OCPP adoption; remove the REST-side occupancy race | AUD-08 | 16 h | REST start → charger `StartTransaction` → one session, no stuck connector |
-| 2 | Server-side active-plan resolution and price snapshot | AUD-09 | 6 h | Historical/foreign plans rejected; invoice shows the snapshot |
-| 3 | Per-interval ToU pricing in `Asia/Kolkata` with decimal money | AUD-11 | 12 h | Boundary and cross-band tests pass; Oracle and JS agree |
-| 4 | Persist refresh tokens; implement client refresh with `credentials: 'include'` | AUD-12 | 8 h | Session survives restart and a second replica; 401 triggers one refresh |
-| 5 | Bind invoice payment to the session owner in both engines | AUD-13 | 4 h | Driver/operator/admin tests debit the correct wallet |
-| 6 | Bound telemetry memory and rotate/index the JSONL mirror | AUD-17 | 16 h | 30-day soak has flat RSS and bounded disk; boot time stable |
-| 7 | Add audit hash chain design and DBA role plan | AUD-19 (design) | 8 h | Schema and role migration reviewed; no app `UPDATE`/`DELETE` on audit |
-| 8 | Move access token out of `localStorage`; add web CSP | AUD-20 | 6 h | Token not readable by `document`; CSP enforced in report-only then enforce |
+| Order | Action                                                                         | Findings        | Effort | Exit criterion                                                             |
+| ----- | ------------------------------------------------------------------------------ | --------------- | ------ | -------------------------------------------------------------------------- |
+| 1     | Implement `PENDING_START` + OCPP adoption; remove the REST-side occupancy race | AUD-08          | 16 h   | REST start → charger `StartTransaction` → one session, no stuck connector  |
+| 2     | Server-side active-plan resolution and price snapshot                          | AUD-09          | 6 h    | Historical/foreign plans rejected; invoice shows the snapshot              |
+| 3     | Per-interval ToU pricing in `Asia/Kolkata` with decimal money                  | AUD-11          | 12 h   | Boundary and cross-band tests pass; Oracle and JS agree                    |
+| 4     | Persist refresh tokens; implement client refresh with `credentials: 'include'` | AUD-12          | 8 h    | Session survives restart and a second replica; 401 triggers one refresh    |
+| 5     | Bind invoice payment to the session owner in both engines                      | AUD-13          | 4 h    | Driver/operator/admin tests debit the correct wallet                       |
+| 6     | Bound telemetry memory and rotate/index the JSONL mirror                       | AUD-17          | 16 h   | 30-day soak has flat RSS and bounded disk; boot time stable                |
+| 7     | Add audit hash chain design and DBA role plan                                  | AUD-19 (design) | 8 h    | Schema and role migration reviewed; no app `UPDATE`/`DELETE` on audit      |
+| 8     | Move access token out of `localStorage`; add web CSP                           | AUD-20          | 6 h    | Token not readable by `document`; CSP enforced in report-only then enforce |
 
 **Exit gate:** money-path regression suite (double booking, double credit, ToU boundaries, invoice ownership, meter regression) green; 72-hour soak with no memory growth; refresh works across restart and replica.
 
@@ -847,14 +847,14 @@ Because IDs are sequential and exposed in session payloads (AUD-06), enumeration
 
 **Goal:** remove the single-process assumption, make audit tamper-evident, and close the privacy lifecycle.
 
-| Order | Action | Findings | Effort | Exit criterion |
-|---|---|---|---|---|
-| 1 | Move occupancy/wallet invariants to Oracle row locks/unique constraints; add distributed OCPP coordination | AUD-18 | 40 h | Two-replica chaos test: no double booking, no double credit, one charger socket |
-| 2 | Implement audit hash chain + external anchor + least-privilege role | AUD-19 | 24 h | Tamper test detects an update/delete; app role cannot mutate audit |
-| 3 | Retention matrix, purge/anonymize job, subject export/erasure | AUD-22 | 24 h | Retention job runs in staging; erasure respects legal hold |
-| 4 | OCPP default measurand and unit handling | AUD-21 | 2 h | Default-omitted frame records energy; conformance test passes |
-| 5 | Canonical-origin wallet challenge | AUD-24 | 2 h | `Origin: evil.example` is rejected or ignored |
-| 6 | Residual risk review and penetration test | All | 16 h | External PT finds no Critical/High in the fixed surface |
+| Order | Action                                                                                                     | Findings | Effort | Exit criterion                                                                  |
+| ----- | ---------------------------------------------------------------------------------------------------------- | -------- | ------ | ------------------------------------------------------------------------------- |
+| 1     | Move occupancy/wallet invariants to Oracle row locks/unique constraints; add distributed OCPP coordination | AUD-18   | 40 h   | Two-replica chaos test: no double booking, no double credit, one charger socket |
+| 2     | Implement audit hash chain + external anchor + least-privilege role                                        | AUD-19   | 24 h   | Tamper test detects an update/delete; app role cannot mutate audit              |
+| 3     | Retention matrix, purge/anonymize job, subject export/erasure                                              | AUD-22   | 24 h   | Retention job runs in staging; erasure respects legal hold                      |
+| 4     | OCPP default measurand and unit handling                                                                   | AUD-21   | 2 h    | Default-omitted frame records energy; conformance test passes                   |
+| 5     | Canonical-origin wallet challenge                                                                          | AUD-24   | 2 h    | `Origin: evil.example` is rejected or ignored                                   |
+| 6     | Residual risk review and penetration test                                                                  | All      | 16 h   | External PT finds no Critical/High in the fixed surface                         |
 
 **Exit gate:** multi-replica deployment passes the invariant suite; audit tamper test passes; retention/erasure runbook signed off; external penetration test clean for Critical/High.
 
@@ -862,32 +862,32 @@ Because IDs are sequential and exposed in session payloads (AUD-06), enumeration
 
 ## 8. Verification Log
 
-| Finding | Method | Evidence | Status |
-|---|---|---|---|
-| AUD-01 | Runtime HTTP request against the local Compose stack | `GET /api/v1/stations/1` returned `auth_secret: "dev-VH-1-CP1"` and `ocpp_identity: "VH-1-CP1"` | Confirmed |
-| AUD-02 | File review of Compose, prod overlay, Grafana provisioning | Literal `volthub_dev_pwd`, `0.0.0.0` port bindings, `SEED_PROFILE: demo`, no Grafana admin password | Confirmed (static) |
-| AUD-03 | Runtime wallet flow with a fresh user and random ethers wallet | Three ₹10,000 intents settled; balance `0 → 30,000`; receipt `mode: signed-authorisation (no gas, no chain write)` | Confirmed |
-| AUD-04 | Code trace + OCPP frames during split-brain repro | `Authorize`/`StartTransaction` regex `TAG-(\d+)` → `store.users.has(n)` → `startSession({uid:n})` | Confirmed (code) |
-| AUD-05 | Code trace of boot path | `catch` sets `_mode='local-fallback'`, seeds, logs, continues; `/health` 200 | Confirmed (code) |
-| AUD-06 | Code trace + operator session list | `/sessions` has no operator station filter; `/sessions/active/:ref` gives staff the full row | Confirmed (code) |
-| AUD-07 | Runtime malformed upgrade | `%E0%A4%A` → `URIError: URI malformed`; Node exit 1; no process handler | Confirmed |
-| AUD-08 | Runtime REST start + OCPP `StartTransaction` | REST `201` session 61, connector `OCCUPIED`; OCPP `[4,"probe-1","InternalError","NOT_BOOKABLE: connector 1:1 is OCCUPIED",{}]` | Confirmed |
-| AUD-09 | Code trace of plan selection and billing | `routes.js:490` checks existence only; `billSession` uses `sess.tariff_plan_id` | Confirmed (code) |
-| AUD-10 | Code trace + test suite usage | `password: req.body.password || 'Temp@1234'`; tests log in with it | Confirmed |
-| AUD-11 | Code trace + schema review | `getDay()/getHours()` on UTC; one `price` for all energy; Oracle same | Confirmed (code) |
-| AUD-12 | Code trace + repo-wide search | `issueRefresh` only writes `store.refresh`; no `INSERT INTO refresh_token`; client has no refresh call | Confirmed (code) |
-| AUD-13 | Code trace + package review | `payInvoice` debits `uid`; `pay_invoice` locks `p_user` wallet, no session owner check | Confirmed (code) |
-| AUD-14 | Code trace of scope checks | `if (stationId && ...)`; `outOfScope` uses `stationId != null`; `scopeCheck` skips absent id | Confirmed (code) |
-| AUD-15 | Code trace of ack SQL | `dedupe_key LIKE 'sess:<id>:<STATE>:%'` | Confirmed (code) |
-| AUD-16 | Code trace of `stopSession` + V011 | `end` only checked against `start`, not `_maxMeter` peak | Confirmed (code) |
-| AUD-17 | Code trace of arrays and worker | `readings.push`, `ticks.push`, no prune; `loadSeen` reads whole file into `Set` | Confirmed (code) |
-| AUD-18 | Design inspection | In-process `Mutex`, local `registry`, local limiters/sweeper | Confirmed (design) |
-| AUD-19 | Schema + migration + connection review | Plain `audit_log`; role skipped on `gvenzl`; app connects as owner; autonomous commit | Confirmed (code) |
-| AUD-20 | Client code review | `localStorage.setItem('vh_token', ...)`; `Authorization: Bearer` | Confirmed (code) |
-| AUD-21 | Code trace; OCPP spec default | Only explicit `measurand` is read; unlabelled frame ACK-only | Confirmed (code); hardware `UNVERIFIED` |
-| AUD-22 | Repo-wide search for delete/retention | No account-deletion route; only outbox retention | Confirmed (code) |
-| AUD-23 | Route review | `/health`, `/health/deep`, `/metrics` mounted without auth | Confirmed (code) |
-| AUD-24 | Code trace | `originOf(req)` uses `req.get('origin')` with no allow-list | Confirmed (code); wallet UI `UNVERIFIED` |
+| Finding | Method                                                         | Evidence                                                                                                                       | Status                                   |
+| ------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
+| AUD-01  | Runtime HTTP request against the local Compose stack           | `GET /api/v1/stations/1` returned `auth_secret: "dev-VH-1-CP1"` and `ocpp_identity: "VH-1-CP1"`                                | Confirmed                                |
+| AUD-02  | File review of Compose, prod overlay, Grafana provisioning     | Literal `volthub_dev_pwd`, `0.0.0.0` port bindings, `SEED_PROFILE: demo`, no Grafana admin password                            | Confirmed (static)                       |
+| AUD-03  | Runtime wallet flow with a fresh user and random ethers wallet | Three ₹10,000 intents settled; balance `0 → 30,000`; receipt `mode: signed-authorisation (no gas, no chain write)`             | Confirmed                                |
+| AUD-04  | Code trace + OCPP frames during split-brain repro              | `Authorize`/`StartTransaction` regex `TAG-(\d+)` → `store.users.has(n)` → `startSession({uid:n})`                              | Confirmed (code)                         |
+| AUD-05  | Code trace of boot path                                        | `catch` sets `_mode='local-fallback'`, seeds, logs, continues; `/health` 200                                                   | Confirmed (code)                         |
+| AUD-06  | Code trace + operator session list                             | `/sessions` has no operator station filter; `/sessions/active/:ref` gives staff the full row                                   | Confirmed (code)                         |
+| AUD-07  | Runtime malformed upgrade                                      | `%E0%A4%A` → `URIError: URI malformed`; Node exit 1; no process handler                                                        | Confirmed                                |
+| AUD-08  | Runtime REST start + OCPP `StartTransaction`                   | REST `201` session 61, connector `OCCUPIED`; OCPP `[4,"probe-1","InternalError","NOT_BOOKABLE: connector 1:1 is OCCUPIED",{}]` | Confirmed                                |
+| AUD-09  | Code trace of plan selection and billing                       | `routes.js:490` checks existence only; `billSession` uses `sess.tariff_plan_id`                                                | Confirmed (code)                         |
+| AUD-10  | Code trace + test suite usage                                  | `password: req.body.password                                                                                                   |                                          | 'Temp@1234'`; tests log in with it | Confirmed |
+| AUD-11  | Code trace + schema review                                     | `getDay()/getHours()` on UTC; one `price` for all energy; Oracle same                                                          | Confirmed (code)                         |
+| AUD-12  | Code trace + repo-wide search                                  | `issueRefresh` only writes `store.refresh`; no `INSERT INTO refresh_token`; client has no refresh call                         | Confirmed (code)                         |
+| AUD-13  | Code trace + package review                                    | `payInvoice` debits `uid`; `pay_invoice` locks `p_user` wallet, no session owner check                                         | Confirmed (code)                         |
+| AUD-14  | Code trace of scope checks                                     | `if (stationId && ...)`; `outOfScope` uses `stationId != null`; `scopeCheck` skips absent id                                   | Confirmed (code)                         |
+| AUD-15  | Code trace of ack SQL                                          | `dedupe_key LIKE 'sess:<id>:<STATE>:%'`                                                                                        | Confirmed (code)                         |
+| AUD-16  | Code trace of `stopSession` + V011                             | `end` only checked against `start`, not `_maxMeter` peak                                                                       | Confirmed (code)                         |
+| AUD-17  | Code trace of arrays and worker                                | `readings.push`, `ticks.push`, no prune; `loadSeen` reads whole file into `Set`                                                | Confirmed (code)                         |
+| AUD-18  | Design inspection                                              | In-process `Mutex`, local `registry`, local limiters/sweeper                                                                   | Confirmed (design)                       |
+| AUD-19  | Schema + migration + connection review                         | Plain `audit_log`; role skipped on `gvenzl`; app connects as owner; autonomous commit                                          | Confirmed (code)                         |
+| AUD-20  | Client code review                                             | `localStorage.setItem('vh_token', ...)`; `Authorization: Bearer`                                                               | Confirmed (code)                         |
+| AUD-21  | Code trace; OCPP spec default                                  | Only explicit `measurand` is read; unlabelled frame ACK-only                                                                   | Confirmed (code); hardware `UNVERIFIED`  |
+| AUD-22  | Repo-wide search for delete/retention                          | No account-deletion route; only outbox retention                                                                               | Confirmed (code)                         |
+| AUD-23  | Route review                                                   | `/health`, `/health/deep`, `/metrics` mounted without auth                                                                     | Confirmed (code)                         |
+| AUD-24  | Code trace                                                     | `originOf(req)` uses `req.get('origin')` with no allow-list                                                                    | Confirmed (code); wallet UI `UNVERIFIED` |
 
 **Hygiene.** The runtime probes were standalone scripts created outside the repository and deleted after use. No application source, schema, or configuration was modified. The working tree already contained pre-existing uncommitted changes; this audit did not touch them. The only file added is this report.
 
@@ -897,18 +897,18 @@ Because IDs are sequential and exposed in session payloads (AUD-06), enumeration
 
 The following items were not proven during this audit. They are recorded so a follow-up can close them rather than treating absence of evidence as evidence of safety.
 
-| # | Item | Why unverified | What to do |
-|---|---|---|---|
-| U-01 | Oracle reservation hold-release race (`db/oracle/V012__reservation_hold.sql:179-185`) | Requires a live Oracle instance and concurrent transactions; the code path suggests a `BOOKED` window can be released while another session is converting it | Run a two-session concurrency test with `FOR UPDATE` traces; assert one winner and no orphaned hold |
-| U-02 | Multi-replica double-credit / double-booking | The deployment is single-process; the in-memory mutex masks the race | Deploy two API replicas against one Oracle; race `POST /sessions/start` and `POST /me/wallet/settle`; add unique constraints |
-| U-03 | Real charger behaviour with a leaked secret and `TAG-<uid>` | No physical charger was available; the simulator reproduces the protocol, not vendor quirks | Test on at least two OCPP 1.6J vendors; verify BootNotification/Authorize/StartTransaction and RFID mapping |
-| U-04 | OCPP default measurand on hardware | The simulator can omit `measurand`, but vendor defaults vary | Capture real `MeterValues` frames; confirm whether `measurand` is omitted and with which unit |
-| U-05 | Web CSP and XSS surface | The audit focused on auth handling, not a full Next.js XSS review | Run a CSP/XSS review of `apps/web`; check `dangerouslySetInnerHTML`, markdown rendering, and third-party scripts |
-| U-06 | Grafana `admin/admin` in this environment | Grafana was not launched during the audit; the stack sets no admin password, so the image default applies | Start the observability profile and attempt the default login; set `GF_SECURITY_ADMIN_PASSWORD` |
-| U-07 | Oracle `pay_invoice` owner check at runtime | The package was read, not executed against a live DB with two users | Call `billing_pkg.pay_invoice` as user A for user B's invoice; confirm the debit and invoice state |
-| U-08 | Timezone assumption if the container `TZ` is overridden | The default image has no `TZ`; a deployment may set `TZ=Asia/Kolkata`, which would change AUD-11's exact impact (but not the flat-rate bug) | Pin `TZ` in the image and test both UTC and IST; make the tariff zone explicit |
-| U-09 | Wallet challenge display in real wallets | Wallet UI behaviour (whether it shows `domain`/`URI`) varies | Test MetaMask, Rainbow, and WalletConnect; confirm the domain is visible and mismatches are warned |
-| U-10 | Outbox poison-event behaviour under a partial Timescale schema | The relay's quarantine path was read, not chaos-tested against a missing column | Drop a target column in staging; confirm quarantine, dead-letter visibility, and no queue stall |
+| #    | Item                                                                                  | Why unverified                                                                                                                                               | What to do                                                                                                                   |
+| ---- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| U-01 | Oracle reservation hold-release race (`db/oracle/V012__reservation_hold.sql:179-185`) | Requires a live Oracle instance and concurrent transactions; the code path suggests a `BOOKED` window can be released while another session is converting it | Run a two-session concurrency test with `FOR UPDATE` traces; assert one winner and no orphaned hold                          |
+| U-02 | Multi-replica double-credit / double-booking                                          | The deployment is single-process; the in-memory mutex masks the race                                                                                         | Deploy two API replicas against one Oracle; race `POST /sessions/start` and `POST /me/wallet/settle`; add unique constraints |
+| U-03 | Real charger behaviour with a leaked secret and `TAG-<uid>`                           | No physical charger was available; the simulator reproduces the protocol, not vendor quirks                                                                  | Test on at least two OCPP 1.6J vendors; verify BootNotification/Authorize/StartTransaction and RFID mapping                  |
+| U-04 | OCPP default measurand on hardware                                                    | The simulator can omit `measurand`, but vendor defaults vary                                                                                                 | Capture real `MeterValues` frames; confirm whether `measurand` is omitted and with which unit                                |
+| U-05 | Web CSP and XSS surface                                                               | The audit focused on auth handling, not a full Next.js XSS review                                                                                            | Run a CSP/XSS review of `apps/web`; check `dangerouslySetInnerHTML`, markdown rendering, and third-party scripts             |
+| U-06 | Grafana `admin/admin` in this environment                                             | Grafana was not launched during the audit; the stack sets no admin password, so the image default applies                                                    | Start the observability profile and attempt the default login; set `GF_SECURITY_ADMIN_PASSWORD`                              |
+| U-07 | Oracle `pay_invoice` owner check at runtime                                           | The package was read, not executed against a live DB with two users                                                                                          | Call `billing_pkg.pay_invoice` as user A for user B's invoice; confirm the debit and invoice state                           |
+| U-08 | Timezone assumption if the container `TZ` is overridden                               | The default image has no `TZ`; a deployment may set `TZ=Asia/Kolkata`, which would change AUD-11's exact impact (but not the flat-rate bug)                  | Pin `TZ` in the image and test both UTC and IST; make the tariff zone explicit                                               |
+| U-09 | Wallet challenge display in real wallets                                              | Wallet UI behaviour (whether it shows `domain`/`URI`) varies                                                                                                 | Test MetaMask, Rainbow, and WalletConnect; confirm the domain is visible and mismatches are warned                           |
+| U-10 | Outbox poison-event behaviour under a partial Timescale schema                        | The relay's quarantine path was read, not chaos-tested against a missing column                                                                              | Drop a target column in staging; confirm quarantine, dead-letter visibility, and no queue stall                              |
 
 ---
 
@@ -920,33 +920,32 @@ The following items were not proven during this audit. They are recorded so a fo
 - **Unscored findings:** AUD-08, AUD-12, AUD-18, and AUD-22 are design/integrity/availability issues without a defensible single vector. Assigning a CVSS would imply a precision the evidence does not support. They are still prioritized by blast radius.
 - **Vector table:**
 
-| ID | Vector | Score |
-|---|---|---|
-| AUD-01 | `AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N` | 9.1 |
-| AUD-02 | `AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H` | 9.8 |
-| AUD-03 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N` | 6.5 |
-| AUD-04 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N` | 6.5 |
-| AUD-05 | `AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:H/A:H` | 7.4 |
-| AUD-06 | `AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N` | 6.5 |
-| AUD-07 | `AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H` | 7.5 |
-| AUD-09 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N` | 6.5 |
-| AUD-10 | `AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N` | 8.1 |
-| AUD-11 | `AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:N` | 5.3 |
-| AUD-13 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N` | 4.3 |
-| AUD-14 | `AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N` | 6.8 |
-| AUD-15 | `AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:L` | 4.2 |
-| AUD-16 | `AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:H/A:N` | 4.9 |
-| AUD-17 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:L` | 4.3 |
-| AUD-19 | `AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:N` | 5.3 |
-| AUD-20 | `AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N` | 5.3 |
-| AUD-21 | `AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:N` | 3.1 |
-| AUD-23 | `AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N` | 5.3 |
-| AUD-24 | `AV:N/AC:L/PR:L/UI:R/S:U/C:L/I:N/A:N` | 3.5 |
+| ID     | Vector                                | Score |
+| ------ | ------------------------------------- | ----- |
+| AUD-01 | `AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N` | 9.1   |
+| AUD-02 | `AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H` | 9.8   |
+| AUD-03 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N` | 6.5   |
+| AUD-04 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N` | 6.5   |
+| AUD-05 | `AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:H/A:H` | 7.4   |
+| AUD-06 | `AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N` | 6.5   |
+| AUD-07 | `AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H` | 7.5   |
+| AUD-09 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N` | 6.5   |
+| AUD-10 | `AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N` | 8.1   |
+| AUD-11 | `AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:N` | 5.3   |
+| AUD-13 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N` | 4.3   |
+| AUD-14 | `AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N` | 6.8   |
+| AUD-15 | `AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:L` | 4.2   |
+| AUD-16 | `AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:H/A:N` | 4.9   |
+| AUD-17 | `AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:L` | 4.3   |
+| AUD-19 | `AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:N` | 5.3   |
+| AUD-20 | `AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N` | 5.3   |
+| AUD-21 | `AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:N` | 3.1   |
+| AUD-23 | `AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N` | 5.3   |
+| AUD-24 | `AV:N/AC:L/PR:L/UI:R/S:U/C:L/I:N/A:N` | 3.5   |
 
 - **Rounding:** scores are rounded up to one decimal per the CVSS 3.1 specification. A vector whose score differs from a finding's narrative by ±0.1 reflects the spec's round-up, not a separate assessment.
 - **Confidence:** runtime-confirmed findings (AUD-01, AUD-03, AUD-07, AUD-08) have the highest confidence. Code-verified findings are deterministic from the cited lines. `UNVERIFIED` items in §9 are excluded from the score unless the code path alone is sufficient.
 
 ---
 
-*End of report.*
-
+_End of report._
