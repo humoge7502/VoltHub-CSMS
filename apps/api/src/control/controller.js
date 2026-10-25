@@ -6,6 +6,7 @@
 'use strict';
 const crypto = require('crypto');
 const model = require('./model');
+const carbon = require('../carbon/intensity');
 
 // Quantile bounds (blueprint H.2.2): honest defaults until the quantile
 // forecaster lands (Phase 5). A reserve fraction shrinks usable site headroom;
@@ -262,16 +263,83 @@ function planSite(store, siteId, opts = {}) {
   const cpCaps = new Map();
   for (const v of vehicles) if (!cpCaps.has(v.cpId)) cpCaps.set(v.cpId, capRaw);
   const acceptanceAware = opts.acceptanceAware == null ? ACCEPTANCE_AWARE : !!opts.acceptanceAware;
-  const solved = model.solveSchedule({
-    vehicles,
-    siteCapKw,
-    cpCaps,
-    priceSeries: priceSeriesFactory(store, opts.planId),
-    dtMin,
-    horizon,
-    now: t0,
-    acceptanceAware,
-  });
+
+  // CarbonPilot (ADR-0017): carbon is an extra interval price, resolved from the
+  // station's grid region. The default weight is 0, which keeps the plan (and every
+  // pre-carbon receipt) bit-identical unless a caller explicitly opts in.
+  const carbonRequested =
+    opts.carbonWeight != null || opts.carbonBudgetKg != null || opts.carbonAware === true || carbon.DEFAULT_WEIGHT > 0;
+  let carbonWeight = opts.carbonWeight != null ? carbon.normalizeWeight(opts.carbonWeight) : carbon.DEFAULT_WEIGHT;
+  if (opts.carbonAware === true && !(opts.carbonWeight > 0)) carbonWeight = Math.max(carbonWeight, 0.5);
+  const budgetRaw = Number(opts.carbonBudgetKg);
+  const carbonBudgetKg = Number.isFinite(budgetRaw) && budgetRaw >= 0 ? Math.min(budgetRaw, 1e6) : null;
+  const carbonActive = carbonRequested && (carbonWeight > 0 || carbonBudgetKg != null);
+  const carbonRegion = carbon.normalizeRegion(
+    opts.carbonRegion || carbon.regionForStation(store.stations.get(siteIdN))
+  );
+  const carbonTicks = carbonActive ? model.intervalGrid(t0, dtMin, horizon).ticks : null;
+  const carbonSeries = carbonActive ? carbonTicks.map((t) => carbon.intensityAt(carbonRegion, t).g_per_kwh) : null;
+
+  const solve = (weight) =>
+    model.solveSchedule({
+      vehicles,
+      siteCapKw,
+      cpCaps,
+      priceSeries: priceSeriesFactory(store, opts.planId),
+      dtMin,
+      horizon,
+      now: t0,
+      acceptanceAware,
+      carbonSeries,
+      carbonWeight: weight,
+    });
+  let solved = solve(carbonActive ? carbonWeight : 0);
+  let weightApplied = carbonActive ? carbonWeight : 0;
+  // Budget mode: escalate the carbon weight deterministically until the published
+  // budget is met, or 1.0 (the highest legitimate preference). A budget that cannot
+  // be met does NOT fail the plan — a missed carbon target must never strand a car —
+  // it is reported as budget_met:false with the achieved number.
+  let budgetMet = carbonBudgetKg == null ? null : solved.metrics.carbon_kg <= carbonBudgetKg;
+  if (carbonBudgetKg != null && !budgetMet) {
+    for (const w of [Math.max(weightApplied, 0.25), 0.5, 0.75, 1]) {
+      if (w <= weightApplied) continue;
+      const candidate = solve(w);
+      weightApplied = w;
+      solved = candidate;
+      budgetMet = candidate.metrics.carbon_kg <= carbonBudgetKg;
+      if (budgetMet) break;
+    }
+  }
+  // Counterfactual for the receipt: the same constraints and the same carbon series,
+  // but weight 0. "Avoided" then means "versus this site's price-only plan", which
+  // is the honest comparison a driver or auditor can reproduce.
+  let carbonInfo = null;
+  if (carbonActive) {
+    const baseline = solve(0);
+    const footprint = carbon.forSchedule({
+      schedule: solved.schedule,
+      ticks: carbonTicks,
+      dtMin,
+      region: carbonRegion,
+    });
+    carbonInfo = {
+      ...footprint,
+      source: carbon.MODEL_VERSION,
+      weight_requested: carbonWeight,
+      weight_applied: weightApplied,
+      budget_kg: carbonBudgetKg,
+      budget_met: budgetMet,
+      baseline_plan_g: baseline.metrics.carbon_g,
+      baseline_plan_kg: baseline.metrics.carbon_kg,
+      plan_saved_g: +(baseline.metrics.carbon_g - solved.metrics.carbon_g).toFixed(3),
+      plan_saved_kg: +((baseline.metrics.carbon_g - solved.metrics.carbon_g) / 1000).toFixed(4),
+      plan_saved_pct:
+        baseline.metrics.carbon_g > 0
+          ? +(((baseline.metrics.carbon_g - solved.metrics.carbon_g) / baseline.metrics.carbon_g) * 100).toFixed(2)
+          : 0,
+      carbon_series_g_per_kwh: carbonSeries,
+    };
+  }
 
   // 5) Persist the decision (append-only) with full provenance.
   const decision = store.recordDecision(siteIdN, {
@@ -283,19 +351,31 @@ function planSite(store, siteId, opts = {}) {
       schedule: solved.schedule,
       metrics: solved.metrics,
       certifications,
+      ...(carbonInfo ? { carbon: carbonInfo } : {}),
     }),
     bounds_hash,
     // The audit row names the allocator that produced it: a decision made with a
     // taper-blind allocator must be distinguishable from one made with AES, or a
-    // receipt cannot say which mechanism was under test (ADR-0013/0015).
-    solver: opts.solver || `fchcc-edf-priceshift${acceptanceAware ? '-aes' : ''}`,
+    // receipt cannot say which mechanism was under test (ADR-0013/0015). Carbon is
+    // named too: a plan that internalised a carbon price must be distinguishable
+    // from one that did not (ADR-0017).
+    solver:
+      opts.solver ||
+      `fchcc-edf-priceshift${acceptanceAware ? '-aes' : ''}${carbonActive && weightApplied > 0 ? '-carbon' : ''}`,
     runtime_ms: +(Date.now() - t0).toFixed(2),
     state_version: store.outbox.length,
   });
 
   // 6) Compile to OCPP charging profiles per charge point (H.2.5).
   const pushes = compileToProfiles(store, siteIdN, decision, solved, dtMin, horizon);
-  return { mode, decision, solved, pushes, certifications };
+  return {
+    mode,
+    decision,
+    solved,
+    pushes,
+    certifications,
+    ...(carbonInfo ? { carbon: carbonInfo } : {}),
+  };
 }
 
 // Compiler (blueprint H.2.5): x[v][t] kWh -> per-CP chargingSchedule with

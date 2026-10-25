@@ -24,16 +24,31 @@ function nextCallId() {
 // Unknown uids stay ignorable (a chatty CP must not crash the gateway), but they are
 // counted so the leak is observable.
 const ACK_TIMEOUT_MS = Number(process.env.OCPP_ACK_TIMEOUT_MS || 10000);
-const pendingCalls = new Map(); // uid -> { action, cpId, pushId, decisionId, deadline }
+// Every OCPP 1.6 command has its own success status. `Scheduled` (ChangeAvailability)
+// and `RebootRequired` (ChangeConfiguration) are successful outcomes, not rejections.
+const ACCEPTED_STATUS = new Set(['Accepted', 'Unlocked', 'Scheduled', 'RebootRequired']);
+const pendingCalls = new Map(); // uid -> { action, cpId, identity, pushId, decisionId, deadline, resolve?, reject? }
 let unknownResults = 0;
+let foreignResults = 0;
+let malformedResults = 0;
 
 function registerPendingCall(uid, meta) {
-  pendingCalls.set(String(uid), { ...meta, deadline: Date.now() + ACK_TIMEOUT_MS });
+  pendingCalls.set(String(uid), {
+    ...meta,
+    deadline: Number(meta?.deadline) || Date.now() + ACK_TIMEOUT_MS,
+  });
+}
+
+function cancelPendingCall(uid) {
+  return pendingCalls.delete(String(uid));
 }
 
 // Resolve one inbound CALLRESULT/CALLERROR. Returns { handled, ack, pushId }.
 // Pure with respect to the socket, so the suite drives it without a TCP peer.
-function handleCsmsResult(store, msg, log) {
+// `from` ({identity, cpId}) binds the answer to the socket that received it: the csms
+// call ids are sequential and guessable, and a second connected charger could otherwise
+// resolve another CP's pending command with a forged CALLRESULT (F-13).
+function handleCsmsResult(store, msg, log, from) {
   if (!msg || (msg.kind !== 'RESULT' && msg.kind !== 'ERROR')) return { handled: false };
   const key = String(msg.uid);
   const meta = pendingCalls.get(key);
@@ -41,8 +56,57 @@ function handleCsmsResult(store, msg, log) {
     unknownResults++;
     return { handled: false };
   }
+  if (from) {
+    const identity = typeof from === 'string' ? from : from.identity;
+    const cpId = typeof from === 'string' ? null : from.cpId;
+    const identityMismatch = meta.identity != null && identity != null && meta.identity !== identity;
+    const cpMismatch = meta.cpId != null && cpId != null && Number(meta.cpId) !== Number(cpId);
+    if (identityMismatch || cpMismatch) {
+      foreignResults++;
+      if (log && typeof log.warn === 'function')
+        log.warn(
+          { action: meta.action, expected: meta.identity ?? meta.cpId, got: identity ?? cpId },
+          'ocpp CALLRESULT ignored: answer did not come from the charge point that was sent the call'
+        );
+      // Keep the pending entry: the legitimate CP may still answer before the deadline.
+      return { handled: false, mismatch: true };
+    }
+  }
   pendingCalls.delete(key);
-  const ack = msg.kind === 'RESULT' ? String(msg.payload?.status || 'Accepted') : 'CALLERROR';
+  let ack;
+  if (msg.kind === 'ERROR') {
+    ack = 'CALLERROR';
+  } else {
+    const status = msg.payload && typeof msg.payload.status === 'string' ? msg.payload.status : null;
+    if (!status && meta.expectsStatus !== false) {
+      // A CALLRESULT without `status` for a command that requires one is malformed;
+      // never assume Accepted (F-13 — the old default masked rejected commands).
+      malformedResults++;
+      ack = 'MALFORMED';
+      store.deadLetter({
+        eventRef: `ack:${key}`,
+        kind: meta.action || 'CSMS_CALL',
+        reasonCode: 'MISSING_STATUS',
+        detail: 'CALLRESULT did not carry status',
+        payload: { cpId: meta.cpId ?? null, decisionId: meta.decisionId ?? null },
+      });
+    } else {
+      // GetConfiguration and similar reads have no `status`; their CALLRESULT is still
+      // a successful answer and must not be mislabelled as malformed.
+      ack = status || 'RESULT';
+      if (status && !ACCEPTED_STATUS.has(status)) {
+        // Rejected/NotSupported/... is a poison event with an owner: it belongs in the
+        // triage queue, not only in the audit row (ADR-0011).
+        store.deadLetter({
+          eventRef: `ack:${key}`,
+          kind: meta.action || 'CSMS_CALL',
+          reasonCode: String(status).toUpperCase(),
+          detail: 'charge point rejected the command',
+          payload: { cpId: meta.cpId ?? null, decisionId: meta.decisionId ?? null },
+        });
+      }
+    }
+  }
   if (meta.pushId != null) store.setPushAck(meta.pushId, ack);
   if (msg.kind === 'ERROR') {
     // A rejected command is a poison event with an owner: it lands in the triage
@@ -55,9 +119,56 @@ function handleCsmsResult(store, msg, log) {
       payload: { cpId: meta.cpId ?? null, decisionId: meta.decisionId ?? null },
     });
   }
+  // Command senders (the OCPP 1.6 management suite) await the actual CALLRESULT.
+  // Fire-and-forget callers leave these callbacks undefined and behave exactly as before.
+  const response = {
+    uid: key,
+    action: meta.action,
+    cpId: meta.cpId ?? null,
+    ack,
+    status: msg.kind === 'RESULT' && msg.payload && typeof msg.payload.status === 'string' ? msg.payload.status : null,
+    payload: msg.kind === 'RESULT' ? msg.payload || {} : null,
+  };
+  if (typeof meta.resolve === 'function') {
+    try {
+      if (ack === 'MALFORMED' || msg.kind === 'ERROR') {
+        const err = new Error(
+          msg.kind === 'ERROR'
+            ? msg.desc || `charge point returned ${msg.code || 'CALLERROR'}`
+            : 'charge point CALLRESULT did not carry status'
+        );
+        err.code = msg.kind === 'ERROR' ? msg.code || 'CALLERROR' : 'MALFORMED_RESULT';
+        err.status = 502;
+        err.ocpp = response;
+        if (typeof meta.reject === 'function') meta.reject(err);
+        else meta.resolve(response);
+      } else {
+        meta.resolve(response);
+      }
+    } catch (err) {
+      if (log && typeof log.warn === 'function') log.warn({ err: err.message }, 'ocpp command settle callback failed');
+    }
+  } else if (msg.kind === 'ERROR' && typeof meta.reject === 'function') {
+    const err = new Error(msg.desc || `charge point returned ${msg.code || 'CALLERROR'}`);
+    err.code = msg.code || 'CALLERROR';
+    err.status = 502;
+    err.ocpp = response;
+    try {
+      meta.reject(err);
+    } catch (e) {
+      if (log && typeof log.warn === 'function') log.warn({ err: e.message }, 'ocpp command reject callback failed');
+    }
+  }
   if (log && typeof log.info === 'function')
     log.info({ action: meta.action, cpId: meta.cpId, ack }, 'ocpp CALLRESULT correlated');
-  return { handled: true, ack, pushId: meta.pushId ?? null, action: meta.action, cpId: meta.cpId ?? null };
+  return {
+    handled: true,
+    ack,
+    pushId: meta.pushId ?? null,
+    action: meta.action,
+    cpId: meta.cpId ?? null,
+    response,
+  };
 }
 
 // Timeout sweep: an unanswered CSMS call must not stay pending forever (the charger
@@ -77,6 +188,16 @@ function sweepExpiredAcks(store, now) {
       detail: `no CALLRESULT within ${ACK_TIMEOUT_MS} ms`,
       payload: { cpId: meta.cpId ?? null, decisionId: meta.decisionId ?? null },
     });
+    if (typeof meta.reject === 'function') {
+      const err = new Error(`CP_TIMEOUT: no CALLRESULT within ${ACK_TIMEOUT_MS} ms`);
+      err.code = 'CP_TIMEOUT';
+      err.status = 504;
+      try {
+        meta.reject(err);
+      } catch {
+        /* the caller is gone; the dead letter is the durable record */
+      }
+    }
     expired.push(uid);
   }
   return expired;
@@ -120,7 +241,7 @@ function stopTransaction(registry, identity, sessionId, log) {
   }
   // Correlate the CP's answer too: a rejected remote stop must be observable, not
   // assumed (the same registry that carries SetChargingProfile acks).
-  registerPendingCall(uid, { action: 'RemoteStopTransaction', cpId: null, sessionId: Number(sessionId) });
+  registerPendingCall(uid, { action: 'RemoteStopTransaction', cpId: null, identity, sessionId: Number(sessionId) });
   // B3G-001: method-call form preserves pino `this` (detached log.info throws msgPrefix TypeError).
   if (log && typeof log.info === 'function') log.info({ identity, sessionId }, 'ocpp RemoteStopTransaction sent');
   return Promise.resolve({ uid, identity, transactionId: Number(sessionId) });
@@ -139,7 +260,7 @@ function startTransaction(registry, identity, idTag, connectorId, log) {
   } catch (e) {
     return Promise.reject(e);
   }
-  registerPendingCall(uid, { action: 'RemoteStartTransaction', cpId: null });
+  registerPendingCall(uid, { action: 'RemoteStartTransaction', cpId: null, identity });
   if (log && typeof log.info === 'function') log.info({ identity, idTag }, 'ocpp RemoteStartTransaction sent');
   return Promise.resolve({ uid, identity });
 }
@@ -147,12 +268,19 @@ function startTransaction(registry, identity, idTag, connectorId, log) {
 function checkBasic(req, identity, cp) {
   const secret = cp?.auth_secret;
   const mode = process.env.OCPP_AUTH || 'per-cp'; // per-cp | require | off
-  if (mode === 'off') return true;
+  const prod = process.env.NODE_ENV === 'production';
+  // SEC-041/SEC-069: OCPP_AUTH=off exists for isolated labs. In production it would turn
+  // the gateway into an unauthenticated command surface for any charger that can reach
+  // it, so the switch is ignored there (fail closed).
+  if (mode === 'off' && !prod) return true;
   // SEC-041 (review 2026-10-24): a CP row with no auth_secret is NOT authenticable.
   // The old `!secret => allow` bypass turned every seeded/hydrated deployment into an
   // open gateway (anyone could connect as any guessable identity). Provision a secret
   // via the admin API, or set OCPP_AUTH=off explicitly for an isolated lab.
   if (!secret) return false;
+  // Demo seeds and the simulator share `dev-<identity>` secrets. They are published in
+  // the repository, so accepting them in production would be equivalent to no auth.
+  if (prod && /^dev-/.test(String(secret))) return false;
   const h = String(req.headers?.authorization || '');
   const m = /^Basic (.+)$/.exec(h);
   if (!m) return false;
@@ -231,17 +359,33 @@ function mountOcpp(wss, store, log) {
       // the limiter by being unparseable), but the violation CALLERROR carries the
       // offending message's uid whenever the frame parses (PROTO-002: answering
       // uid '0' to a parsed CALL is not a valid OCPP reply).
-      const now = Date.now();
-      const arr = (lastMsg.get(identity) || []).filter((t) => now - t < 1000);
-      arr.push(now);
-      lastMsg.set(identity, arr);
-      const overLimit = arr.length > 10;
       let msg = null;
       try {
         msg = parse(raw);
       } catch {
         msg = null;
       }
+      // ADR-0018: a CALLRESULT/CALLERROR that answers a call this CSMS actually sent is
+      // not charge-point chatter and must not consume its 10 CALL/s budget. A management
+      // burst (11 commands in one second) otherwise had its answers rate-limited, so the
+      // commands timed out even though the charger replied instantly. Only uids that are
+      // pending for THIS socket bypass the limiter; forged/unknown results still count.
+      if (msg && (msg.kind === 'RESULT' || msg.kind === 'ERROR')) {
+        const pending = pendingCalls.get(String(msg.uid));
+        const fromThisCp =
+          pending &&
+          (pending.identity == null || pending.identity === identity) &&
+          (pending.cpId == null || Number(pending.cpId) === Number(cpId));
+        if (fromThisCp) {
+          handleCsmsResult(store, msg, log, { identity, cpId });
+          return;
+        }
+      }
+      const now = Date.now();
+      const arr = (lastMsg.get(identity) || []).filter((t) => now - t < 1000);
+      arr.push(now);
+      lastMsg.set(identity, arr);
+      const overLimit = arr.length > 10;
       if (overLimit) {
         // SEC-042: these two sends run BEFORE the handler's try/catch — a throw from a
         // dying socket rejected the async listener (process-fatal unhandled rejection).
@@ -260,7 +404,7 @@ function mountOcpp(wss, store, log) {
       // They are correlated against the pending-call registry above (the previous
       // behaviour — log and drop — broke the control loop's verify stage).
       if (msg.kind === 'RESULT' || msg.kind === 'ERROR') {
-        handleCsmsResult(store, msg, log);
+        handleCsmsResult(store, msg, log, { identity, cpId });
         return;
       }
       if (msg.kind !== 'CALL') return;
@@ -294,14 +438,12 @@ function mountOcpp(wss, store, log) {
               // authoritative state for those two cases; physical faults/unavailability
               // still pass through.
               if (to === 'AVAILABLE') {
-                const active = [...store.sessions.values()].some(
-                  (sx) => sx.connector_ref === key && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(sx.state)
-                );
-                const booked = [...store.reservations.values()].some(
-                  (r) => r.connector_ref === key && r.status === 'BOOKED'
-                );
-                if (active) to = 'OCCUPIED';
-                else if (booked) to = 'RESERVED';
+                // PF-03: the connector row is the authoritative derived state — every
+                // start/transition and reservation path writes it, including hydration.
+                // Scanning all sessions and reservations per StatusNotification made a
+                // single frame O(fleet) (40 ms at 1M rows); two comparisons are enough.
+                if (c.status === 'OCCUPIED') to = 'OCCUPIED';
+                else if (c.status === 'RESERVED') to = 'RESERVED';
               }
               const from = c.status;
               c.status = to;
@@ -415,18 +557,30 @@ function mountOcpp(wss, store, log) {
                 break;
               }
               if (!seqByTx.has(sid)) {
-                const maxSeq = store.readings
-                  .filter((r) => r.session_id === sid)
-                  .reduce((m, r) => Math.max(m, Number(r.seq_no) || 0), 0);
+                // PF-03: readingsFor() is the store's O(1) per-session index; filtering
+                // the global telemetry array here made every session's first frame scan
+                // all history.
+                const maxSeq = store.readingsFor(sid).reduce((m, r) => Math.max(m, Number(r.seq_no) || 0), 0);
                 seqByTx.set(sid, maxSeq);
                 if (maxSeq) log.info({ identity, sessionId: sid, maxSeq }, 'ocpp tick cursor recovered after restart');
               }
               if (e) {
+                // SampledValue.value is a string. A register that does not parse is a
+                // malformed frame, not a session fault: answer TypeMismatch BEFORE a
+                // sequence number is spent, and never hand NaN to the store — Timescale
+                // float8 would store it as a legitimate-looking row (NaN = NaN is TRUE
+                // there, so nothing downstream spots it) while Oracle rejects the bind.
+                const register = Number(e.value) / 1000;
+                if (!Number.isFinite(register)) {
+                  ws.send(callError(msg.uid, 'TypeMismatch', `unparsable energy register: ${JSON.stringify(e.value)}`));
+                  break;
+                }
                 const next = seqByTx.get(sid) + 1;
                 seqByTx.set(sid, next);
                 const sampledAt = new Date().toISOString();
-                const sampledKw = pr ? Number(pr.value) / 1000 : null;
-                await store.recordTick(sid, next, sampledAt, Number(e.value) / 1000, sampledKw, null, null);
+                const powerRaw = pr ? Number(pr.value) / 1000 : null;
+                const sampledKw = Number.isFinite(powerRaw) ? powerRaw : null;
+                await store.recordTick(sid, next, sampledAt, register, sampledKw, null, null);
                 // Verify stage: only after the tick is durably recorded do we compare it
                 // to the schedule in force — a tick that was rejected/deduped must not
                 // become compliance evidence.
@@ -444,13 +598,13 @@ function mountOcpp(wss, store, log) {
                 const next = seqByTx.get(sid) + 1;
                 seqByTx.set(sid, next);
                 const sampledAt = new Date().toISOString();
-                const sampledKw = Number(pr.value) / 1000;
-                const lastKwh = Math.max(
-                  Number(owner?.start_meter_kwh) || 0,
-                  store.readings
-                    .filter((r) => r.session_id === sid)
-                    .reduce((m, r) => Math.max(m, Number(r.meter_kwh) || 0), 0)
-                );
+                const powerRaw = Number(pr.value) / 1000;
+                const sampledKw = Number.isFinite(powerRaw) ? powerRaw : null;
+                // PF-03: per-session index, not a full telemetry scan on every
+                // power-only frame. The reduce still handles out-of-order replays.
+                const lastKwh = store
+                  .readingsFor(sid)
+                  .reduce((m, r) => Math.max(m, Number(r.meter_kwh) || 0), Number(owner?.start_meter_kwh) || 0);
                 await store.recordTick(sid, next, sampledAt, lastKwh, sampledKw, null, null);
                 try {
                   enforcementSample(store, cpId, sid, sampledKw, sampledAt);
@@ -475,13 +629,15 @@ function mountOcpp(wss, store, log) {
                 }
                 // BUG-020 fix: 0 Wh is valid — only fall back when meterStop is absent/NaN.
                 const stopKwh = Number(p.meterStop);
-                sess.end_meter_kwh = Number.isFinite(stopKwh) ? stopKwh / 1000 : sess.end_meter_kwh;
+                const endMeterKwh = Number.isFinite(stopKwh) ? stopKwh / 1000 : undefined;
                 seqByTx.delete(Number(p.transactionId));
                 // PROTO-003: a CP may stop a transaction that never delivered a tick
                 // (plug-in then stop). PREPARING ends as CANCELLED — not an
                 // ILLEGAL_TRANSITION InternalError.
-                const to = sess.state === 'PREPARING' ? 'CANCELLED' : 'COMPLETED';
-                await store.transition(p.transactionId, to, 'OCPP_STOP');
+                // SEC-067: stopSession persists the meter on BOTH engines. The old
+                // direct field write lived only in the Oracle adapter's read-cache, so
+                // the durable invoice priced 0 kWh.
+                await store.stopSession(p.transactionId, 'OCPP_STOP', endMeterKwh);
               }
             }
             ws.send(result(msg.uid, { idTagInfo: { status: 'Accepted' } }));
@@ -525,10 +681,14 @@ module.exports = {
   stopTransaction,
   startTransaction,
   registerPendingCall,
+  cancelPendingCall,
   handleCsmsResult,
   sweepExpiredAcks,
+  ACCEPTED_STATUS,
   enforcementSample,
   pendingCallCount: () => pendingCalls.size,
   unknownResultCount: () => unknownResults,
+  foreignResultCount: () => foreignResults,
+  malformedResultCount: () => malformedResults,
   ACK_TIMEOUT_MS,
 };

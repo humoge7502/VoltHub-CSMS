@@ -122,7 +122,10 @@ Object.assign(spec.paths, {
     post: P('Create station + charge points + connectors (admin)'),
   },
   '/admin/stations/{id}': { patch: P('Activate/deactivate (ACTIVE|INACTIVE), reassign operator (admin)') },
-  '/admin/charge-points': { post: P('Provision charge point → OCPP identity (admin)') },
+  '/admin/charge-points': {
+    get: P('Charge-point inventory with online status (admin; never returns secrets)'),
+    post: P('Provision charge point → OCPP identity (admin)'),
+  },
   '/admin/tariff-plans': {
     get: P('Version timeline (staff)'),
     post: P('New immutable version, supersedes active (admin)'),
@@ -138,6 +141,17 @@ Object.assign(spec.paths, {
     post: P(
       'AI advisory: deterministic LP smart-charging schedule under hard station/connector constraints (operator in scope / admin)'
     ),
+  },
+  '/ai/model-card': {
+    get: P(
+      'Model card: dataset provenance, backtest receipt, conformal coverage, intended use and limitations (staff)'
+    ),
+  },
+  '/ai/drift': {
+    get: P('Data-drift monitor from hourly demand: PSI, KS, mean/zero/volatility shifts (operator in scope / admin)'),
+  },
+  '/ai/explain': {
+    post: P('Feature-group occlusion explanation in kWh for the next hourly forecast (operator in scope / admin)'),
   },
   // ---- ADR-0010: FC-HCC control plane ----
   '/stations/{id}/grid-assets': {
@@ -165,7 +179,29 @@ Object.assign(spec.paths, {
   '/control/certificates/{id}': { get: P('Certificate detail: floor_kw, margin, worst-case energy (operator+)') },
   '/ops/dead-letters': { get: P('Poison events + rejected pushes triage queue (admin, ?status=)') },
   '/ops/dead-letters/{id}/resolve': { post: P('Resolve a dead letter: REPLAYED|DISMISSED (admin)') },
+  '/control/commands': {
+    get: P('OCPP 1.6 management command catalog with accepted statuses and payload shapes (operator+)'),
+  },
+  '/control/cp/{cpId}/commands/{action}': {
+    post: P(
+      'Await one OCPP 1.6 command: reset|unlockConnector|changeAvailability|getConfiguration|changeConfiguration|triggerMessage|reserveNow|cancelReservation|clearCache|dataTransfer (admin)'
+    ),
+  },
   '/control/cp/{cpId}/clear-profile': { post: P('ClearChargingProfile to a charge point (admin)') },
   '/control/cp/{cpId}/composite-schedule': { get: P('GetCompositeSchedule probe for a charge point (operator+)') },
+  // ---- ADR-0017: CarbonPilot (model-backed regional carbon signal) ----
+  '/carbon/regions': { get: P('Known grid regions with current intensity, annual average and renewable share') },
+  '/carbon/forecast': {
+    get: P('Deterministic carbon-intensity forecast (?region= or ?stationId=, 1..168 h, 15/30/60 min steps)'),
+  },
+  '/stations/{id}/carbon': {
+    get: P('Station carbon card: current intensity, 48 h forecast and 30-day measured emissions (auth required)'),
+  },
+  '/carbon/receipt/{sessionId}': {
+    get: P('Per-session carbon receipt from the meter trail, hashed (owner or scoped staff)'),
+  },
+  '/carbon/summary': {
+    get: P('Site/portfolio carbon summary over a window (?siteId=&from=&to=, operator+)'),
+  },
 });
 module.exports = spec;

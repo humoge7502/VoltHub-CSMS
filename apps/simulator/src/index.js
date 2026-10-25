@@ -127,6 +127,17 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
   // robustness case the twin must prove the controller against.
   let remoteStopTx = null;
   let profileLimitW = null; // current TxDefaultProfile limit (W)
+  // ADR-0018 management commands: the twin keeps just enough local state to make the
+  // answers meaningful (GetConfiguration reflects ChangeConfiguration, Reset/Unlock
+  // are accepted, DataTransfer echoes vendor data).
+  const configuration = new Map([
+    ['HeartbeatInterval', String(args.heartbeat || 60)],
+    ['MeterValueSampleInterval', String(args.interval || 60)],
+    ['NumberOfConnectors', '1'],
+    ['ChargePointModel', 'VH-DC60'],
+    ['ChargePointVendor', 'VoltHub'],
+  ]);
+  const availability = new Map();
   ws.on('message', (raw) => {
     try {
       const m = JSON.parse(String(raw));
@@ -159,6 +170,44 @@ async function normalFlow(identity, cpId, connNo, token, faultMid = false, tag =
       } else if (action === 'ClearChargingProfile') {
         profileLimitW = null;
         ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+      } else if (action === 'Reset') {
+        console.log(`[sim:${identity}] Reset ${payload?.type || 'Soft'} accepted — rebooting`);
+        ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+      } else if (action === 'UnlockConnector') {
+        console.log(`[sim:${identity}] UnlockConnector ${payload?.connectorId} — Unlocked`);
+        ws.send(JSON.stringify([3, uid, { status: 'Unlocked' }]));
+      } else if (action === 'ChangeAvailability') {
+        availability.set(Number(payload?.connectorId ?? 0), payload?.type);
+        ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+      } else if (action === 'GetConfiguration') {
+        const wanted = Array.isArray(payload?.key) ? payload.key : null;
+        const configurationKey = [];
+        const unknownKey = [];
+        for (const k of wanted || [...configuration.keys()]) {
+          if (!configuration.has(k)) unknownKey.push(k);
+          else configurationKey.push({ key: k, readonly: false, value: configuration.get(k) });
+        }
+        ws.send(JSON.stringify([3, uid, { configurationKey, unknownKey }]));
+      } else if (action === 'ChangeConfiguration') {
+        configuration.set(String(payload?.key), String(payload?.value ?? ''));
+        ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+      } else if (action === 'TriggerMessage') {
+        ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+        if (payload?.requestedMessage === 'Heartbeat') ocppCall(ws, 'Heartbeat', {}).catch(() => {});
+      } else if (action === 'ReserveNow') {
+        ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+      } else if (action === 'CancelReservation') {
+        ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+      } else if (action === 'ClearCache') {
+        ws.send(JSON.stringify([3, uid, { status: 'Accepted' }]));
+      } else if (action === 'DataTransfer') {
+        ws.send(
+          JSON.stringify([
+            3,
+            uid,
+            { status: 'Accepted', data: payload?.data ? `echo:${payload.data}` : `vendor:${payload?.vendorId}` },
+          ])
+        );
       } else {
         ws.send(JSON.stringify([4, uid, 'NotSupported', action, {}]));
       }

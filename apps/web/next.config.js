@@ -22,6 +22,7 @@ const connectSrc = [
 
 module.exports = {
   reactStrictMode: true,
+  poweredByHeader: false,
   // The dev overlay badge is a screenshot artefact in docs/video captures.
   devIndicators: false,
   env: { NEXT_PUBLIC_API_BASE: API_BASE },
@@ -34,6 +35,8 @@ module.exports = {
         headers: [
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'X-DNS-Prefetch-Control', value: 'off' },
+          { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
           { key: 'Referrer-Policy', value: 'no-referrer' },
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(self)' },
           {
@@ -45,10 +48,30 @@ module.exports = {
               "style-src 'self' 'unsafe-inline'",
               "font-src 'self'",
               "img-src 'self' data:",
+              "manifest-src 'self'",
+              "worker-src 'self'",
+              "object-src 'none'",
+              "base-uri 'self'",
+              "form-action 'self'",
               "frame-ancestors 'none'",
+              "frame-src 'none'",
             ].join('; '),
           },
         ],
+      },
+      {
+        // The service worker must revalidate on every navigation, or a shipped
+        // security fix sits behind a stale cache. Icons are not fingerprinted, so
+        // they get a bounded day rather than immutable.
+        source: '/sw.js',
+        headers: [
+          { key: 'Cache-Control', value: 'no-cache, must-revalidate' },
+          { key: 'Service-Worker-Allowed', value: '/' },
+        ],
+      },
+      {
+        source: '/icons/:path*',
+        headers: [{ key: 'Cache-Control', value: 'public, max-age=86400, stale-while-revalidate=604800' }],
       },
     ];
   },

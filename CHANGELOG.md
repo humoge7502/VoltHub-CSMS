@@ -6,6 +6,59 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ### Added
 
+- **Console signature layer.** The landing page is now investor-grade: scroll-reveal
+  sections, pointer-tracked spotlight cards, a proof marquee, count-up market statistics
+  ($3.4B market / 24.8% CAGR receipts in `docs/business-model.md`), and a published
+  pricing strip (Garage free / Network $12 / Grid $29 per connector — the anti-opaque
+  position). New primitives live in `lib/fx.js` (Motion + Lucide, reduced-motion
+  collapses everything).
+- **Command palette (Ctrl/Cmd+K).** Keyboard-first navigation and actions, role-aware
+  (driver vs operator surfaces), ARIA combobox semantics, blurred backdrop; `⌘K` button
+  in the topbar.
+- **Business strategy docs.** `docs/business-model.md` (market receipts, ICP, published
+  per-connector pricing, GTM, unit economics) and `docs/investor-one-pager.md`.
+- **Expanded AI training receipt.** Forecaster retrained on the real licensed panel
+  (87 stations, 754k station-hours) with 6 rolling-origin folds, a 256-128 MLP and 622k
+  test points: 25–35% MASE skill vs seasonal-naive on every fold, conformal coverage
+  0.813 (nominal 0.8), beats both statistical baselines. `reports/metrics.json` +
+  `model.pt.sha256` updated by the honesty-gated trainer.
+
+### Changed
+
+- Web deps: `motion` (the modern animation library) + `lucide-react` (consistent icon
+  system) added; `next` 16.4.3 / `react` 19.3.1 (latest); zero known vulnerabilities.
+- Design-skill pack for agents installed (`.zcode/skills/`, untracked): UI/UX Pro Max,
+  Addy Osmani's engineering skills, emil/impeccable/hallmark/taste already present.
+
+### Added
+
+- **Third real dataset + retrained forecaster** — Korea (figshare
+  `10.6084/m9.figshare.22495141.v1`, CC-BY-4.0) joins Tennessee and Norway:
+  **87 stations / 754,032 station-hours / 1,331,724 kWh**. Retrained MLP: **MAE 1.906 kWh**,
+  RMSE 6.999, MASE 0.640, **36.0 % skill vs seasonal-naive**, conformal coverage **0.803**
+  (4 rolling-origin folds, 746,616 test points, 642.6 s CPU). Provenance, raw SHA-256 and
+  aggregation receipts in `apps/ai/reports/dataset.json`; no customer data.
+- **CarbonPilot** (`apps/api/src/carbon/`, `apps/web/src/app/carbon/`, ADR-0017) —
+  deterministic `model-v1` grid intensity, 48 h forecasts, SHA-256 session receipts with a
+  stated regional baseline, site summaries, and carbon-aware scheduling at **weight 0 by
+  default**. Average intensity for accounting vs marginal for scheduling; carbon never
+  blocks a session or enters the money path. 8 API tests.
+- **OCPP 1.6 management command suite** (`apps/api/src/ocpp/commands.js`, ADR-0018) —
+  `Reset`, `UnlockConnector`, `ChangeAvailability`, `GetConfiguration`,
+  `ChangeConfiguration`, `TriggerMessage`, `ReserveNow`, `CancelReservation`, `ClearCache`,
+  `DataTransfer`, each with an allow-listed payload, awaited `CALLRESULT`, per-command
+  accepted-status set, admin-only RBAC and audit. `GET /control/commands` documents the
+  catalog; `POST /control/cp/:cpId/commands/:action` actuates; the admin console has an
+  **OCPP commands** tab with a live inventory (`GET /admin/charge-points`, no secrets) and
+  shows the charger's raw answer. 10 API tests + simulator parity. Conformance statement:
+  `docs/ocpp-1.6-conformance.md`.
+- **AI governance surface** — `GET /v1/model-card`, `POST /v1/explain` (feature-group
+  occlusion), `POST /v1/drift` (value-bin PSI + two-sample KS + mean/zero/volatility/
+  hourly-shape shifts), proxied through `GET /ai/model-card`, `GET /ai/drift`,
+  `POST /ai/explain` with station scope and audit. 10 API tests, 21 sidecar tests.
+- **Installable PWA + offline page** — `app/manifest.js`, generated 192/512/maskable/apple
+  icons (`scripts/gen-pwa-icons.py`), a network-first `public/sw.js` that never caches API
+  responses, `/offline`, and smoke checks for manifest/icons/display/offline.
 - **Web smoke suite** — `apps/web/test/smoke.mjs` (+ `npm run test:smoke` in `apps/web`).
   16 outcome-based checks (hero, font, nav, no uncaught exceptions, no horizontal
   overflow at 375/1280, login fields, discover render, a11y floor: every input labelled,
@@ -28,6 +81,15 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ### Changed
 
+- **Docs resynced to the shipped system**: README OCPP scope (management commands,
+  online-only auth, diagnostics/firmware gaps), AI receipts (three datasets, CPU training,
+  model card/drift/explain) and 82-path API count; new ADR-0017/0018 and OCPP 1.6
+  conformance statement; ADR-0007's out-of-scope list marked superseded.
+- **Accessibility hardening**: visible `<caption>` on every data table, drawer focus moves
+  in on open and returns to the trigger on close, explicit open/close label, `.sr-only`
+  utility, PWA theme colour and `lang`/`dir` declared.
+- **OpenAPI snapshot** regenerated after the CarbonPilot, OCPP-command and AI-governance
+  routes landed (82 paths).
 - **Landing page de-slopped** per the Impeccable detector: removed the hero eyebrow chip,
   the "TAKE IT FROM THE TOP" kicker, and the three numbered section labels; reduced
   em-dash saturation; corrected the stale **66 paths → 72 paths** figure.
@@ -37,6 +99,10 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
   clean on the live site.
 - **Compose healthchecks** on `api` and `web` (both now report `(healthy)`).
 - `apps/ai` binds `AI_HOST` (default loopback; containers set `0.0.0.0`).
+- **Demo film re-rendered** against the shipped product: the stage now uses the new faces
+  (Bricolage Grotesque / IBM Plex Sans), the receipts scene and its narration cite
+  **143 tests** instead of 137, and all nine segments were re-recorded against the
+  current console (`video/out/volthub-demo.mp4`).
 
 ### Security
 
@@ -58,6 +124,12 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 - `scripts/rotate-admin.js` no longer echoes the plaintext password (CodeQL
   `js/clear-text-logging`); it prints the hash and a redacted instruction instead.
+- **Footer no longer floats mid-viewport** on short pages. The shell is now a full-height
+  column (`body` flex, `main { flex: 1 }`), so `/faults` and friends keep the footer at
+  the bottom of the screen instead of leaving dead space under it.
+- `video/record.mjs` hardcoded the published `Admin@123` for the operator segment, so
+  SEC-050 broke the recorder. It now reads `STAFF_PASSWORD` (or
+  `ADMIN_BOOTSTRAP_PASSWORD`), matching the seed.
 - `scripts/migrate.sh` waits (up to 2 min) for `freepdb1` to register with the listener
   before applying V001…, instead of racing it with ORA-12514 on a fast runner — the
   Docker healthcheck can already read `healthy` while the PDB is still closed.

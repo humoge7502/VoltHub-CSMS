@@ -84,7 +84,13 @@ function setChargingProfile(store, registry, log, { cpId, identity, profile, dec
   // profile "in force" for the verifier, and the pending-call registry is what turns
   // the CP's CALLRESULT/CALLERROR into an ack on the audit row (or a dead letter).
   store.markPushSent(row.push_id);
-  registerPendingCall(uid, { action: 'SetChargingProfile', cpId: Number(cpId), pushId: row.push_id, decisionId });
+  registerPendingCall(uid, {
+    action: 'SetChargingProfile',
+    cpId: Number(cpId),
+    identity: ident,
+    pushId: row.push_id,
+    decisionId,
+  });
   if (log && typeof log.info === 'function')
     log.info({ identity: ident, cpId, decisionId }, 'ocpp SetChargingProfile sent');
   return Promise.resolve({ uid, push_id: row.push_id, identity: ident });
@@ -103,7 +109,7 @@ function clearChargingProfile(registry, identity, { profileId, connectorId } = {
   if (profileId != null) payload.id = Number(profileId);
   if (connectorId != null) payload.connectorId = Number(connectorId);
   ws.send(call(uid, 'ClearChargingProfile', payload));
-  registerPendingCall(uid, { action: 'ClearChargingProfile', cpId: null });
+  registerPendingCall(uid, { action: 'ClearChargingProfile', cpId: null, identity });
   return Promise.resolve({ uid, identity });
 }
 
@@ -119,7 +125,7 @@ function getCompositeSchedule(registry, identity, { connectorId = 0, duration = 
   ws.send(
     call(uid, 'GetCompositeSchedule', { connectorId: Number(connectorId), duration: Number(duration), unit: 'W' })
   );
-  registerPendingCall(uid, { action: 'GetCompositeSchedule', cpId: null });
+  registerPendingCall(uid, { action: 'GetCompositeSchedule', cpId: null, identity });
   return Promise.resolve({ uid, identity });
 }
 

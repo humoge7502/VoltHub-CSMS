@@ -5,9 +5,35 @@ import { api, Pill, inr, PageHead, PageState, ConfirmDialog } from '../../lib/ui
 const TABS = [
   ['overview', 'Overview'],
   ['stations', 'Stations'],
+  ['ocpp', 'OCPP commands'],
   ['tariffs', 'Tariffs'],
   ['audit', 'Audit log'],
 ];
+
+const CMD_TEMPLATES = {
+  Reset: { type: 'Soft' },
+  UnlockConnector: { connectorId: 1 },
+  ChangeAvailability: { connectorId: 0, type: 'Operative' },
+  GetConfiguration: {},
+  ChangeConfiguration: { key: 'HeartbeatInterval', value: '60' },
+  TriggerMessage: { requestedMessage: 'StatusNotification', connectorId: 1 },
+  ReserveNow: {
+    connectorId: 1,
+    idTag: 'DEMO-TAG',
+    reservationId: 9001,
+  },
+  CancelReservation: { reservationId: 9001 },
+  ClearCache: {},
+  DataTransfer: { vendorId: 'com.volthub.console', messageId: 'ping', data: '{}' },
+};
+
+// ReserveNow needs a future expiry. Compute it when the action is chosen, not at
+// module load, so server and client render the same initial Reset template.
+function commandTemplate(action) {
+  const base = CMD_TEMPLATES[action] || {};
+  if (action !== 'ReserveNow') return { ...base };
+  return { ...base, expiryDate: new Date(Date.now() + 3600e3).toISOString() };
+}
 
 export default function Admin() {
   const [tab, setTab] = useState('overview');
@@ -23,6 +49,13 @@ export default function Admin() {
   const [confirmVersion, setConfirmVersion] = useState(false);
   const [versionName, setVersionName] = useState('City Day v3');
   const [flipTarget, setFlipTarget] = useState(null);
+  const [cps, setCps] = useState([]);
+  const [catalog, setCatalog] = useState([]);
+  const [cmdCp, setCmdCp] = useState('');
+  const [cmdAction, setCmdAction] = useState('Reset');
+  const [cmdJson, setCmdJson] = useState(() => JSON.stringify(commandTemplate('Reset'), null, 2));
+  const [cmdOut, setCmdOut] = useState(null);
+  const [cmdBusy, setCmdBusy] = useState(false);
   useEffect(() => {
     api('/admin/audit-logs')
       .then((j) => setLogs(j.logs))
@@ -33,7 +66,48 @@ export default function Admin() {
     api('/admin/stations')
       .then((j) => setStations(j.stations))
       .catch(() => {});
+    api('/admin/charge-points')
+      .then((j) => setCps(j.charge_points))
+      .catch(() => {});
+    api('/control/commands')
+      .then((j) => setCatalog(j.commands))
+      .catch(() => {});
   }, []);
+  const pickAction = (a) => {
+    setCmdAction(a);
+    setCmdJson(JSON.stringify(commandTemplate(a), null, 2));
+    setCmdOut(null);
+  };
+  const sendCommand = async () => {
+    if (!cmdCp) return setMsg('Select a charge point first.');
+    let body;
+    try {
+      body = cmdJson.trim() ? JSON.parse(cmdJson) : {};
+    } catch {
+      return setMsg('Payload is not valid JSON.');
+    }
+    setMsg('');
+    setOk('');
+    setCmdOut(null);
+    setCmdBusy(true);
+    try {
+      const j = await api(`/control/cp/${cmdCp}/commands/${cmdAction.toLowerCase()}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setCmdOut(j.command);
+      setOk(`${cmdAction} acknowledged by CP ${cmdCp}.`);
+      api('/admin/charge-points')
+        .then((x) => setCps(x.charge_points))
+        .catch(() => {});
+    } catch (e) {
+      setCmdOut({ error: { code: e.code || 'COMMAND_FAILED', message: e.message } });
+      setMsg(`${e.code || 'COMMAND_FAILED'}: ${e.message}`);
+    } finally {
+      setCmdBusy(false);
+    }
+  };
+  const selectedCatalog = catalog.find((c) => c.action === cmdAction);
   const addUser = async () => {
     setConfirmUser(false);
     setMsg('');
@@ -209,6 +283,9 @@ export default function Admin() {
           </section>
           <div className="tscroll">
             <table className="t">
+              <caption className="micro" style={{ textAlign: 'left', paddingBottom: 8 }}>
+                Stations in this deployment
+              </caption>
               <thead>
                 <tr>
                   <th scope="col">ID</th>
@@ -239,6 +316,97 @@ export default function Admin() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+      {tab === 'ocpp' && (
+        <div className="grid" style={{ gap: 'var(--sp-4)' }}>
+          <section className="card">
+            <div className="sec-h" style={{ marginBottom: 'var(--sp-3)' }}>
+              <h2 style={{ fontSize: '1rem' }}>Charge-point command console</h2>
+              <p>
+                Ten allow-listed OCPP 1.6J commands. Every send waits for the charger’s CALLRESULT — an offline unit is
+                a 409, a timeout is a 504, a rejection is surfaced, never swallowed.
+              </p>
+            </div>
+            <div className="fieldrow" style={{ alignItems: 'end' }}>
+              <label className="f" style={{ flex: '1 1 320px' }}>
+                Charge point
+                <select value={cmdCp} onChange={(e) => setCmdCp(e.target.value)} aria-describedby="ocpp-help">
+                  <option value="">Select a charge point…</option>
+                  {cps.map((c) => (
+                    <option key={c.cp_id} value={c.cp_id}>
+                      {c.ocpp_identity} · {c.station_name || `station ${c.station_id}`} · {c.status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="f" style={{ flex: '0 1 220px' }}>
+                Command
+                <select value={cmdAction} onChange={(e) => pickAction(e.target.value)}>
+                  {catalog.map((c) => (
+                    <option key={c.action} value={c.action}>
+                      {c.action}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="micro" id="ocpp-help" style={{ marginTop: 'var(--sp-2)' }}>
+              ADMIN only · awaited CALLRESULT · audited. `GetConfiguration` returns the charger payload rather than a
+              status.
+            </p>
+            <label className="f" style={{ marginTop: 'var(--sp-3)' }}>
+              Payload (JSON)
+              <textarea
+                value={cmdJson}
+                onChange={(e) => setCmdJson(e.target.value)}
+                rows={8}
+                spellCheck={false}
+                style={{ fontFamily: 'var(--font-plex-mono), monospace', fontSize: 13 }}
+              />
+            </label>
+            {selectedCatalog && Object.keys(selectedCatalog.payload || {}).length > 0 && (
+              <ul className="micro" style={{ margin: 'var(--sp-2) 0 0', paddingLeft: 18 }}>
+                {Object.entries(selectedCatalog.payload).map(([k, v]) => (
+                  <li key={k}>
+                    <code>{k}</code>: {v}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button
+              className="btn pri"
+              type="button"
+              style={{ marginTop: 'var(--sp-3)' }}
+              onClick={sendCommand}
+              disabled={cmdBusy || !cmdCp}
+            >
+              {cmdBusy ? 'Waiting for charger…' : 'Send command'}
+            </button>
+          </section>
+          <section className="card" aria-live="polite">
+            <div className="sec-h" style={{ marginBottom: 'var(--sp-2)' }}>
+              <h2 style={{ fontSize: '1rem' }}>Charger answer</h2>
+              <p>The raw correlated result, including the OCPP status and any payload.</p>
+            </div>
+            {cmdOut ? (
+              <pre
+                style={{
+                  overflowX: 'auto',
+                  margin: 0,
+                  padding: 'var(--sp-3)',
+                  background: 'var(--s1)',
+                  borderRadius: 'var(--r-s)',
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                }}
+              >
+                {JSON.stringify(cmdOut, null, 2)}
+              </pre>
+            ) : (
+              <p style={{ color: 'var(--tx2)' }}>No command sent in this session.</p>
+            )}
+          </section>
         </div>
       )}
       {tab === 'tariffs' && (
@@ -276,6 +444,9 @@ export default function Admin() {
       {tab === 'audit' && (
         <div className="tscroll">
           <table className="t">
+            <caption className="micro" style={{ textAlign: 'left', paddingBottom: 8 }}>
+              Recent audit entries
+            </caption>
             <thead>
               <tr>
                 <th scope="col">ID</th>

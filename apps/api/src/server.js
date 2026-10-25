@@ -13,6 +13,11 @@ const routes = require('./routes');
 const extended = require('./extended');
 const { mountOcpp } = require('./ocpp/gateway');
 const { securityHeaders, throttle } = require('./middleware/security');
+const { assertBootSecrets } = require('./middleware/auth');
+
+// SEC-069: fail before binding the port when a production deployment is configured with
+// a missing/published secret. Development keeps the ephemeral-key fallback.
+assertBootSecrets();
 
 const log = pino({ level: process.env.LOG_LEVEL || 'info' });
 const store = createStore();
@@ -141,6 +146,9 @@ global.__ocppRegistry = __ocppRegistry;
 // Mounted after mountOcpp so ENFORCED-mode plan cycles can actuate through the live
 // registry (the mount needs the populated Map reference — TDZ-safe ordering).
 app.use('/api/v1', require('./control-routes')(store, __ocppRegistry, log));
+// ADR-0017 CarbonPilot: regional intensity, station carbon cards and receipts.
+// Read-only, so it mounts beside the control plane without any actuation path.
+app.use('/api/v1', require('./carbon-routes')(store));
 
 const PORT = Number(process.env.PORT || process.env.API_PORT || 4000);
 // BUG-044 companion: bind only after the store upgrade settles. Listen arguments are

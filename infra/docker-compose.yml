@@ -61,6 +61,12 @@ services:
       # Worker -> API internal routes (outbox poll/ack, stale expiry). Must match the
       # worker's value; compose passes the same interpolation to both services.
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal}
+      # Outbox queue bounds (apps/api/src/db/store.js). Compose only injects .env
+      # variables this file references, so the queue knobs have to be listed here too.
+      OUTBOX_RETENTION_HOURS: ${OUTBOX_RETENTION_HOURS:-24}
+      OUTBOX_SOFT_CAP: ${OUTBOX_SOFT_CAP:-20000}
+      OUTBOX_HARD_CAP: ${OUTBOX_HARD_CAP:-50000}
+      DEAD_LETTER_CAP: ${DEAD_LETTER_CAP:-1000}
       # OCPP 1.6J upgrade auth: per-cp (default), require, or off.
       OCPP_AUTH: ${OCPP_AUTH:-per-cp}
       # SEC-043: unsigned wallet top-ups are demo/test-only. Compose only injects .env
@@ -117,6 +123,12 @@ services:
       TS_DB: volthub
       TS_USER: volthub
       TS_PASSWORD: volthub_dev_pwd
+      # Relay tuning (see .env.example). Listed here because compose does not pass
+      # through a variable the yaml never mentions — the same trap that silently
+      # disabled WALLET_UNSIGNED_TOPUP before it was added to the api block.
+      RELAY_LAG_SLO_SECONDS: ${RELAY_LAG_SLO_SECONDS:-120}
+      STATION_MAP_SYNC_SECONDS: ${STATION_MAP_SYNC_SECONDS:-60}
+      TS_POOL_MAX: ${TS_POOL_MAX:-4}
     depends_on:
       api: { condition: service_started }
       timescale: { condition: service_healthy }

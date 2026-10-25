@@ -199,9 +199,13 @@ module.exports = function extended(store) {
 
   // operator state control: SUSPENDED <-> CHARGING (matrix-enforced, 409 otherwise)
   // Station scope: operators may only transition sessions on their assigned stations.
+  // SEC-064: staff only. A DRIVER could previously move their own session to COMPLETED,
+  // which freed the connector and allowed billing mid-charge (free energy). Drivers end
+  // sessions through POST /sessions/:id/remote-stop, which is ownership-checked.
   r.patch(
     '/sessions/:id/state',
     authRequired,
+    roles('OPERATOR', 'ADMIN'),
     safe(async (req, res) => {
       const s = store.sessions.get(Number(req.params.id));
       if (!s) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'session' } });
@@ -321,6 +325,34 @@ module.exports = function extended(store) {
       res.json({ station: s });
     })
   );
+  r.get(
+    '/admin/charge-points',
+    authRequired,
+    roles('ADMIN'),
+    safe(async (req, res) => {
+      // Inventory for the day-2 command console. Never returns auth_secret:
+      // credentials are shown once at provisioning, not on every poll.
+      const rows = [...store.cps.values()]
+        .map((c) => {
+          const st = store.stations.get(Number(c.station_id));
+          return {
+            cp_id: c.cp_id,
+            station_id: c.station_id,
+            station_name: st?.name || null,
+            ocpp_identity: c.ocpp_identity,
+            vendor: c.vendor || null,
+            model: c.model || null,
+            firmware_version: c.firmware_version || null,
+            status: c.status || 'OFFLINE',
+            last_boot_at: c.last_boot_at || null,
+            last_seen_at: c.last_seen_at || null,
+            connectors: [...store.connectors.values()].filter((x) => Number(x.cp_id) === Number(c.cp_id)).length,
+          };
+        })
+        .sort((a, b) => a.cp_id - b.cp_id);
+      res.json({ charge_points: rows, online: rows.filter((c) => c.status === 'ONLINE').length });
+    })
+  );
   r.post(
     '/admin/charge-points',
     authRequired,
@@ -374,20 +406,36 @@ module.exports = function extended(store) {
       return Number(process.env.AI_TIMEOUT_MS || 3000);
     },
   };
-  async function aiPost(path, body) {
+  // Mirror of apps/ai/contract.py: HORIZON = 24 leads, MIN_HISTORY_H = 168 h.
+  // `apps/api/test/ai.js` pins the clamp, so a contract bump that forgets this
+  // file fails a test instead of quietly asking the sidecar for 48 leads.
+  const AI_HORIZON = 24;
+  const HISTORY_HOURS = 240;
+  async function aiCall(path, init) {
     const res = await fetch(`${AI.url}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-internal': AI.token },
-      body: JSON.stringify(body),
+      ...init,
+      headers: { 'content-type': 'application/json', 'x-internal': AI.token, ...(init?.headers || {}) },
       signal: AbortSignal.timeout(AI.timeoutMs),
     });
     if (!res.ok) {
-      const e = new Error(`ai ${path} ${res.status}`);
-      e.code = 'AI_UPSTREAM';
-      e.status = 502;
+      let detail = null;
+      try {
+        detail = (await res.json())?.detail;
+      } catch {}
+      const e = new Error(detail || `ai ${path} ${res.status}`);
+      // A 422 is the sidecar refusing an input the proxy itself should have refused;
+      // surface it as 422, not as an outage. Everything else is an upstream failure.
+      e.code = res.status === 422 ? 'AI_INVALID_INPUT' : 'AI_UPSTREAM';
+      e.status = res.status === 422 ? 422 : 502;
       throw e;
     }
     return res.json();
+  }
+  async function aiPost(path, body) {
+    return aiCall(path, { method: 'POST', body: JSON.stringify(body) });
+  }
+  async function aiGet(path) {
+    return aiCall(path, { method: 'GET' });
   }
   function aiScope(req, res, sid) {
     if (req.user.role === 'OPERATOR' && !(req.user.stationScope || []).includes(Number(sid))) {
@@ -397,6 +445,9 @@ module.exports = function extended(store) {
     return true;
   }
   function aiDown(res, e, path) {
+    if (e && e.code === 'AI_INVALID_INPUT') {
+      return res.status(422).json({ error: { code: 'AI_INVALID_INPUT', message: e.message } });
+    }
     if (e && e.code === 'AI_UPSTREAM') {
       return res.status(502).json({ error: { code: 'AI_UNAVAILABLE', message: `AI sidecar answered ${e.message}` } });
     }
@@ -413,30 +464,22 @@ module.exports = function extended(store) {
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
       }
       if (!aiScope(req, res, sid)) return;
-      const hours = Math.min(Math.max(Number(req.query.hours) || 24, 1), 48);
-      // Station-relative history: recent hourly kWh per connector aggregated to the
-      // station (last 14 days of local-store telemetry; the sidecar needs >= 168h).
-      const cpIds = [...store.cps.values()].filter((c) => c.station_id === sid).map((c) => c.cp_id);
-      // connector values carry cp_id/connector_no — the ref string is the map key
-      // (store._ref), not a field; deriving it here instead avoids undefined.split.
-      const refs = new Set(
-        [...store.connectors.values()]
-          .filter((c) => cpIds.includes(c.cp_id))
-          .map((c) => store._ref(c.cp_id, c.connector_no))
-      );
-      const sessByHour = new Map();
-      for (const s of store.sessions.values()) {
-        if (!refs.has(s.connector_ref)) continue;
-        const h = new Date(s.started_at);
-        h.setUTCMinutes(0, 0, 0);
-        sessByHour.set(h.toISOString().slice(0, 13), (sessByHour.get(h.toISOString().slice(0, 13)) || 0) + 1);
-      }
-      const history = [...sessByHour.entries()].sort(([a], [b2]) => (a < b2 ? -1 : 1)).map(([, v]) => v);
+      // The sidecar trains on hourly kWh with real timestamps (contract v3); this
+      // route used to send hourly session COUNTS keyed by whatever order the map
+      // happened to iterate in, so the model was fed a different quantity than it
+      // was fitted for and the calendar features were meaningless.
+      const hours = Math.min(Math.max(Number(req.query.hours) || 24, 1), AI_HORIZON);
+      const hist = store.hourlyStationKwh(sid, HISTORY_HOURS);
       try {
-        // Sidecar contract: history is keyed by station id (it forecasts per station).
-        const j = await aiPost('/v1/forecast', { station_ids: [sid], hours, history: { [String(sid)]: history } });
-        store.auditLog(req.user.id, 'STATION', sid, 'AI_FORECAST', null, { hours });
-        res.json({ ...j, station_id: sid });
+        const j = await aiPost('/v1/forecast', {
+          station_ids: [sid],
+          hours,
+          // Keyed by station id, and timestamped: hour-of-day/day-of-week come from
+          // the clock, not from the array length.
+          history: { [String(sid)]: hist },
+        });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_FORECAST', null, { hours, history_hours: hist.kwh.length });
+        res.json({ ...j, station_id: sid, history_hours: hist.kwh.length });
       } catch (e) {
         aiDown(res, e, '/v1/forecast');
       }
@@ -516,6 +559,85 @@ module.exports = function extended(store) {
         res.json({ ...j, station_id: sid });
       } catch (e) {
         aiDown(res, e, '/v1/optimize');
+      }
+    })
+  );
+
+  // Governance: the model card is the receipt a reviewer reads before believing a
+  // forecast. It is staff-only but not station-scoped — it contains no customer data.
+  r.get(
+    '/ai/model-card',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      try {
+        res.json(await aiGet('/v1/model-card'));
+      } catch (e) {
+        aiDown(res, e, '/v1/model-card');
+      }
+    })
+  );
+
+  // Data-drift monitor: compare the previous baseline window with the most recent
+  // window on the same contiguous hourly grid. This is a statistical warning, never
+  // an automatic retrain and never an input to control.
+  r.get(
+    '/ai/drift',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const sid = Number(req.query.stationId);
+      if (!store.stations.has(sid)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
+      }
+      if (!aiScope(req, res, sid)) return;
+      const recentDays = Math.min(Math.max(Number(req.query.recentDays) || 7, 3), 14);
+      const baselineDays = Math.min(Math.max(Number(req.query.baselineDays) || 14, 7), 31 - recentDays);
+      const hist = store.hourlyStationKwh(sid, (baselineDays + recentDays) * 24);
+      const split = baselineDays * 24;
+      try {
+        const j = await aiPost('/v1/drift', {
+          station_id: sid,
+          baseline: { timestamps: hist.timestamps.slice(0, split), kwh: hist.kwh.slice(0, split) },
+          recent: { timestamps: hist.timestamps.slice(split), kwh: hist.kwh.slice(split) },
+        });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_DRIFT', null, {
+          verdict: j.verdict,
+          baseline_days: baselineDays,
+          recent_days: recentDays,
+        });
+        res.json({ ...j, station_id: sid, baseline_days: baselineDays, recent_days: recentDays });
+      } catch (e) {
+        aiDown(res, e, '/v1/drift');
+      }
+    })
+  );
+
+  // Explainability: why did the model forecast this shape? Feature-group occlusion
+  // answers in kWh, in the same units an operator reads on the chart.
+  r.post(
+    '/ai/explain',
+    authRequired,
+    roles('OPERATOR', 'ADMIN'),
+    safe(async (req, res) => {
+      const b = req.body || {};
+      const sid = Number(b.stationId);
+      if (!store.stations.has(sid)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'unknown station' } });
+      }
+      if (!aiScope(req, res, sid)) return;
+      const hours = Math.min(Math.max(Number(b.hours) || AI_HORIZON, 1), AI_HORIZON);
+      const hist = store.hourlyStationKwh(sid, HISTORY_HOURS);
+      try {
+        const j = await aiPost('/v1/explain', { station_id: sid, history: hist, hours });
+        store.auditLog(req.user.id, 'STATION', sid, 'AI_EXPLAIN', null, {
+          hours,
+          top_driver: j.top_driver,
+          history_hours: hist.kwh.length,
+        });
+        res.json({ ...j, station_id: sid, history_hours: hist.kwh.length });
+      } catch (e) {
+        aiDown(res, e, '/v1/explain');
       }
     })
   );

@@ -1,0 +1,44 @@
+# Production overlay — NODE_ENV=production and required application secrets.
+#
+#   docker compose --env-file .env \
+#     -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d --build
+#
+# The base file is the one-command demo (predictable dev secrets, seeded demo data,
+# unsigned top-ups outside production). This overlay flips the app into production mode,
+# so the same boot-discipline checks that refuse published secrets actually run:
+#   - JWT_SECRET          >= 32 random bytes, never a value from .env.example
+#   - INTERNAL_TOKEN      >= 24 random chars (worker <-> API relay)
+#   - AI_TOKEN            >= 24 random chars (API -> advisory sidecar)
+# Interpolation with `:?` fails the whole compose invocation when a value is missing,
+# instead of silently booting with the demo default.
+#
+# Database passwords are still the base file's values. Change them for a real deployment
+# (Oracle uses ORACLE_PASSWORD only on first boot of the volume; Timescale's healthcheck
+# relies on the same literal) and re-run scripts/migrate.sh afterwards.
+
+services:
+  api:
+    environment:
+      NODE_ENV: production
+      JWT_SECRET: '${JWT_SECRET:?set JWT_SECRET (>=32 random bytes) in .env}'
+      INTERNAL_TOKEN: '${INTERNAL_TOKEN:?set INTERNAL_TOKEN (>=24 random chars) in .env}'
+      AI_TOKEN: '${AI_TOKEN:?set AI_TOKEN (>=24 random chars) in .env}'
+      # Production must not mint demo credit or accept unsigned top-ups.
+      WELCOME_CREDIT: '0'
+      WALLET_UNSIGNED_TOPUP: '0'
+      # No demo charge points with published `dev-*` OCPP secrets.
+      SEED_PROFILE: ${SEED_PROFILE:-empty}
+
+  worker:
+    environment:
+      NODE_ENV: production
+      INTERNAL_TOKEN: '${INTERNAL_TOKEN:?set INTERNAL_TOKEN (>=24 random chars) in .env}'
+
+  ai:
+    environment:
+      NODE_ENV: production
+      AI_TOKEN: '${AI_TOKEN:?set AI_TOKEN (>=24 random chars) in .env}'
+
+  web:
+    environment:
+      NODE_ENV: production

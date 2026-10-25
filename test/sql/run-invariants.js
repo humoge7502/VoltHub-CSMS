@@ -158,6 +158,17 @@ function guardMetaChecks() {
     if (!/guard_pkg\.set_status\(\s*'reservation_pkg\.expire_stale'/.test(body))
       fails.push(`GUARD-META-3: ${f} does not release the connector hold on expiry (BUG-053 drift)`);
   }
+  // F-05: the body that actually wins (latest migration defining reservation_pkg) must
+  // derive the hold from the remaining BOOKED windows, not release unconditionally.
+  const bodies = files.filter((f) =>
+    /CREATE OR REPLACE PACKAGE BODY reservation_pkg/.test(fs.readFileSync(path.join(dir, f), 'utf8'))
+  );
+  const latest = bodies.sort().pop();
+  const latestBody = latest ? fs.readFileSync(path.join(dir, latest), 'utf8') : '';
+  if (!latest || !/PROCEDURE release_hold_if_free/.test(latestBody) || !/status = 'BOOKED'/.test(latestBody))
+    fails.push(
+      `GUARD-META-4: ${latest || 'no body'} does not derive the connector hold from remaining BOOKED windows (F-05)`
+    );
   return fails;
 }
 
@@ -281,6 +292,18 @@ async function runOracleBehaviourProbes(conn, oracledb, fails) {
   };
   const statusOf = async (cp, cn) =>
     (await q('SELECT status FROM connector WHERE cp_id = :cp AND connector_no = :cn', { cp, cn })).rows[0].STATUS;
+  // F-05: after a window leaves BOOKED, the connector is AVAILABLE only when no other
+  // BOOKED window remains on it.
+  const expectedHold = async (cp, cn) =>
+    Number(
+      (
+        await q("SELECT COUNT(*) AS n FROM reservation WHERE connector_ref = :ref AND status = 'BOOKED'", {
+          ref: `${cp}:${cn}`,
+        })
+      ).rows[0].N
+    ) > 0
+      ? 'RESERVED'
+      : 'AVAILABLE';
 
   // 3. The legitimate paths must still pass the guard on a session that has never leaked:
   //    create_reservation and cancel_reservation each mark their own write (the latter
@@ -315,9 +338,10 @@ async function runOracleBehaviourProbes(conn, oracledb, fails) {
         p_actor: uid,
       });
       const freed = await statusOf(booked.cp, booked.cn);
-      if (freed !== 'AVAILABLE')
+      const want = await expectedHold(booked.cp, booked.cn);
+      if (freed !== want)
         fails.push(
-          `GUARD-ORACLE-3: cancellation did not release connector ${booked.cp}:${booked.cn} (${freed}) — BUG-052 regression`
+          `GUARD-ORACLE-3: cancellation left connector ${booked.cp}:${booked.cn} ${freed}, expected ${want} (F-05) — BUG-052 regression`
         );
     } catch (e) {
       fails.push(`GUARD-ORACLE-3: cancel_reservation was refused on a session with no leaked identity — ${e.message}`);
@@ -351,12 +375,72 @@ async function runOracleBehaviourProbes(conn, oracledb, fails) {
     const rst = (await q('SELECT status FROM reservation WHERE reservation_id = :rid', { rid: expiry.rid })).rows[0]
       .STATUS;
     const cst = await statusOf(expiry.cp, expiry.cn);
+    const want = await expectedHold(expiry.cp, expiry.cn);
     if (rst !== 'EXPIRED') fails.push(`GUARD-ORACLE-4: probe window ${expiry.rid} was not expired (${rst})`);
-    if (cst !== 'AVAILABLE')
+    if (cst !== want)
       fails.push(
-        `GUARD-ORACLE-4: expiry left connector ${expiry.cp}:${expiry.cn} ${cst} — the hold leaked (BUG-050/053)`
+        `GUARD-ORACLE-4: expiry left connector ${expiry.cp}:${expiry.cn} ${cst}, expected ${want} — the hold diverged from the BOOKED windows (BUG-050/053, F-05)`
       );
-    else console.log(`  guard-oracle-4: expiry released connector ${expiry.cp}:${expiry.cn} (pass)`);
+    else console.log(`  guard-oracle-4: expiry left connector ${expiry.cp}:${expiry.cn} ${cst} (pass)`);
+  }
+  // 5. F-05: two non-overlapping windows share a connector; cancelling the first must
+  //    keep RESERVED while the second is BOOKED, and only the last release it.
+  try {
+    const free = (
+      await q(
+        `SELECT c.cp_id, c.connector_no FROM connector c
+          WHERE c.status = 'AVAILABLE'
+            AND NOT EXISTS (SELECT 1 FROM reservation r
+                             WHERE r.cp_id = c.cp_id AND r.connector_no = c.connector_no
+                               AND r.status IN ('BOOKED','CONVERTED'))
+          ORDER BY c.cp_id, c.connector_no FETCH FIRST 1 ROWS ONLY`
+      )
+    ).rows[0];
+    if (!free) fails.push('GUARD-ORACLE-5: no free connector to probe the two-window hold');
+    else {
+      const mk = async (day) => {
+        const r = await conn.execute(
+          `BEGIN reservation_pkg.create_reservation(:p_user, :p_vehicle, :p_cp, :p_conn,
+             SYSTIMESTAMP + INTERVAL '${day}' DAY,
+             SYSTIMESTAMP + INTERVAL '${day}' DAY + INTERVAL '20' MINUTE, :p_res_id); END;`,
+          {
+            p_user: uid,
+            p_vehicle: vid,
+            p_cp: free.CP_ID,
+            p_conn: free.CONNECTOR_NO,
+            p_res_id: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
+          }
+        );
+        return r.outBinds.p_res_id;
+      };
+      const first = await mk(11);
+      const second = await mk(13);
+      await conn.commit();
+      await conn.execute('BEGIN reservation_pkg.cancel_reservation(:p_res_id, :p_actor); END;', {
+        p_res_id: first,
+        p_actor: uid,
+      });
+      await conn.commit();
+      const held = await statusOf(free.CP_ID, free.CONNECTOR_NO);
+      if (held !== 'RESERVED')
+        fails.push(
+          `GUARD-ORACLE-5: cancelling one of two windows left ${free.CP_ID}:${free.CONNECTOR_NO} ${held}, expected RESERVED (F-05)`
+        );
+      await conn.execute('BEGIN reservation_pkg.cancel_reservation(:p_res_id, :p_actor); END;', {
+        p_res_id: second,
+        p_actor: uid,
+      });
+      await conn.commit();
+      const freed = await statusOf(free.CP_ID, free.CONNECTOR_NO);
+      if (freed !== 'AVAILABLE')
+        fails.push(
+          `GUARD-ORACLE-5: cancelling the last window left ${free.CP_ID}:${free.CONNECTOR_NO} ${freed}, expected AVAILABLE (F-05)`
+        );
+      if (!fails.some((f) => f.startsWith('GUARD-ORACLE-5')))
+        console.log(`  guard-oracle-5: two-window hold derived correctly on ${free.CP_ID}:${free.CONNECTOR_NO} (pass)`);
+    }
+  } catch (e) {
+    fails.push(`GUARD-ORACLE-5: F-05 two-window probe failed — ${e.message}`);
   }
   // Remove the probe's own rows. expire_stale commits internally, so the vehicle and the
   // expired window would otherwise accumulate once per run.

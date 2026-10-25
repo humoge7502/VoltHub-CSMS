@@ -17,7 +17,8 @@ function p95() {
   return s[Math.min(s.length - 1, Math.floor(s.length * 0.95))];
 }
 function render(store) {
-  const outbox = store ? store.outbox.filter((e) => !e.processed_at).length : 0;
+  // One measured snapshot instead of three separate O(depth) filters per scrape.
+  const lag = store && store.outboxLag ? store.outboxLag() : { pending: 0, oldest_age_s: 0, dead_letters_open: 0 };
   const cps = (() => {
     try {
       return [...store.cps.values()].filter((c) => c.status === 'ONLINE').length;
@@ -46,7 +47,22 @@ function render(store) {
       `volthub_latency_p95_ms ${p95()}`,
       '# HELP volthub_outbox_depth Unacked outbox events',
       '# TYPE volthub_outbox_depth gauge',
-      `volthub_outbox_depth ${outbox}`,
+      `volthub_outbox_depth ${lag.pending}`,
+      // Age of the oldest unacked event: the difference between "the relay is busy"
+      // and "the relay stopped and nobody noticed". Alert on this, not on depth.
+      '# HELP volthub_outbox_oldest_age_seconds Age of the oldest unacked event',
+      '# TYPE volthub_outbox_oldest_age_seconds gauge',
+      `volthub_outbox_oldest_age_seconds ${lag.oldest_age_s}`,
+      '# HELP volthub_dead_letter_depth Poison events parked for operator triage',
+      '# TYPE volthub_dead_letter_depth gauge',
+      `volthub_dead_letter_depth ${lag.dead_letters_open}`,
+      // -1 means no relay has polled this process since boot: the queue is growing
+      // and nothing is draining it. Pair with outbox_oldest_age for the paging rule.
+      '# HELP volthub_relay_last_poll_seconds Age of the last worker outbox poll (-1 = never)',
+      '# TYPE volthub_relay_last_poll_seconds gauge',
+      `volthub_relay_last_poll_seconds ${
+        store && store._relayLastPollAt ? Math.round((Date.now() - store._relayLastPollAt) / 1000) : -1
+      }`,
       '# HELP volthub_ocpp_online Connected charge points (local view)',
       '# TYPE volthub_ocpp_online gauge',
       `volthub_ocpp_online ${cps}`,

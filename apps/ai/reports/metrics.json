@@ -1,37 +1,231 @@
 {
-  "trained_at": "2026-09-07T19:11:17.883326+00:00",
-  "device": "cuda",
+  "trained_at": "2026-10-25T20:04:03.378789+00:00",
+  "device": "cpu",
+  "torch": "2.14.1+cpu",
+  "feature_version": "vh-feat-v3",
+  "input_dim": 36,
   "data": {
-    "n_stations": 24,
-    "days": 28,
-    "vehicles": 2000,
-    "seed": 7,
-    "device": "cuda",
-    "total_sessions": 102700,
-    "total_kwh": 2724554.0
-  },
-  "split": {
-    "train_rows": 8064,
-    "test_rows": 3456,
-    "test_last_days": 7
-  },
-  "models": {
-    "seasonal_naive_168h": {
-      "mae": 73.81977844238281,
-      "rmse": 100.47119140625,
-      "n": 82944
-    },
-    "ridge": {
-      "mae": 63.11366653442383,
-      "rmse": 86.62718963623047,
-      "n": 82944
-    },
-    "mlp_128x64": {
-      "mae": 56.40703201293945,
-      "rmse": 77.12907409667969,
-      "n": 82944
+    "synthetic_twin": {
+      "n_stations": 24,
+      "days": 120,
+      "vehicles": 2000,
+      "seed": 7,
+      "device": "cpu",
+      "total_sessions": 493638,
+      "total_kwh": 13303865.0,
+      "start": "2026-08-03T00:00:00+00:00",
+      "generator": "volthub-twin-v2 (diurnal + trend + outages + weather events)"
     }
   },
-  "train_seconds": 3.86,
-  "beats_naive": true
+  "panel": {
+    "stations": 24,
+    "rows": 64536,
+    "station_hours": 69120,
+    "sources": [
+      "synthetic-twin"
+    ]
+  },
+  "backtest": {
+    "protocol": "rolling-origin, per-series recency, purge + calibration block before each test fold",
+    "folds": 6,
+    "fold_hours": 180,
+    "backtest_days": 45,
+    "calib_days": 10,
+    "purge_days": 1,
+    "test_points": 622080,
+    "per_fold": [
+      {
+        "fold": 0,
+        "rows": 4320,
+        "mlp_mae_kwh": 62.4152,
+        "ridge_mae_kwh": 66.7516,
+        "naive168_mae_kwh": 92.4278,
+        "weekly4_mae_kwh": 71.6718,
+        "skill_vs_naive_pct": 32.47,
+        "interval_coverage": 0.8825,
+        "fit": {
+          "epochs_run": 10,
+          "optimizer_steps": 620,
+          "early_stopped": true,
+          "val_loss": 0.219855
+        }
+      },
+      {
+        "fold": 1,
+        "rows": 4320,
+        "mlp_mae_kwh": 64.3251,
+        "ridge_mae_kwh": 69.5968,
+        "naive168_mae_kwh": 85.7817,
+        "weekly4_mae_kwh": 71.7649,
+        "skill_vs_naive_pct": 25.01,
+        "interval_coverage": 0.8119,
+        "fit": {
+          "epochs_run": 8,
+          "optimizer_steps": 568,
+          "early_stopped": true,
+          "val_loss": 0.142805
+        }
+      },
+      {
+        "fold": 2,
+        "rows": 4320,
+        "mlp_mae_kwh": 64.2971,
+        "ridge_mae_kwh": 70.764,
+        "naive168_mae_kwh": 86.7315,
+        "weekly4_mae_kwh": 71.4644,
+        "skill_vs_naive_pct": 25.87,
+        "interval_coverage": 0.8007,
+        "fit": {
+          "epochs_run": 16,
+          "optimizer_steps": 1264,
+          "early_stopped": true,
+          "val_loss": 0.162518
+        }
+      },
+      {
+        "fold": 3,
+        "rows": 4320,
+        "mlp_mae_kwh": 66.0614,
+        "ridge_mae_kwh": 71.4577,
+        "naive168_mae_kwh": 90.6308,
+        "weekly4_mae_kwh": 72.2134,
+        "skill_vs_naive_pct": 27.11,
+        "interval_coverage": 0.7961,
+        "fit": {
+          "epochs_run": 14,
+          "optimizer_steps": 1232,
+          "early_stopped": true,
+          "val_loss": 0.150877
+        }
+      },
+      {
+        "fold": 4,
+        "rows": 4320,
+        "mlp_mae_kwh": 76.0434,
+        "ridge_mae_kwh": 83.8894,
+        "naive168_mae_kwh": 104.3873,
+        "weekly4_mae_kwh": 84.4063,
+        "skill_vs_naive_pct": 27.15,
+        "interval_coverage": 0.7477,
+        "fit": {
+          "epochs_run": 9,
+          "optimizer_steps": 864,
+          "early_stopped": true,
+          "val_loss": 0.147678
+        }
+      },
+      {
+        "fold": 5,
+        "rows": 4320,
+        "mlp_mae_kwh": 63.2171,
+        "ridge_mae_kwh": 68.9904,
+        "naive168_mae_kwh": 97.701,
+        "weekly4_mae_kwh": 69.8705,
+        "skill_vs_naive_pct": 35.3,
+        "interval_coverage": 0.8373,
+        "fit": {
+          "epochs_run": 7,
+          "optimizer_steps": 735,
+          "early_stopped": true,
+          "val_loss": 0.164716
+        }
+      }
+    ],
+    "per_source": {
+      "synthetic-twin": {
+        "mae_kwh": 66.0599,
+        "naive_mae_kwh": 92.9434,
+        "points": 622080
+      }
+    },
+    "per_horizon_mae_kwh": [
+      63.102,
+      63.9813,
+      64.8931,
+      65.2027,
+      65.6951,
+      65.7384,
+      65.8579,
+      66.1507,
+      66.3101,
+      66.518,
+      66.0239,
+      66.1674,
+      66.3332,
+      66.5111,
+      66.4522,
+      66.4962,
+      66.5114,
+      66.5426,
+      66.6775,
+      66.7271,
+      66.8263,
+      66.9533,
+      66.9376,
+      66.8278
+    ],
+    "leakage_note": "Within a station, no training target window overlaps its fold's test window (purge enforced). Cross-station pooling keeps other stations' rows in train \u2014 intentional, this is one shared model, and it is exactly how the sidecar is deployed."
+  },
+  "models": {
+    "mlp_256x128": {
+      "mae_kwh": 66.0599,
+      "rmse_kwh": 99.6218,
+      "points": 622080,
+      "mase_vs_naive168": 0.7108,
+      "skill_vs_naive_pct": 28.92,
+      "skill_vs_weekly4_pct": 10.2
+    },
+    "ridge": {
+      "mae_kwh": 71.9083,
+      "rmse_kwh": 107.7376,
+      "points": 622080,
+      "mase_vs_naive168": 0.7737,
+      "skill_vs_naive_pct": 22.63,
+      "skill_vs_weekly4_pct": 2.25
+    },
+    "seasonal_naive_168h": {
+      "mae_kwh": 92.9434,
+      "rmse_kwh": 142.1772,
+      "points": 622080,
+      "mase_vs_naive168": 1.0
+    },
+    "weekly_same_hour_mean": {
+      "mae_kwh": 73.5652,
+      "rmse_kwh": 111.0932,
+      "points": 622080
+    }
+  },
+  "intervals": {
+    "method": "per-horizon signed residual quantiles (split conformal, finite-sample corrected)",
+    "nominal_coverage": 0.8,
+    "empirical_coverage": 0.8127,
+    "coverage_error": 0.0127,
+    "per_fold_coverage": [
+      0.8825,
+      0.8119,
+      0.8007,
+      0.7961,
+      0.7477,
+      0.8373
+    ],
+    "n_calibration_points": 829440,
+    "pinball_low": 15.6439,
+    "pinball_high": 18.55,
+    "mean_width_kwh": 194.6868
+  },
+  "train_seconds": 122.02,
+  "beats_naive": true,
+  "beats_weekly_mean": true,
+  "artifact": {
+    "path": "apps/ai/reports/model.pt",
+    "file_sha256": "3fa07261538b5ccec385d7bc68774eb709348c76feaefe57911dae589113c99b",
+    "serving_parity": {
+      "rows_checked": 512,
+      "max_abs_relative_difference": 0.0,
+      "weights_only_load": true,
+      "payload_sha256_verified": true,
+      "file_sha256": "3fa07261538b5ccec385d7bc68774eb709348c76feaefe57911dae589113c99b"
+    },
+    "payload_sha256": "6a444927585b9304adc9e85d7efd43f24113a6a943464eefbc43c10ee5964328"
+  }
 }

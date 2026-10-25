@@ -1,6 +1,9 @@
 # ADR-0007: CSMS→CP remote commands (RemoteStop/RemoteStart) — scope and shape
 
-Date: 2026-09 (post Audit Round 2, B2G-009) · Status: proposed
+Date: 2026-09 (post Audit Round 2, B2G-009) · Status: accepted; its out-of-scope list is
+superseded by ADR-0018 (2026-10) for Reset, UnlockConnector, ChangeAvailability,
+GetConfiguration, ChangeConfiguration, TriggerMessage, ReserveNow, CancelReservation,
+ClearCache and DataTransfer.
 
 ## Context
 
@@ -26,6 +29,11 @@ mirroring the simulator's own helper).
 
 DataTransfer, GetDiagnostics, Firmware/Configuration management, reserve-now over OCPP.
 The 2.0.1 migration story (ADR note in README) is documentation, not code.
+
+> **Update 2026-10:** this list is historical. ADR-0018 adds the ten management
+> commands above (including DataTransfer and configuration/reservation) behind an
+> allow-list, awaited CALLRESULT correlation and admin-only RBAC. `GetDiagnostics`
+> and firmware update remain out of scope.
 
 ## Consequences
 

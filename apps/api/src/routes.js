@@ -27,11 +27,12 @@ const {
   roles,
   scopeCheck,
   requireOwned,
+  stationInScope,
   setRefreshCookie,
   clearRefreshCookie,
   REFRESH_COOKIE,
 } = require('./middleware/auth');
-const { checkLoginThrottle, routerBarrier } = require('./middleware/security');
+const { checkLoginThrottle, makeLimiter, routerBarrier } = require('./middleware/security');
 const { oraStatus } = require('./errors');
 // Telemetry reads: Timescale when wired, in-process rollup otherwise (ADR-0002).
 const ts = require('./db/timescale');
@@ -46,10 +47,14 @@ module.exports = function routes(store) {
   // global per-role throttle in server.js stays the binding limit for drivers; see
   // middleware/security.js routerBarrier() for exactly what this does and does not cap.
   r.use(routerBarrier({ key: 'api', limit: 120 }));
+  // SEC-063: signup is the one anonymous write that mints wallet value. Cap it per IP
+  // (IPv6-normalized) so a script cannot farm the welcome credit.
+  const registerLimiter = makeLimiter({ key: 'register', limit: 5 });
 
   // ---- auth ----
   r.post(
     '/auth/register',
+    registerLimiter,
     safe(async (req, res) => {
       vRegister(req.body);
       // Await is REQUIRED: the durable engine's mirror wrapper is promise-shaped —
@@ -60,9 +65,15 @@ module.exports = function routes(store) {
         full_name: req.body.full_name,
         role: 'DRIVER',
       });
-      // Awaited: the top-up is a write-through mirror too (BUG-042) — an unawaited
-      // mirror raced the caller's very next request on the shared mirror connection.
-      await store.topup(u.user_id, 500); // welcome credit (capped demo economy; see topup caps)
+      // SEC-063: the welcome credit is a demo-economy affordance, not a production
+      // entitlement. Default 500 in dev, 0 in production unless explicitly enabled.
+      const welcome = Number(process.env.WELCOME_CREDIT ?? (process.env.NODE_ENV === 'production' ? 0 : 500));
+      if (Number.isFinite(welcome) && welcome > 0) {
+        // Awaited: the top-up is a write-through mirror too (BUG-042) — an unawaited
+        // mirror raced the caller's very next request on the shared mirror connection.
+        await store.topup(u.user_id, welcome);
+        store.auditLog(u.user_id, 'WALLET', u.user_id, 'WELCOME_CREDIT', null, { amount: welcome });
+      }
       store.auditLog(u.user_id, 'APP_USER', u.user_id, 'REGISTER', null, { email: u.email });
       const rt = issueRefresh(store, u, req.body.device);
       setRefreshCookie(res, rt); // SEC-012: register grants the same cookie as login
@@ -132,6 +143,15 @@ module.exports = function routes(store) {
       // BUG-055: a valid refresh token whose user was removed must 401, not 500 on
       // `u.user_id` below. The rotation above already burned the token either way.
       if (!u) return res.status(401).json({ error: { code: 'BAD_REFRESH', message: 'user no longer exists' } });
+      // SEC-061: suspension must terminate the refresh chain, not merely the next login.
+      if (u.status !== 'ACTIVE') {
+        for (const sib of store.refresh.values()) {
+          if (sib.family_id && sib.family_id === t.family_id)
+            sib.revoked_at = sib.revoked_at || new Date().toISOString();
+        }
+        clearRefreshCookie(res);
+        return res.status(403).json({ error: { code: 'SUSPENDED', message: 'account suspended' } });
+      }
       const rt = issueRefresh(store, u, t.device_label, t.family_id);
       setRefreshCookie(res, rt);
       res.json({
@@ -223,17 +243,32 @@ module.exports = function routes(store) {
       let list = [...store.stations.values()].filter((s) => s.status === 'ACTIVE');
       if (q)
         list = list.filter((s) => (s.name + s.city + s.address_line).toLowerCase().includes(String(q).toLowerCase()));
+      // PF-04: build read indexes once per request. The previous nested filters were
+      // O(stations x cps + cps x connectors + connectors x standards) and crossed the
+      // 300 ms NFR at 1k stations before pagination even ran.
+      const cpsByStation = new Map();
+      for (const c of store.cps.values()) {
+        const arr = cpsByStation.get(Number(c.station_id));
+        if (arr) arr.push(c);
+        else cpsByStation.set(Number(c.station_id), [c]);
+      }
+      const connsByCp = new Map();
+      for (const x of store.connectors.values()) {
+        const key = Number(x.cp_id);
+        const arr = connsByCp.get(key);
+        if (arr) arr.push(x);
+        else connsByCp.set(key, [x]);
+      }
+      const standardById = new Map(store.standards.map((t) => [t.standard_id, t]));
       let rows = list.map((s) => {
-        const cps = [...store.cps.values()].filter((c) => c.station_id === s.station_id);
+        const cps = cpsByStation.get(Number(s.station_id)) || [];
         const conns = cps.flatMap((c) =>
-          [...store.connectors.values()]
-            .filter((x) => x.cp_id === c.cp_id)
-            .map((x) => ({
-              ...x,
-              ocpp_identity: c.ocpp_identity,
-              connector_ref: `${x.cp_id}:${x.connector_no}`,
-              standard_code: store.standards.find((t) => t.standard_id === x.standard_id)?.code,
-            }))
+          (connsByCp.get(Number(c.cp_id)) || []).map((x) => ({
+            ...x,
+            ocpp_identity: c.ocpp_identity,
+            connector_ref: `${x.cp_id}:${x.connector_no}`,
+            standard_code: standardById.get(x.standard_id)?.code,
+          }))
         );
         return {
           ...s,
@@ -415,6 +450,9 @@ module.exports = function routes(store) {
     safe(async (req, res) => {
       let list = [...store.reservations.values()];
       if (req.user.role === 'DRIVER') list = list.filter((x) => x.user_id === req.user.id);
+      // SEC-065: operators see only bookings on their assigned stations (the same
+      // tenancy rule every mutation and station-scoped read already enforces).
+      if (req.user.role === 'OPERATOR') list = list.filter((x) => stationInScope(store, req.user, x.connector_ref));
       if (req.query.status) list = list.filter((x) => x.status === req.query.status);
       list.sort((a, b) => b.reservation_id - a.reservation_id);
       res.json({ reservations: list });
@@ -516,7 +554,11 @@ module.exports = function routes(store) {
       if (!s) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'session' } });
       if (req.user.role === 'DRIVER' && s.user_id !== req.user.id)
         return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your session' } });
-      const ticks = store.readings.filter((x) => x.session_id === s.session_id);
+      // SEC-065: live telemetry is station-scoped for operators (it exposes user_id).
+      if (req.user.role === 'OPERATOR' && !stationInScope(store, req.user, s.connector_ref))
+        return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      // PF-05: use the store's per-session index instead of scanning all telemetry.
+      const ticks = store.readingsFor(s.session_id);
       // BUG-016 fix: energy from session's stored start_meter_kwh (real chargers report absolute registers).
       const energy = ticks.length ? +(ticks[ticks.length - 1].meter_kwh - (s.start_meter_kwh ?? 0)).toFixed(3) : 0;
       const kw = ticks.length ? ticks[ticks.length - 1].power_kw : null;
@@ -615,7 +657,11 @@ module.exports = function routes(store) {
           return res.status(403).json({ error: { code: 'FORBIDDEN', message: '' } });
         list = list.filter((x) => x.user_id === uid);
       }
-      list.sort((a, b) => b.started_at.localeCompare(a.started_at) || b.session_id - a.session_id);
+      // PF-04: ISO-8601 timestamps compare lexicographically; localeCompare is
+      // ~an order of magnitude slower and was the dominant cost at 1M sessions.
+      list.sort((a, b) =>
+        a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : b.session_id - a.session_id
+      );
       if (req.query.cursor) {
         try {
           const [cts, cid] = Buffer.from(String(req.query.cursor), 'base64').toString().split('|');
@@ -657,6 +703,12 @@ module.exports = function routes(store) {
         );
         list = list.filter((i) => mine.has(i.session_id));
       }
+      // SEC-065: revenue documents are station-scoped for operators.
+      if (req.user.role === 'OPERATOR')
+        list = list.filter((i) => {
+          const sess = store.sessions.get(i.session_id);
+          return sess ? stationInScope(store, req.user, sess.connector_ref) : false;
+        });
       if (req.query.status) list = list.filter((i) => i.status === req.query.status);
       list.sort((a, b) => b.invoice_id - a.invoice_id);
       res.json({ invoices: list });
@@ -735,6 +787,17 @@ module.exports = function routes(store) {
     safe(async (req, res) => {
       let list = [...store.faults.values()].sort((a, b) => b.fault_id - a.fault_id);
       if (req.query.open === '1') list = list.filter((f) => !f.cleared_at);
+      // SEC-065: an operator's fault board is its stations only; a requested station
+      // outside scope is a 403, not a silent full-fleet read.
+      if (req.user.role === 'OPERATOR') {
+        if (req.query.station && !(req.user.stationScope || []).includes(Number(req.query.station)))
+          return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+        list = list.filter((f) => {
+          const cpId = f.connector_ref ? f.connector_ref.split(':')[0] : f.cp_id;
+          const stationId = cpId ? store.cps.get(Number(cpId))?.station_id : null;
+          return stationId != null && (req.user.stationScope || []).includes(stationId);
+        });
+      }
       if (req.query.station) {
         const sid = String(req.query.station);
         list = list.filter((f) => {
@@ -751,6 +814,15 @@ module.exports = function routes(store) {
     authRequired,
     roles('OPERATOR', 'ADMIN'),
     safe(async (req, res) => {
+      // SEC-065: maintenance is a station mutation — scope it like the fault itself.
+      const fault = store.faults.get(Number(req.params.id));
+      if (!fault) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'fault' } });
+      if (req.user.role === 'OPERATOR') {
+        const cpId = fault.connector_ref ? fault.connector_ref.split(':')[0] : fault.cp_id;
+        const stationId = cpId ? store.cps.get(Number(cpId))?.station_id : null;
+        if (stationId == null || !(req.user.stationScope || []).includes(stationId))
+          return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      }
       const rid = ++store.seq.maint;
       const m = {
         record_id: rid,
@@ -774,6 +846,13 @@ module.exports = function routes(store) {
     safe(async (req, res) => {
       const m = store.maint.get(Number(req.params.id));
       if (!m) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'record' } });
+      if (req.user.role === 'OPERATOR') {
+        const fault = store.faults.get(m.fault_id);
+        const cpId = fault?.connector_ref ? fault.connector_ref.split(':')[0] : fault?.cp_id;
+        const stationId = cpId ? store.cps.get(Number(cpId))?.station_id : null;
+        if (stationId == null || !(req.user.stationScope || []).includes(stationId))
+          return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
+      }
       m.resolved_at = new Date().toISOString();
       m.resolution = req.body.resolution || 'resolved';
       const f = store.faults.get(m.fault_id);
@@ -800,22 +879,27 @@ module.exports = function routes(store) {
         return res.status(403).json({ error: { code: 'OUT_OF_SCOPE', message: 'station not assigned' } });
       const sid = Number(req.params.id);
       const keys = new Set([...store.cps.values()].filter((c) => c.station_id === sid).map((c) => String(c.cp_id)));
-      const sess = [...store.sessions.values()].filter(
-        (s) => keys.has(s.connector_ref.split(':')[0]) && s.state === 'COMPLETED'
-      );
-      const invs = sess
-        .map((s) => [...store.invoices.values()].find((i) => i.session_id === s.session_id))
-        .filter(Boolean);
+      // PF-17: index invoices once (O(I)) instead of materialising every invoice for
+      // every completed session (O(S x I); 6.8 s at 20k sessions).
+      const invoiceBySession = new Map();
+      for (const inv of store.invoices.values()) invoiceBySession.set(Number(inv.session_id), inv);
+      const sess = [];
+      let active = 0;
+      for (const s of store.sessions.values()) {
+        if (!keys.has(s.connector_ref.split(':')[0])) continue;
+        if (s.state === 'COMPLETED') sess.push(s);
+        else if (['PREPARING', 'CHARGING', 'SUSPENDED'].includes(s.state)) active++;
+      }
+      let revenue = 0;
+      for (const s of sess) {
+        const inv = invoiceBySession.get(Number(s.session_id));
+        if (inv && ['PAID', 'DUE'].includes(inv.status)) revenue += inv.total;
+      }
       res.json({
-        revenue: +invs
-          .filter((i) => ['PAID', 'DUE'].includes(i.status))
-          .reduce((a, i) => a + i.total, 0)
-          .toFixed(2),
+        revenue: +revenue.toFixed(2),
         energy_kwh: +sess.reduce((a, s) => a + (s.energy_kwh || 0), 0).toFixed(3),
         sessions: sess.length,
-        active: [...store.sessions.values()].filter(
-          (s) => keys.has(s.connector_ref.split(':')[0]) && ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(s.state)
-        ).length,
+        active,
         open_faults: [...store.faults.values()].filter(
           (f) => !f.cleared_at && f.connector_ref && keys.has(f.connector_ref.split(':')[0])
         ).length,
@@ -1022,7 +1106,10 @@ module.exports = function routes(store) {
   function internalOk(req) {
     const want = process.env.INTERNAL_TOKEN;
     const prod = process.env.NODE_ENV === 'production';
-    if (!want || want === 'dev-internal') {
+    // SEC-069: .env.example / compose ship these values; length alone must not make a
+    // published token acceptable in production.
+    const published = /^(dev-internal|change_me|replace_with_)/.test(String(want || ''));
+    if (!want || published || (prod && String(want).length < 24)) {
       if (prod) return false;
       return (req.headers['x-internal'] || '') === 'dev-internal';
     }
@@ -1039,11 +1126,96 @@ module.exports = function routes(store) {
     if (!internalOk(req)) return res.status(403).json({ error: { code: 'FORBIDDEN', message: '' } });
     next();
   };
+  // Mark durable outbox rows processed in Oracle. Shared by /internal/outbox/ack and
+  // /internal/outbox/quarantine — a poison event that is quarantined but left unacked
+  // in the durable table would be re-served forever, which is the outage we are fixing.
+  async function markDurableProcessed(ids, keys) {
+    if (!store._pool || !(ids.length || keys.length)) return;
+    const c = await store._pool.getConnection();
+    try {
+      if (ids.length) {
+        await c.execute(
+          `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE event_id IN (${ids.map((_, i) => `:id${i}`).join(',')})`,
+          Object.fromEntries(ids.map((v, i) => [`id${i}`, v]))
+        );
+      }
+      if (keys.length) {
+        await c.execute(
+          `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE processed_at IS NULL AND dedupe_key IN (${keys.map((_, i) => `:k${i}`).join(',')})`,
+          Object.fromEntries(keys.map((v, i) => [`k${i}`, v]))
+        );
+      }
+      // Session transitions carry a wall-clock suffix in the package's key
+      // (sess:<sid>:<to>:<timestamp>) while the API's copy carries Date.now().
+      // The stable prefix is the identity, so match it by LIKE as well; otherwise
+      // those durable rows are only acknowledged on the next API boot, after the
+      // sequence positions may have drifted apart.
+      const sess = [];
+      for (const k of keys) {
+        const m = /^sess:(\d+):([A-Z_]+):/.exec(k);
+        if (m) sess.push(`sess:${m[1]}:${m[2]}:%`);
+      }
+      if (sess.length) {
+        const uniq = [...new Set(sess)].slice(0, 50);
+        await c.execute(
+          `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE processed_at IS NULL AND (${uniq.map((_, i) => `dedupe_key LIKE :p${i}`).join(' OR ')})`,
+          Object.fromEntries(uniq.map((v, i) => [`p${i}`, v]))
+        );
+      }
+      await c.commit();
+    } finally {
+      try {
+        await c.close();
+      } catch {}
+    }
+  }
+  // Retention for the DURABLE queue. Acked rows have been written to Timescale, so
+  // keeping them forever grows outbox_event and slows every boot hydration. Throttled
+  // to once a minute: this is housekeeping, not part of the relay's critical path.
+  let lastOutboxPrune = 0;
+  async function pruneDurableOutbox(removed) {
+    const now = Date.now();
+    if (!store._pool || now - lastOutboxPrune < 60000) return;
+    lastOutboxPrune = now;
+    const c = await store._pool.getConnection();
+    try {
+      await c.execute(
+        `DELETE FROM outbox_event
+          WHERE processed_at IS NOT NULL
+            AND created_at < SYSTIMESTAMP - NUMTODSINTERVAL(:h, 'HOUR')`,
+        { h: Number(process.env.OUTBOX_RETENTION_HOURS || 24) }
+      );
+      await c.commit();
+    } catch (e) {
+      // Housekeeping must never fail the ack it follows.
+      console.error('[outbox-prune]', e.message);
+      try {
+        await c.rollback();
+      } catch {}
+    } finally {
+      try {
+        await c.close();
+      } catch {}
+    }
+    if (removed && removed.length) store._outboxStats.last_durable_prune = removed.length;
+  }
   r.get(
     '/internal/outbox',
     requireInternal,
     safe(async (req, res) => {
-      res.json({ events: store.outbox.filter((e) => !e.processed_at).slice(0, 500) });
+      const pending = store.outbox.filter((e) => !e.processed_at);
+      const limit = Math.min(500, Math.max(1, Number(req.query.limit || 500)));
+      // Heartbeat: the queue can only be drained by something that polls it. Without
+      // this, "outbox_lag = 4000" and "the worker is dead" are the same signal, and
+      // the only way to tell them apart is to go look at the container.
+      store._relayLastPollAt = Date.now();
+      // The worker is HTTP-driven, so the API has to hand it the queue's shape:
+      // without `pending` and `oldest_age_s` the relay can only log a made-up probe.
+      res.json({
+        events: pending.slice(0, limit),
+        pending: pending.length,
+        oldest_age_s: store.outboxLag().oldest_age_s,
+      });
     })
   );
   // Masterplan §26.5: Oracle-owned station metadata denormalized into Timescale
@@ -1075,54 +1247,46 @@ module.exports = function routes(store) {
     safe(async (req, res) => {
       const ids = (req.body.ids || []).map(Number).filter(Number.isFinite);
       const keys = (req.body.keys || []).map(String).filter(Boolean).slice(0, 500);
-      ids.forEach((id) => {
-        const e = store.outbox.find((x) => x.event_id === Number(id));
-        if (e) e.processed_at = new Date().toISOString();
-      });
+      // One pass over the queue, not one scan per id: the relay acks up to 500
+      // events every 2 s, and .find() per id was O(500 x depth) on the hot path.
+      const want = new Set(ids);
+      const wantKeys = new Set(keys);
+      for (const e of store.outbox) {
+        if (e.processed_at) continue;
+        if (want.has(e.event_id) || wantKeys.has(e.dedupe_key)) e.processed_at = new Date().toISOString();
+      }
       // B2G-005: also mark Oracle outbox_event processed (else that table grows unbounded).
       // In Oracle mode the durable outbox contains rows written by the PL/SQL packages
       // (tick:<sid>:<seq> etc.) that the JS store never emitted with the same id; the
       // dedupe_key is the shared identity, so match on it as well as on the id.
-      if (store._pool && (ids.length || keys.length)) {
-        const c = await store._pool.getConnection();
-        try {
-          if (ids.length) {
-            await c.execute(
-              `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE event_id IN (${ids.map((_, i) => `:id${i}`).join(',')})`,
-              Object.fromEntries(ids.map((v, i) => [`id${i}`, v]))
-            );
-          }
-          if (keys.length) {
-            await c.execute(
-              `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE processed_at IS NULL AND dedupe_key IN (${keys.map((_, i) => `:k${i}`).join(',')})`,
-              Object.fromEntries(keys.map((v, i) => [`k${i}`, v]))
-            );
-          }
-          // Session transitions carry a wall-clock suffix in the package's key
-          // (sess:<sid>:<to>:<timestamp>) while the API's copy carries Date.now().
-          // The stable prefix is the identity, so match it by LIKE as well; otherwise
-          // those durable rows are only acknowledged on the next API boot, after the
-          // sequence positions may have drifted apart.
-          const sess = [];
-          for (const k of keys) {
-            const m = /^sess:(\d+):([A-Z_]+):/.exec(k);
-            if (m) sess.push(`sess:${m[1]}:${m[2]}:%`);
-          }
-          if (sess.length) {
-            const uniq = [...new Set(sess)].slice(0, 50);
-            await c.execute(
-              `UPDATE outbox_event SET processed_at = SYSTIMESTAMP WHERE processed_at IS NULL AND (${uniq.map((_, i) => `dedupe_key LIKE :p${i}`).join(' OR ')})`,
-              Object.fromEntries(uniq.map((v, i) => [`p${i}`, v]))
-            );
-          }
-          await c.commit();
-        } finally {
-          try {
-            await c.close();
-          } catch {}
-        }
-      }
+      await markDurableProcessed(ids, keys);
+      // PF-01: retention is housekeeping. Pruning on every 2 s ack batch turned a
+      // 50k-row queue into a repeated full sort; the store debounces it.
+      const removed = store.pruneOutboxIfDue();
+      pruneDurableOutbox(removed).catch(() => {});
       res.json({ ok: true });
+    })
+  );
+  // Poison isolation for the relay: an event the sink cannot write is dead-lettered
+  // AND acked, so one bad row can't freeze the queue behind it forever. The payload
+  // lands in /ops/dead-letters for triage (replay or dismiss) instead of vanishing.
+  r.post(
+    '/internal/outbox/quarantine',
+    requireInternal,
+    safe(async (req, res) => {
+      const ids = (req.body.ids || []).map(Number).filter(Number.isFinite).slice(0, 500);
+      const keys = (req.body.keys || []).map(String).filter(Boolean).slice(0, 500);
+      const reason = String(req.body.reason || 'RELAY_POISON').slice(0, 120);
+      const out = store.quarantineOutbox({ ids, keys, reason });
+      await markDurableProcessed(
+        out.marked.map((m) => m.event_id),
+        out.marked.map((m) => m.dedupe_key)
+      );
+      res.status(out.quarantined ? 202 : 200).json({
+        quarantined: out.quarantined,
+        letters: out.letters.map((l) => ({ letter_id: l.letter_id, event_ref: l.event_ref, kind: l.kind })),
+        lag: store.outboxLag(),
+      });
     })
   );
   r.post(
@@ -1137,13 +1301,22 @@ module.exports = function routes(store) {
   r.get(
     '/health',
     safe(async (req, res) => {
-      const lag = store.outbox.filter((e) => !e.processed_at).length;
+      const lag = store.outboxLag();
       res.json({
         status: 'ok',
         mode: store._mode || 'local',
         oracle: store._pool ? 'connected' : process.env.ORACLE_HOST ? store._mode || 'connecting' : 'local-store',
         timescale: process.env.TS_HOST ? 'configured' : 'local-rollup',
-        outbox_lag: lag,
+        outbox_lag: lag.pending,
+        outbox_depth: lag.depth,
+        outbox_oldest_age_s: lag.oldest_age_s,
+        // Age of the last worker poll, or null when nothing has ever polled. This is
+        // what separates a slow relay from a dead one — lag alone cannot tell them
+        // apart, and the old `lag_probe=ok` line the worker printed was always "ok".
+        relay_last_poll_age_s: store._relayLastPollAt ? Math.round((Date.now() - store._relayLastPollAt) / 1000) : null,
+        // Poison events the relay could not write. Non-zero is a real bug in the
+        // pipeline (or a sink that rejected a row), so it belongs next to lag.
+        dead_letters_open: lag.dead_letters_open,
         // Mirror divergence counter (ADR-0005/0011): write-through failures are
         // fire-and-forget by design, so they must be observable. Non-zero means the
         // durable engine and the read cache have parted ways — page on it.
@@ -1185,7 +1358,15 @@ module.exports = function routes(store) {
           : 'local-store';
       }
       out.checks.timescale = process.env.TS_HOST ? 'configured (see worker relay-timescale)' : 'local-rollup';
-      out.checks.outbox_lag = store.outbox.filter((e) => !e.processed_at).length;
+      const lag = store.outboxLag();
+      out.checks.outbox_lag = lag.pending;
+      out.checks.outbox_oldest_age_s = lag.oldest_age_s;
+      out.checks.dead_letters_open = lag.dead_letters_open;
+      // A queue that is only growing because nothing polls it is an outage, not a lag
+      // problem, and /health/deep is the endpoint an operator actually reads.
+      out.checks.relay_last_poll_age_s = store._relayLastPollAt
+        ? Math.round((Date.now() - store._relayLastPollAt) / 1000)
+        : null;
       res.status(out.status === 'ok' ? 200 : 503).json(out);
     })
   );

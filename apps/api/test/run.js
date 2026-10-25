@@ -6,6 +6,9 @@ const assert = require('assert');
 
 async function main() {
   process.env.PORT = '4101';
+  // SEC-050: CI provisions the admin fixture password. A long-lived durable dev DB may
+  // have been rotated, so allow an override instead of assuming the fixture everywhere.
+  const ADMIN_PASSWORD = process.env.ADMIN_TEST_PASSWORD || 'Admin@123';
   const { server, store } = require('../src/server');
   await new Promise((r) => server.listen(4101, r));
   const B = 'http://localhost:4101/api/v1';
@@ -79,6 +82,7 @@ async function main() {
     assert.equal(r.status, 409);
     assert.match(r.j.error.code, /OVERLAP/);
   });
+  let idemRes;
   await t('idempotent replay returns same 201', async () => {
     const [cp, no] = global.__c.connector_ref.split(':').map(Number);
     const s = new Date(Date.now() + 90 * 60000).toISOString(),
@@ -92,12 +96,59 @@ async function main() {
     });
     assert.equal(a.status, 201);
     assert.deepEqual(a.j, c2.j);
+    idemRes = a.j.reservation;
+  });
+  await t('F-05: a second BOOKED window keeps the connector RESERVED', async () => {
+    // Two non-overlapping windows may share a connector. Cancelling the first must not
+    // hand the charger to someone else while the second is still BOOKED.
+    const { j } = await api('/stations');
+    const candidates = j.stations.flatMap((s) => s.connectors || []).filter((x) => x.status === 'AVAILABLE');
+    const book = async (c, startMin, endMin) =>
+      api('/reservations', {
+        method: 'POST',
+        headers: H(),
+        body: JSON.stringify({
+          cpId: Number(c.connector_ref.split(':')[0]),
+          connectorNo: Number(c.connector_ref.split(':')[1]),
+          startAt: new Date(Date.now() + startMin * 60000).toISOString(),
+          endAt: new Date(Date.now() + endMin * 60000).toISOString(),
+        }),
+      });
+    let first, second, cp, no;
+    for (const c of candidates) {
+      const [a, b] = c.connector_ref.split(':').map(Number);
+      const r1 = await book(c, 200, 220);
+      if (r1.status !== 201) continue;
+      const r2 = await book(c, 240, 260);
+      if (r2.status !== 201) {
+        await api(`/reservations/${r1.j.reservation.reservation_id}/cancel`, { method: 'POST', headers: H() });
+        continue;
+      }
+      first = r1.j.reservation;
+      second = r2.j.reservation;
+      cp = a;
+      no = b;
+      break;
+    }
+    assert.ok(first && second, 'need an AVAILABLE connector with two free future windows');
+    assert.equal(store.getConnector(cp, no).status, 'RESERVED');
+    assert.equal(
+      (await api(`/reservations/${first.reservation_id}/cancel`, { method: 'POST', headers: H() })).status,
+      200
+    );
+    assert.equal(store.getConnector(cp, no).status, 'RESERVED', 'the second window still owns the hold');
+    assert.equal(
+      (await api(`/reservations/${second.reservation_id}/cancel`, { method: 'POST', headers: H() })).status,
+      200
+    );
+    assert.equal(store.getConnector(cp, no).status, 'AVAILABLE');
   });
   let sess;
   await t('session lifecycle PREPARING->CHARGING->COMPLETED', async () => {
     const [cp, no] = global.__c.connector_ref.split(':').map(Number);
-    // cancel the earlier hold so connector is free for the session start path
+    // cancel the earlier holds so the connector is free for the session start path
     await api(`/reservations/${res.reservation_id}/cancel`, { method: 'POST', headers: H() });
+    await api(`/reservations/${idemRes.reservation_id}/cancel`, { method: 'POST', headers: H() });
     const st = await api('/sessions/start', {
       method: 'POST',
       headers: H(),
@@ -121,6 +172,36 @@ async function main() {
       .then(() => 'ok')
       .catch((e) => e.code);
     assert.equal(r, 'TICK_REJECTED'); // terminal session rejects ticks
+  });
+  await t('TELEM-01: non-finite meter register refused, NaN channels nulled', async () => {
+    const [cp, no] = global.__c.connector_ref.split(':').map(Number);
+    const st = await api('/sessions/start', {
+      method: 'POST',
+      headers: H(),
+      body: JSON.stringify({ cpId: cp, connectorNo: no, planId: 2 }),
+    });
+    assert.equal(st.status, 201, JSON.stringify(st.j));
+    const sid = st.j.session.session_id;
+    const at = () => new Date().toISOString();
+    // A charge point sends MeterValue.value as a STRING, so Number('abc') is NaN — and
+    // Postgres float8 stores NaN as if it were a measurement (NaN = NaN is TRUE for
+    // float8 there, so the usual x !== x detector never sees it) while Oracle rejects
+    // the same bind. One NaN register also NaNs every SUM above it. Refuse at the port.
+    const err = await store.recordTick(sid, 1, at(), Number('abc'), 30, null, null).catch((e) => e);
+    assert.equal(err.code, 'TICK_REJECTED');
+    assert.match(err.message, /finite/);
+    assert.equal(err.status, 409);
+    // The session must still take a real register afterwards, a string register must
+    // land as a number, and a NaN auxiliary channel must become NULL — not NaN.
+    await store.recordTick(sid, 2, at(), '3.5', Number('abc'), null, null);
+    const r = store.readings.filter((x) => x.session_id === sid);
+    assert.equal(r.length, 1, 'the refused tick stored nothing');
+    assert.strictEqual(r[0].meter_kwh, 3.5, 'a string register is normalized to a number');
+    assert.equal(r[0].power_kw, null, 'a NaN power channel lands as NULL');
+    const queued = store.outbox.filter((e) => e.kind === 'METER_TICK' && e.payload.session_id === sid);
+    assert.equal(queued.length, 1, 'the refused tick never entered the outbox');
+    assert.ok(Number.isFinite(queued[0].payload.meter_kwh), 'the queue cannot carry a NaN register to the sink');
+    await api(`/sessions/${sid}/remote-stop`, { method: 'POST', headers: H() });
   });
   await t('bill exactly once + wallet pay', async () => {
     // Assertion messages carry the response body: this is the durable path (bill_session
@@ -170,11 +251,22 @@ async function main() {
     const { j } = await api('/tariffs/active');
     assert.ok(j.plans.length >= 2 && j.plans[0].bands.length >= 3);
   });
-  await t('operator session control is matrix-guarded', async () => {
-    // sess is COMPLETED+BILLED: any further transition must 409
-    const r = await api(`/sessions/${sess.session_id}/state`, {
+  await t('operator session control is staff-only and matrix-guarded', async () => {
+    // SEC-064: drivers may not mutate session state (they use remote-stop).
+    const denied = await api(`/sessions/${sess.session_id}/state`, {
       method: 'PATCH',
       headers: H(),
+      body: JSON.stringify({ to: 'CHARGING' }),
+    });
+    assert.equal(denied.status, 403);
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
+    });
+    // sess is COMPLETED+BILLED: any further staff transition must 409.
+    const r = await api(`/sessions/${sess.session_id}/state`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${adm.j.accessToken}` },
       body: JSON.stringify({ to: 'CHARGING' }),
     });
     assert.equal(r.status, 409);
@@ -247,7 +339,7 @@ async function main() {
   await t('admin: login + station CRUD + OCPP provision (RBAC)', async () => {
     const adm = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
     });
     assert.ok(adm.j.accessToken);
     const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
@@ -281,7 +373,7 @@ async function main() {
   await t('analytics: operator station scope enforced (BUG-030)', async () => {
     const adm = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
     });
     const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
     // Station created in the previous test is the highest id; assign an operator to it.
@@ -316,7 +408,7 @@ async function main() {
   await t('BUG-031: operator cancel is station-scoped', async () => {
     const adm = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
     });
     const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
     const stations = await api('/admin/stations', { headers: AH });
@@ -395,7 +487,7 @@ async function main() {
   await t('BUG-031: operator remote-start is station-scoped', async () => {
     const adm = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
     });
     const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
     const stations = await api('/admin/stations', { headers: AH });
@@ -507,7 +599,7 @@ async function main() {
   await t('BUG-033: admin user creation validates role/email/password/name', async () => {
     const adm = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
     });
     const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
     const badRole = await api('/admin/users', {
@@ -535,7 +627,7 @@ async function main() {
   await t('BUG-034: station status patch is constrained to ACTIVE/INACTIVE', async () => {
     const adm = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
     });
     const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
     const bad = await api(`/admin/stations/${global.__stId}`, {
@@ -676,6 +768,166 @@ async function main() {
     assert.equal(r3.status, 200);
   });
 
+  await t('QUEUE-01: emitOutbox dedupes on key in O(1) and outboxLag measures the backlog', async () => {
+    // The queue used to answer "is this key already in here?" with a full array scan
+    // on every emit — O(n) per event, O(n^2) per process lifetime, and the simulator
+    // pushes events every 700 ms per connector.
+    const s = store;
+    const key = `q1-${Date.now()}`;
+    const before = s.outbox.length;
+    s.emitOutbox('test.kind', key, { session_id: 1 });
+    s.emitOutbox('test.kind', key, { session_id: 1 }); // replay of the same identity
+    assert.equal(s.outbox.length, before + 1, 'a repeated dedupe_key must not append twice');
+    assert.ok(s._outboxKeys.has(key), 'the dedupe index is the authority, not a scan');
+    const lag = s.outboxLag();
+    assert.ok(lag.pending >= 1, 'the fresh unacked event is pending');
+    assert.equal(lag.depth, s.outbox.length);
+    assert.ok(lag.oldest_age_s >= 0 && Number.isFinite(lag.oldest_age_s));
+    assert.equal(lag.retention_hours, Math.max(1, Number(process.env.OUTBOX_RETENTION_HOURS || 24)));
+  });
+
+  await t('QUEUE-02: pruning ages out acked rows and NEVER drops an unacked one', async () => {
+    // Retention is what keeps a long-running API from holding every tick since boot;
+    // dropping an unacked row would be the relay's worst possible failure, so both
+    // halves of that rule are pinned here.
+    const s = store;
+    const acked = `q2a-${Date.now()}`;
+    const open = `q2b-${Date.now()}`;
+    s.emitOutbox('test.kind', acked, { session_id: 2 });
+    s.emitOutbox('test.kind', open, { session_id: 2 });
+    const row = s.outbox.find((e) => e.dedupe_key === acked);
+    // Acked eleven days ago, past the default 24 h retention window.
+    row.processed_at = new Date(Date.now() - 11 * 24 * 3600 * 1000).toISOString();
+    const removed = s.pruneOutbox();
+    assert.deepEqual(
+      removed.map((r) => r.dedupe_key),
+      [acked],
+      'only the stale ACKED row leaves'
+    );
+    assert.ok(!s.outbox.some((e) => e.dedupe_key === acked), 'the array is compacted in place');
+    assert.ok(!s._outboxKeys.has(acked), 'its key is freed, so the identity can be reused');
+    assert.ok(
+      s.outbox.some((e) => e.dedupe_key === open),
+      'an unacked event survives any prune — at-least-once depends on it'
+    );
+    assert.equal(
+      [...Array(s.outbox.length).keys()].filter((i) => !(i in s.outbox)).length,
+      0,
+      'in-place compaction leaves no sparse holes'
+    );
+    assert.ok(s._outboxStats.pruned >= 1, 'pruning is countable');
+    // A second prune over the same window is a no-op (idempotent housekeeping).
+    assert.equal(s.pruneOutbox().length, 0);
+    s.outbox.find((e) => e.dedupe_key === open).processed_at = new Date().toISOString();
+  });
+
+  await t('QUEUE-02b (PF-01): soft-cap housekeeping is debounced, not paid per emit', async () => {
+    // Regression for the measured collapse: once the queue crossed 20k, every emit
+    // re-sorted the whole outbox because young acked rows survived the retention
+    // window. The queue must still be pruned, but on a clock.
+    const { createStore } = require('../src/db/store');
+    const s = createStore();
+    let prunes = 0;
+    const real = s.pruneOutbox;
+    s.pruneOutbox = (now) => {
+      prunes++;
+      return real(now);
+    };
+    for (let i = 0; i < 20_050; i++) s.emitOutbox('test.kind', `pf01-${i}`, { session_id: 1 });
+    assert.equal(prunes, 1, 'crossing the soft cap prunes once');
+    for (let i = 20_050; i < 20_150; i++) s.emitOutbox('test.kind', `pf01-${i}`, { session_id: 1 });
+    assert.equal(prunes, 1, 'later emits below the hard cap do not re-prune');
+    assert.equal(s.pruneOutboxIfDue(Date.now() + 61_000).length, 0, 'the debounced sweep still runs');
+    assert.equal(prunes, 2, 'the next interval performs exactly one sweep');
+  });
+
+  await t('QUEUE-03: /internal/outbox hands the worker its own lag, and the heartbeat lands', async () => {
+    const s = store;
+    const key = `q3-${Date.now()}`;
+    s.emitOutbox('test.kind', key, { session_id: 3 });
+    const seenAt = s._relayLastPollAt;
+    const { status, j } = await api('/internal/outbox', { headers: { 'x-internal': 'dev-internal' } });
+    assert.equal(status, 200);
+    assert.ok(Array.isArray(j.events), 'the batch stays an array (the worker slices it)');
+    assert.equal(typeof j.pending, 'number', 'the worker cannot log a backlog it was never told about');
+    assert.equal(typeof j.oldest_age_s, 'number');
+    assert.equal(j.pending, s.outbox.filter((e) => !e.processed_at).length);
+    assert.ok(
+      j.events.some((e) => e.dedupe_key === key),
+      'the new event is served'
+    );
+    assert.ok(j.events.length <= 500, 'a poll is bounded (500/chunk, the rest waits)');
+    assert.ok(s._relayLastPollAt >= seenAt, 'polling the queue IS the relay heartbeat');
+    const h = await api('/health');
+    assert.equal(h.j.outbox_depth, s.outbox.length);
+    assert.equal(h.j.outbox_lag, j.pending);
+    assert.equal(typeof h.j.relay_last_poll_age_s, 'number', 'null would mean nothing has ever drained the queue');
+    assert.equal(typeof h.j.dead_letters_open, 'number');
+  });
+
+  await t('QUEUE-04: quarantine removes a poison event from the head of the queue and opens a letter', async () => {
+    // Head-of-line blocking was the real outage: the sink refused ONE row, the relay
+    // rolled the whole batch back, and every later event waited behind it forever.
+    const s = store;
+    const poisonKey = `q4-${Date.now()}`;
+    s.emitOutbox('test.kind', poisonKey, { session_id: 4, meter_kwh: 'not-a-number' });
+    const pendingBefore = s.outboxLag().pending;
+    const lettersBefore = s.listDeadLetters('OPEN').length;
+    const quarantineCounterBefore = s._outboxStats.quarantined;
+    const q = await api('/internal/outbox/quarantine', {
+      method: 'POST',
+      headers: { 'x-internal': 'dev-internal' },
+      body: JSON.stringify({ keys: [poisonKey], reason: 'meter_tick 22003: numeric field overflow' }),
+    });
+    assert.equal(q.status, 202, 'a real quarantine answers 202 (the worker retries on anything else)');
+    assert.equal(q.j.quarantined, 1);
+    assert.equal(s.outboxLag().pending, pendingBefore - 1, 'the queue drains instead of stalling');
+    const row = s.outbox.find((e) => e.dedupe_key === poisonKey);
+    assert.ok(row.processed_at, 'quarantine acks: the event must never be served again');
+    assert.equal(row.quarantine_reason, 'meter_tick 22003: numeric field overflow');
+    assert.ok(row.quarantined_at, 'the payload stays addressable for triage');
+    assert.equal(s.listDeadLetters('OPEN').length, lettersBefore + 1, 'the payload lands in the triage inbox');
+    assert.ok(q.j.letters[0].event_ref === poisonKey, 'the letter points back at the dedupe key');
+    // Replaying the same quarantine is a no-op, not a second letter.
+    const again = await api('/internal/outbox/quarantine', {
+      method: 'POST',
+      headers: { 'x-internal': 'dev-internal' },
+      body: JSON.stringify({ keys: [poisonKey] }),
+    });
+    assert.equal(again.status, 200);
+    assert.equal(again.j.quarantined, 0, 'already-acked events cannot be quarantined twice');
+    assert.equal(s.listDeadLetters('OPEN').length, lettersBefore + 1);
+    assert.equal(s.outboxLag().quarantined, quarantineCounterBefore + 1, 'the counter tracks real quarantine calls');
+  });
+
+  await t('QUEUE-05: a quarantined letter is replayable through the existing /ops triage', async () => {
+    // The point of dead-lettering instead of dropping: an operator can see it, and
+    // decide. Reuse of /ops/dead-letters means one triage surface, not two.
+    const adm = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
+    });
+    assert.ok(adm.j.accessToken, 'admin login is needed for the ops surface');
+    const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
+    const listed = await api('/ops/dead-letters', { headers: AH });
+    assert.equal(listed.status, 200);
+    const letter = listed.j.letters.find((l) => /numeric field overflow/.test(l.reason_code || ''));
+    assert.ok(letter, 'QUEUE-04 must be visible to operators');
+    const openBefore = store.outboxLag().dead_letters_open;
+    const resolved = await api(`/ops/dead-letters/${letter.letter_id}/resolve`, {
+      method: 'POST',
+      headers: AH,
+      body: JSON.stringify({ action: 'DISMISSED' }),
+    });
+    assert.equal(resolved.status, 200);
+    assert.equal(store.deadLetters.get(letter.letter_id).status, 'DISMISSED');
+    assert.equal(
+      store.outboxLag().dead_letters_open,
+      openBefore - 1,
+      'triage moves the gauge: a dismissed letter stops counting'
+    );
+  });
+
   await t('BUG-049: explicit-id mirror INSERT maps ORA-00001 to the canonical 409 DUPLICATE_ID', async () => {
     // Root cause (observed live on the compose stack): the local store owns id
     // authority, but Oracle's IDENTITY still auto-increments for any OTHER writer
@@ -748,7 +1000,7 @@ async function main() {
     // error path a console can hit, so "typed, never a 500" is the claim under test.
     const adm = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
     });
     assert.ok(adm.j.accessToken);
     const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
@@ -831,7 +1083,7 @@ async function main() {
   await t('review 2026-10-24: control-plane operator scope (BUG-059) + input hardening (B-16..19)', async () => {
     const adm = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email: 'admin@volthub.in', password: 'Admin@123' }),
+      body: JSON.stringify({ email: 'admin@volthub.in', password: ADMIN_PASSWORD }),
     });
     const AH = { Authorization: `Bearer ${adm.j.accessToken}` };
     const stations = await api('/admin/stations', { headers: AH });
@@ -944,7 +1196,7 @@ async function main() {
     assert.equal(first.status, 200);
     // Express appends its own charset, so match the Prometheus version parameter
     // wherever it lands rather than pinning the exact header string.
-    assert.match(first.headers.get('content-type') || '', /^text\/plain;.*version=0\.0\.4$/);
+    assert.match(first.headers.get('content-type') || '', /^text\/plain;\s*version=0\.0\.4/);
     const body = await first.text();
     // Every metric must carry both HELP and TYPE, and a numeric sample line.
     for (const name of [
@@ -952,17 +1204,28 @@ async function main() {
       'volthub_errors_total',
       'volthub_latency_p95_ms',
       'volthub_outbox_depth',
+      // Queue age and poison depth: the two signals that turn "the relay is slow" into
+      // an alert, and the reason the worker's old `lag_probe=ok` line was worthless.
+      'volthub_outbox_oldest_age_seconds',
+      'volthub_dead_letter_depth',
+      'volthub_relay_last_poll_seconds',
       'volthub_ocpp_online',
       'volthub_sessions_total',
       'volthub_oracle_connected',
     ]) {
       assert.match(body, new RegExp(`# HELP ${name} `), `${name} needs a HELP line`);
       assert.match(body, new RegExp(`# TYPE ${name} (counter|gauge)`), `${name} needs a TYPE line`);
-      assert.match(body, new RegExp(`^${name} \\d+$`, 'm'), `${name} needs a numeric sample`);
+      // -1 is a real sample: it means no relay has polled this process since boot.
+      assert.match(body, new RegExp(`^${name} -?\\d+$`, 'm'), `${name} needs a numeric sample`);
     }
     // Gauges must reflect the live store, not a static template.
-    const sample = (n) => Number((body.match(new RegExp(`^${n} (\\d+)$`, 'm')) || [])[1]);
+    const sample = (n) => Number((body.match(new RegExp(`^${n} (-?\\d+)$`, 'm')) || [])[1]);
     assert.equal(sample('volthub_outbox_depth'), store.outbox.filter((e) => !e.processed_at).length);
+    assert.equal(
+      sample('volthub_dead_letter_depth'),
+      [...store.deadLetters.values()].filter((d) => d.status === 'OPEN').length
+    );
+    assert.ok(sample('volthub_relay_last_poll_seconds') >= 0, 'QUEUE-03 polled the queue, so the heartbeat is set');
     assert.equal(sample('volthub_sessions_total'), store.sessions.size);
     assert.equal(
       sample('volthub_ocpp_online'),
