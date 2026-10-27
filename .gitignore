@@ -3,6 +3,11 @@ node_modules/
 out/
 dist/
 build/
+# ...except the rendered DA3 diagrams: they are deliverables, not build residue, and
+# docs link to them. Everything else under an `out/` stays ignored.
+!diagrams/out/
+!diagrams/out/*.png
+!diagrams/out/*.pdf
 .env
 .env.local
 data/
@@ -24,6 +29,7 @@ VoltHub-CSMS_Master_Transformation_Blueprint.docx
 # local agent-tooling assets (not project code)
 .zcode/
 .workbuddy-ai/
+.impeccable/
 # demo-film build artifacts (record.mjs/assemble.mjs sources ARE committed)
 video/out/
 # local screenshot/verification scratch frames (not project source)
