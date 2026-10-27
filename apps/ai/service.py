@@ -125,6 +125,20 @@ def _load_model() -> None:
             if len(vec) != contract.HORIZON:
                 _MODEL["error"] = f"conformal quantile {level} has {len(vec)} entries, need {contract.HORIZON}"
                 return
+        # An artifact may declare an interval level its own calibration table cannot
+        # produce. Serving that would either 500 on the first forecast or, worse, publish
+        # a band under names (p10/p90) that promise a level nobody measured — so the level
+        # is validated against the table here, at load, and the artifact is refused.
+        level = float(pt.get("interval_level") or contract.INTERVAL_LEVEL)
+        half = round((1.0 - level) / 2.0, 6)
+        needed = {str(half), str(round(1.0 - half, 6)), str(round(contract.QUANTILE_LEVELS[1], 6))}
+        absent = sorted(needed - set(conf["quantiles_kwh"]))
+        if absent:
+            _MODEL["error"] = (
+                f"artifact interval_level {level} needs conformal quantiles {absent}, "
+                "which its calibration table does not contain — recalibrate with train.py"
+            )
+            return
         claimed = pt.get("payload_sha256")
         if claimed and contract.payload_hash(pt) != claimed:
             _MODEL["error"] = "payload digest mismatch — weights do not match their own receipt"
@@ -138,7 +152,7 @@ def _load_model() -> None:
             "scaler_mean": list(pt["scaler_mean"]),
             "scaler_scale": list(pt["scaler_scale"]),
             "conformal": pt.get("conformal"),
-            "interval_level": float(pt.get("interval_level") or contract.INTERVAL_LEVEL),
+            "interval_level": level,
         }
         _MODEL["loaded"] = True
         _MODEL["error"] = None
@@ -337,11 +351,21 @@ def forecast(req: ForecastReq, x_internal: str | None = Header(default=None)):
             "station_scale_kwh_per_hour": round(float(series.window(t, contract.MIN_HISTORY_H).mean()), 4),
         }
         if conf is not None:
-            entry["p10"] = [round(float(v), 3) for v in low[: req.hours]]
-            entry["p90"] = [round(float(v), 3) for v in high[: req.hours]]
+            # `lower`/`upper` are the honest field names: they carry whatever level the
+            # artifact was actually calibrated at. `p10`/`p90` stay for existing clients,
+            # but only while that level really is 0.8 — an 0.9 band published under 10/90
+            # names is a quiet lie to whoever sizes a transformer or a demand charge off
+            # it (audit 2026-10-25, "interval names are hardcoded").
+            entry["lower"] = [round(float(v), 3) for v in low[: req.hours]]
+            entry["upper"] = [round(float(v), 3) for v in high[: req.hours]]
             entry["interval_level"] = level
             entry["interval_method"] = conf["method"]
+            named = abs(level - 0.8) < 1e-9
+            entry["p10"] = entry["lower"] if named else None
+            entry["p90"] = entry["upper"] if named else None
         else:
+            entry["lower"] = None
+            entry["upper"] = None
             entry["p10"] = None
             entry["p90"] = None
             entry["interval_note"] = "no calibrated intervals for the fallback model (uncalibrated by design)"
@@ -569,6 +593,11 @@ def explain(req: ExplainReq, x_internal: str | None = Header(default=None)):
     attributions.sort(key=lambda a: abs(a["mean_delta_kwh"]), reverse=True)
     conf = pt["conformal"]
     point, low, high = contract.conformal_intervals(np.asarray(base_kwh, dtype=np.float32), conf, pt["interval_level"])
+    lower = [round(float(v), 3) for v in low[: req.hours]]
+    upper = [round(float(v), 3) for v in high[: req.hours]]
+    # Same naming rule as /v1/forecast: p10/p90 are only published when the calibrated
+    # level really is 0.8; lower/upper always describe whatever was actually computed.
+    named = abs(pt["interval_level"] - 0.8) < 1e-9
     return {
         "advisory": True,
         "station_id": req.station_id,
@@ -578,8 +607,11 @@ def explain(req: ExplainReq, x_internal: str | None = Header(default=None)):
         "lead_hours": list(range(1, req.hours + 1)),
         "forecast_kwh": [round(float(v), 3) for v in point[: req.hours]],
         "raw_forecast_kwh": [round(float(v), 3) for v in base_kwh[: req.hours]],
-        "p10": [round(float(v), 3) for v in low[: req.hours]],
-        "p90": [round(float(v), 3) for v in high[: req.hours]],
+        "interval_level": pt["interval_level"],
+        "lower": lower,
+        "upper": upper,
+        "p10": lower if named else None,
+        "p90": upper if named else None,
         "station_scale_kwh_per_hour": round(mu, 4),
         "attributions": attributions,
         "top_driver": attributions[0]["group"] if attributions else None,
