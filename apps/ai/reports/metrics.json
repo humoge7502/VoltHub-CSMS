@@ -1,231 +1,207 @@
 {
-  "trained_at": "2026-10-25T20:04:03.378789+00:00",
+  "trained_at": "2026-10-26T16:51:51.284651+00:00",
   "device": "cpu",
   "torch": "2.14.1+cpu",
   "feature_version": "vh-feat-v3",
   "input_dim": 36,
   "data": {
-    "synthetic_twin": {
-      "n_stations": 24,
-      "days": 120,
-      "vehicles": 2000,
-      "seed": 7,
-      "device": "cpu",
-      "total_sessions": 493638,
-      "total_kwh": 13303865.0,
-      "start": "2026-08-03T00:00:00+00:00",
-      "generator": "volthub-twin-v2 (diurnal + trend + outages + weather events)"
+    "real_panel": {
+      "stations": 87,
+      "station_hours": 754032,
+      "sources": [
+        "korea",
+        "norway",
+        "tennessee"
+      ]
     }
   },
   "panel": {
-    "stations": 24,
-    "rows": 64536,
-    "station_hours": 69120,
+    "stations": 87,
+    "rows": 239960,
+    "station_hours": 754032,
     "sources": [
-      "synthetic-twin"
+      "korea",
+      "norway",
+      "tennessee"
     ]
   },
   "backtest": {
     "protocol": "rolling-origin, per-series recency, purge + calibration block before each test fold",
-    "folds": 6,
-    "fold_hours": 180,
+    "folds": 4,
+    "fold_hours": 270,
     "backtest_days": 45,
     "calib_days": 10,
     "purge_days": 1,
-    "test_points": 622080,
+    "test_points": 746616,
     "per_fold": [
       {
         "fold": 0,
-        "rows": 4320,
-        "mlp_mae_kwh": 62.4152,
-        "ridge_mae_kwh": 66.7516,
-        "naive168_mae_kwh": 92.4278,
-        "weekly4_mae_kwh": 71.6718,
-        "skill_vs_naive_pct": 32.47,
-        "interval_coverage": 0.8825,
+        "rows": 7801,
+        "mlp_mae_kwh": 2.1552,
+        "ridge_mae_kwh": 3.5591,
+        "naive168_mae_kwh": 3.1929,
+        "weekly4_mae_kwh": 3.0968,
+        "skill_vs_naive_pct": 32.5,
+        "interval_coverage": 0.7943,
         "fit": {
-          "epochs_run": 10,
-          "optimizer_steps": 620,
+          "epochs_run": 13,
+          "optimizer_steps": 5096,
           "early_stopped": true,
-          "val_loss": 0.219855
+          "val_loss": 1.033595
         }
       },
       {
         "fold": 1,
-        "rows": 4320,
-        "mlp_mae_kwh": 64.3251,
-        "ridge_mae_kwh": 69.5968,
-        "naive168_mae_kwh": 85.7817,
-        "weekly4_mae_kwh": 71.7649,
-        "skill_vs_naive_pct": 25.01,
-        "interval_coverage": 0.8119,
+        "rows": 7810,
+        "mlp_mae_kwh": 1.7656,
+        "ridge_mae_kwh": 3.1614,
+        "naive168_mae_kwh": 3.0551,
+        "weekly4_mae_kwh": 2.8563,
+        "skill_vs_naive_pct": 42.21,
+        "interval_coverage": 0.837,
         "fit": {
-          "epochs_run": 8,
-          "optimizer_steps": 568,
+          "epochs_run": 7,
+          "optimizer_steps": 2849,
           "early_stopped": true,
-          "val_loss": 0.142805
+          "val_loss": 1.081948
         }
       },
       {
         "fold": 2,
-        "rows": 4320,
-        "mlp_mae_kwh": 64.2971,
-        "ridge_mae_kwh": 70.764,
-        "naive168_mae_kwh": 86.7315,
-        "weekly4_mae_kwh": 71.4644,
-        "skill_vs_naive_pct": 25.87,
-        "interval_coverage": 0.8007,
+        "rows": 7687,
+        "mlp_mae_kwh": 1.6416,
+        "ridge_mae_kwh": 2.9172,
+        "naive168_mae_kwh": 2.6506,
+        "weekly4_mae_kwh": 2.6651,
+        "skill_vs_naive_pct": 38.07,
+        "interval_coverage": 0.8169,
         "fit": {
-          "epochs_run": 16,
-          "optimizer_steps": 1264,
+          "epochs_run": 11,
+          "optimizer_steps": 4653,
           "early_stopped": true,
-          "val_loss": 0.162518
+          "val_loss": 0.945836
         }
       },
       {
         "fold": 3,
-        "rows": 4320,
-        "mlp_mae_kwh": 66.0614,
-        "ridge_mae_kwh": 71.4577,
-        "naive168_mae_kwh": 90.6308,
-        "weekly4_mae_kwh": 72.2134,
-        "skill_vs_naive_pct": 27.11,
-        "interval_coverage": 0.7961,
-        "fit": {
-          "epochs_run": 14,
-          "optimizer_steps": 1232,
-          "early_stopped": true,
-          "val_loss": 0.150877
-        }
-      },
-      {
-        "fold": 4,
-        "rows": 4320,
-        "mlp_mae_kwh": 76.0434,
-        "ridge_mae_kwh": 83.8894,
-        "naive168_mae_kwh": 104.3873,
-        "weekly4_mae_kwh": 84.4063,
-        "skill_vs_naive_pct": 27.15,
-        "interval_coverage": 0.7477,
+        "rows": 7811,
+        "mlp_mae_kwh": 2.0575,
+        "ridge_mae_kwh": 3.4289,
+        "naive168_mae_kwh": 3.0125,
+        "weekly4_mae_kwh": 2.8671,
+        "skill_vs_naive_pct": 31.7,
+        "interval_coverage": 0.7637,
         "fit": {
           "epochs_run": 9,
-          "optimizer_steps": 864,
+          "optimizer_steps": 3942,
           "early_stopped": true,
-          "val_loss": 0.147678
-        }
-      },
-      {
-        "fold": 5,
-        "rows": 4320,
-        "mlp_mae_kwh": 63.2171,
-        "ridge_mae_kwh": 68.9904,
-        "naive168_mae_kwh": 97.701,
-        "weekly4_mae_kwh": 69.8705,
-        "skill_vs_naive_pct": 35.3,
-        "interval_coverage": 0.8373,
-        "fit": {
-          "epochs_run": 7,
-          "optimizer_steps": 735,
-          "early_stopped": true,
-          "val_loss": 0.164716
+          "val_loss": 1.125899
         }
       }
     ],
     "per_source": {
-      "synthetic-twin": {
-        "mae_kwh": 66.0599,
-        "naive_mae_kwh": 92.9434,
-        "points": 622080
+      "tennessee": {
+        "mae_kwh": 2.3797,
+        "naive_mae_kwh": 4.0363,
+        "points": 341400
+      },
+      "norway": {
+        "mae_kwh": 3.5996,
+        "naive_mae_kwh": 4.4015,
+        "points": 60480
+      },
+      "korea": {
+        "mae_kwh": 1.1396,
+        "naive_mae_kwh": 1.6823,
+        "points": 344736
       }
     },
     "per_horizon_mae_kwh": [
-      63.102,
-      63.9813,
-      64.8931,
-      65.2027,
-      65.6951,
-      65.7384,
-      65.8579,
-      66.1507,
-      66.3101,
-      66.518,
-      66.0239,
-      66.1674,
-      66.3332,
-      66.5111,
-      66.4522,
-      66.4962,
-      66.5114,
-      66.5426,
-      66.6775,
-      66.7271,
-      66.8263,
-      66.9533,
-      66.9376,
-      66.8278
+      1.6746,
+      1.817,
+      1.9053,
+      1.9395,
+      1.8911,
+      1.9282,
+      1.9454,
+      1.8906,
+      1.9334,
+      1.9512,
+      1.8935,
+      1.9249,
+      1.9458,
+      1.8832,
+      1.9294,
+      1.952,
+      1.8895,
+      1.9308,
+      1.9483,
+      1.8819,
+      1.9273,
+      1.9429,
+      1.8838,
+      1.9332
     ],
     "leakage_note": "Within a station, no training target window overlaps its fold's test window (purge enforced). Cross-station pooling keeps other stations' rows in train \u2014 intentional, this is one shared model, and it is exactly how the sidecar is deployed."
   },
   "models": {
-    "mlp_256x128": {
-      "mae_kwh": 66.0599,
-      "rmse_kwh": 99.6218,
-      "points": 622080,
-      "mase_vs_naive168": 0.7108,
-      "skill_vs_naive_pct": 28.92,
-      "skill_vs_weekly4_pct": 10.2
+    "mlp_128x64": {
+      "mae_kwh": 1.906,
+      "rmse_kwh": 6.9986,
+      "points": 746616,
+      "mase_vs_naive168": 0.6398,
+      "skill_vs_naive_pct": 36.02,
+      "skill_vs_weekly4_pct": 33.64
     },
     "ridge": {
-      "mae_kwh": 71.9083,
-      "rmse_kwh": 107.7376,
-      "points": 622080,
-      "mase_vs_naive168": 0.7737,
-      "skill_vs_naive_pct": 22.63,
-      "skill_vs_weekly4_pct": 2.25
+      "mae_kwh": 3.2679,
+      "rmse_kwh": 6.9195,
+      "points": 746616,
+      "mase_vs_naive168": 1.097,
+      "skill_vs_naive_pct": -9.7,
+      "skill_vs_weekly4_pct": -13.78
     },
     "seasonal_naive_168h": {
-      "mae_kwh": 92.9434,
-      "rmse_kwh": 142.1772,
-      "points": 622080,
+      "mae_kwh": 2.979,
+      "rmse_kwh": 9.3255,
+      "points": 746616,
       "mase_vs_naive168": 1.0
     },
     "weekly_same_hour_mean": {
-      "mae_kwh": 73.5652,
-      "rmse_kwh": 111.0932,
-      "points": 622080
+      "mae_kwh": 2.8721,
+      "rmse_kwh": 7.4358,
+      "points": 746616
     }
   },
   "intervals": {
     "method": "per-horizon signed residual quantiles (split conformal, finite-sample corrected)",
     "nominal_coverage": 0.8,
-    "empirical_coverage": 0.8127,
-    "coverage_error": 0.0127,
+    "empirical_coverage": 0.8029,
+    "coverage_error": 0.0029,
     "per_fold_coverage": [
-      0.8825,
-      0.8119,
-      0.8007,
-      0.7961,
-      0.7477,
-      0.8373
+      0.7943,
+      0.837,
+      0.8169,
+      0.7637
     ],
-    "n_calibration_points": 829440,
-    "pinball_low": 15.6439,
-    "pinball_high": 18.55,
-    "mean_width_kwh": 194.6868
+    "n_calibration_points": 662952,
+    "pinball_low": 0.302,
+    "pinball_high": 1.3578,
+    "mean_width_kwh": 5.159
   },
-  "train_seconds": 122.02,
+  "train_seconds": 226.77,
   "beats_naive": true,
   "beats_weekly_mean": true,
   "artifact": {
     "path": "apps/ai/reports/model.pt",
-    "file_sha256": "3fa07261538b5ccec385d7bc68774eb709348c76feaefe57911dae589113c99b",
+    "file_sha256": "39681580e02053c0f528b76a481f80227f965099dc8c2c52276f0ee65c4c5b62",
     "serving_parity": {
       "rows_checked": 512,
       "max_abs_relative_difference": 0.0,
       "weights_only_load": true,
       "payload_sha256_verified": true,
-      "file_sha256": "3fa07261538b5ccec385d7bc68774eb709348c76feaefe57911dae589113c99b"
+      "file_sha256": "39681580e02053c0f528b76a481f80227f965099dc8c2c52276f0ee65c4c5b62"
     },
-    "payload_sha256": "6a444927585b9304adc9e85d7efd43f24113a6a943464eefbc43c10ee5964328"
+    "payload_sha256": "5e828df59cda049d76c5c1ed62519c903aa7219f454c4eec94aed9eb7491a368"
   }
 }

@@ -2,9 +2,12 @@
 // Mirrors the old rule set exactly so the upgrade is a config-shape change, not a
 // policy change: eslint:recommended + no-unused-vars/eqeqeq/no-throw-literal/etc.,
 // with the same per-directory overrides (web JSX, test/script console, k6 files).
+// The one policy addition is eslint-plugin-react-hooks on apps/web: the hook rules
+// are the only static check that catches a component React itself refuses to render.
 'use strict';
 const js = require('@eslint/js');
 const globals = require('globals');
+const reactHooks = require('eslint-plugin-react-hooks');
 
 // Node 20+ exposes globalThis.crypto (webcrypto) and WebSocket; this codebase
 // idiomatically does `const crypto = require('crypto')` / `const WebSocket =
@@ -27,6 +30,7 @@ module.exports = [
       // Local agent-tooling assets (installed skills), not project code.
       '.zcode/**',
       '.workbuddy-ai/**',
+      '.impeccable/**',
       'video/**',
       // Local screenshot/verification scratch frames (gitignored, not source).
       '.tmp-frames/**',
@@ -72,7 +76,17 @@ module.exports = [
       parserOptions: { ecmaFeatures: { jsx: true } },
       globals: { ...globals.browser, ...globals.node },
     },
-    rules: { 'no-unused-vars': 'off' },
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'no-unused-vars': 'off',
+      // Rules-of-hooks is the difference between a page that works and a page that
+      // throws "rendered more hooks than during the previous render" the moment its
+      // first fetch resolves — /session/[id] shipped that way until the E2E staff tour
+      // caught it, because a conditional early return sat above a useCountUp() call.
+      // Browser coverage exists now, but this rule fails the build in milliseconds.
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+    },
   },
   {
     files: ['**/test/**/*.js', 'scripts/**/*.js', 'apps/worker/src/**/*.js', 'apps/simulator/src/**/*.js'],

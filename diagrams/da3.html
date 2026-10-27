@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>VoltHub CSMS — DA3 diagrams</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0b0e11;
+        --panel: #12171c;
+        --panel-2: #0e1317;
+        --line: #262e36;
+        --line-soft: #1b2229;
+        --lime: #c6f24e;
+        --cream: #fffdd0;
+        --muted: #a3adb7;
+        --mono: 'IBM Plex Mono', ui-monospace, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--cream);
+        font-family: 'IBM Plex Sans', system-ui, sans-serif;
+      }
+      .dgm {
+        width: 2200px;
+        padding: 64px 72px 56px;
+        background: radial-gradient(900px 420px at 12% -10%, rgba(198, 242, 78, 0.07), transparent 65%), var(--bg);
+      }
+      .dgm + .dgm {
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .kicker {
+        font: 600 13px/1 var(--mono);
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--lime);
+      }
+      h2 {
+        margin: 14px 0 0;
+        font-size: 40px;
+        line-height: 1.12;
+        letter-spacing: -0.02em;
+        font-weight: 600;
+      }
+      .lede {
+        margin: 14px 0 0;
+        max-width: 1180px;
+        font-size: 19px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .lede b {
+        color: var(--cream);
+        font-weight: 500;
+      }
+      /* Without this, inline code in a lede falls back to the platform monospace
+         (Consolas on Windows) at the lede's 19px — a different typeface at a size
+         nothing else in the diagram uses. */
+      .lede code {
+        font: 500 0.84em var(--mono);
+        letter-spacing: -0.01em;
+        color: var(--cream);
+      }
+
+      .flow {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        margin-top: 44px;
+      }
+      .band {
+        flex: 1 1 0;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        padding: 0 0 20px;
+        display: flex;
+        flex-direction: column;
+      }
+      .band-h {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--line-soft);
+        font: 600 14px/1 var(--mono);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .band-h .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--lime);
+        flex: none;
+      }
+      .band-b {
+        padding: 22px 20px 0;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        flex: 1;
+      }
+
+      .node {
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: #0f1418;
+        padding: 13px 15px;
+      }
+      .node .id {
+        font: 600 16px/1.25 var(--mono);
+        letter-spacing: -0.01em;
+      }
+      .node .sub {
+        margin-top: 6px;
+        font-size: 14px;
+        line-height: 1.4;
+        color: var(--muted);
+      }
+      /* IBM Plex has no U+2192, so a real arrow character silently falls back to the
+         platform UI font (Segoe UI on Windows) and the diagram ships with two
+         typefaces. An ASCII arrow in the mono face keeps it to one. */
+      .node .sub .arrow {
+        font-family: var(--mono);
+        color: #cfd8e0;
+      }
+      .node.money {
+        border-color: rgba(198, 242, 78, 0.55);
+        box-shadow: inset 3px 0 0 var(--lime);
+      }
+      .node.step {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+      }
+      .node.step .n {
+        font: 600 12px/18px var(--mono);
+        color: #0b0e11;
+        background: var(--lime);
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        text-align: center;
+        flex: none;
+      }
+      .node.step .id {
+        font-size: 15px;
+      }
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding-left: 16px;
+        border-left: 1px dashed #33404b;
+        margin-left: 8px;
+      }
+      .stack .node {
+        background: #0c1115;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .link {
+        flex: 0 0 76px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: var(--muted);
+      }
+      .link span {
+        font: 500 12px/1.3 var(--mono);
+        text-align: center;
+        letter-spacing: 0.04em;
+        max-width: 76px;
+      }
+      .link .rule {
+        width: 100%;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, #4a5763 20%, #4a5765 80%, transparent);
+        position: relative;
+      }
+      .link .rule::after {
+        content: '';
+        position: absolute;
+        right: 2px;
+        top: -3px;
+        width: 7px;
+        height: 7px;
+        border-top: 1px solid #7d8894;
+        border-right: 1px solid #7d8894;
+        transform: rotate(45deg);
+      }
+      .link.rev .rule::after {
+        right: auto;
+        left: 2px;
+        transform: rotate(-135deg);
+      }
+
+      .note {
+        margin-top: 30px;
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        border: 1px dashed #33404b;
+        border-radius: 12px;
+        padding: 16px 20px;
+        background: rgba(198, 242, 78, 0.04);
+      }
+      .note .tag {
+        font: 600 11px/1.6 var(--mono);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--lime);
+        flex: none;
+        padding-top: 2px;
+      }
+      .note p {
+        margin: 0;
+        font-size: 15px;
+        line-height: 1.55;
+        color: var(--muted);
+      }
+      .note code {
+        font: 500 14px var(--mono);
+        color: var(--cream);
+      }
+
+      .legend {
+        margin-top: 26px;
+        display: flex;
+        gap: 26px;
+        font: 500 13px var(--mono);
+        color: var(--muted);
+      }
+      .legend i {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        margin-right: 8px;
+        vertical-align: -1px;
+      }
+
+      /* ---- schema variant ---- */
+      .schema-grid {
+        margin-top: 44px;
+        display: grid;
+        grid-template-columns: 1.05fr 76px 1fr 76px 0.9fr;
+        align-items: stretch;
+      }
+      .schema-grid .band {
+        padding-bottom: 22px;
+      }
+      .schema-foot {
+        margin-top: 20px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+      .policy {
+        border: 1px solid var(--line);
+        border-left: 3px solid #7d8894;
+        border-radius: 10px;
+        background: #0e1317;
+        padding: 13px 16px;
+      }
+      .policy .id {
+        font: 600 14px/1.3 var(--mono);
+      }
+      .policy .sub {
+        margin-top: 5px;
+        font-size: 13.5px;
+        line-height: 1.4;
+        color: var(--muted);
+      }
+      .arrow-down {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        font: 500 12px var(--mono);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ============================ DA3 · pipeline ============================ -->
+    <section class="dgm" data-diagram="pipeline">
+      <div class="kicker">DA3 · section 29</div>
+      <h2>Outbox pipeline — Oracle OLTP into TimescaleDB OLAP</h2>
+      <p class="lede">
+        Every meter tick is written <b>twice inside one transaction</b>: the billing row that decides money, and an
+        outbox row that decides analytics. A relay drains the outbox into the TimescaleDB sink, where the primary key
+        <code>(session_id, ts)</code> makes a replay harmless — <b>at-least-once delivery plus an idempotent sink</b>.
+      </p>
+
+      <div class="flow">
+        <div class="band">
+          <div class="band-h"><span class="dot"></span>Oracle · system of record</div>
+          <div class="band-b">
+            <div class="node money">
+              <div class="id">CHARGE_SESSION_PKG.record_meter_tick</div>
+              <div class="sub">the only writer of billing truth</div>
+            </div>
+            <div class="stack">
+              <div class="node">
+                <div class="id">meter_reading</div>
+                <div class="sub">billing truth · same transaction</div>
+              </div>
+              <div class="node">
+                <div class="id">OUTBOX_EVENT</div>
+                <div class="sub">kind = METER_TICK · processed_at NULL</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="link"><span>poll</span><i class="rule"></i></div>
+
+        <div class="band">
+          <div class="band-h"><span class="dot"></span>apps/worker · relay, 2s</div>
+          <div class="band-b">
+            <div class="node step">
+              <span class="n">1</span>
+              <div>
+                <div class="id">claim a batch</div>
+                <div class="sub">ORDER BY event_id · FETCH FIRST 500<br />FOR UPDATE SKIP LOCKED</div>
+              </div>
+            </div>
+            <div class="node step">
+              <span class="n">2</span>
+              <div>
+                <div class="id">map + COPY</div>
+                <div class="sub">into the analytics sink</div>
+              </div>
+            </div>
+            <div class="node step">
+              <span class="n">3</span>
+              <div>
+                <div class="id">mark processed_at</div>
+                <div class="sub">commit — the batch leaves the queue</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="link"><span>COPY</span><i class="rule"></i></div>
+
+        <div class="band">
+          <div class="band-h"><span class="dot"></span>TimescaleDB · analytics</div>
+          <div class="band-b">
+            <div class="pair">
+              <div class="node">
+                <div class="id">meter_tick</div>
+                <div class="sub">PK (session_id, ts)</div>
+              </div>
+              <div class="node">
+                <div class="id">connector_state_event</div>
+                <div class="sub">PK (connector_ref, ts)</div>
+              </div>
+            </div>
+            <div class="stack">
+              <div class="node">
+                <div class="id">tick_1m</div>
+                <div class="sub">1-minute bucket · delta_kwh, avg_kw, peak_kw</div>
+              </div>
+              <div class="node">
+                <div class="id">tick_1h</div>
+                <div class="sub">continuous aggregate over a continuous aggregate</div>
+              </div>
+              <div class="node">
+                <div class="id">state_1m</div>
+                <div class="sub">dominant state · fault / offline counts</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="link"><span>read</span><i class="rule"></i></div>
+
+        <div class="band">
+          <div class="band-h"><span class="dot"></span>Operator console</div>
+          <div class="band-b">
+            <div class="node">
+              <div class="id">load curve</div>
+              <div class="sub">energy per station per hour</div>
+            </div>
+            <div class="node">
+              <div class="id">connector heatmap</div>
+              <div class="sub">utilization across the fleet</div>
+            </div>
+            <div class="node">
+              <div class="id">session traces</div>
+              <div class="sub">power, voltage, current per tick</div>
+            </div>
+            <div class="node">
+              <div class="id">analytics</div>
+              <div class="sub">revenue, utilization, carbon intensity</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note">
+        <div class="tag">crash safety</div>
+        <p>
+          Killed between the <code>COPY</code> and the commit? The marks roll back, the events stay unprocessed, and the
+          sink dedupes them on the primary key when the relay picks them up again. Nothing is lost, nothing is counted
+          twice, and the analytics side never holds a lock the money path needs.
+        </p>
+      </div>
+
+      <div class="legend">
+        <span><i style="background: #c6f24e"></i>money path</span>
+        <span><i style="background: #3a444e"></i>durable store</span>
+        <span><i style="background: #7d8894"></i>derived / policy</span>
+      </div>
+    </section>
+
+    <!-- ============================= DA3 · schema ============================= -->
+    <section class="dgm" data-diagram="schema">
+      <div class="kicker">DA3 · section 26</div>
+      <h2>TimescaleDB schema — hypertables, aggregates, policies</h2>
+      <p class="lede">
+        Three raw hypertables, three incremental continuous aggregates, and one reference table projected from Oracle.
+        Retention and compression are <b>policies on the database</b>, not cron jobs in an application that can be down.
+      </p>
+
+      <div class="schema-grid">
+        <div class="band">
+          <div class="band-h"><span class="dot"></span>Raw hypertables</div>
+          <div class="band-b">
+            <div class="node">
+              <div class="id">meter_tick</div>
+              <div class="sub">
+                ts TIMESTAMPTZ · 1-day chunks<br />session_id, connector_ref<br />meter_kwh, power_kw, voltage_v,
+                current_a<br /><b style="color: #c6f24e">PK (session_id, ts) = idempotency</b>
+              </div>
+            </div>
+            <div class="node">
+              <div class="id">connector_state_event</div>
+              <div class="sub">
+                ts TIMESTAMPTZ · 1-day chunks<br />connector_ref, from_state, to_state<br />cause, session_id · PK
+                (connector_ref, ts)
+              </div>
+            </div>
+            <div class="node">
+              <div class="id">session_metric</div>
+              <div class="sub">
+                ts TIMESTAMPTZ · 7-day chunks<br />session_id, station_id<br />energy_kwh, duration_s, peak_kw
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="link"><span>roll up</span><i class="rule"></i></div>
+
+        <div class="band">
+          <div class="band-h"><span class="dot"></span>Continuous aggregates</div>
+          <div class="band-b">
+            <div class="node">
+              <div class="id">tick_1m</div>
+              <div class="sub">
+                time_bucket 1 min · delta_kwh, avg_kw, peak_kw<br />refreshed every minute, incrementally
+              </div>
+            </div>
+            <div class="node">
+              <div class="id">tick_1h</div>
+              <div class="sub">
+                time_bucket 1 h · energy_kwh, avg_kw, peak_kw<br />a continuous aggregate over a continuous aggregate
+              </div>
+            </div>
+            <div class="node">
+              <div class="id">state_1m</div>
+              <div class="sub">dominant_state per minute<br />fault and offline transition counts</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="link rev"><span>joins in</span><i class="rule"></i></div>
+
+        <div class="band">
+          <div class="band-h"><span class="dot"></span>Reference</div>
+          <div class="band-b">
+            <div class="node">
+              <div class="id">station_map</div>
+              <div class="sub">
+                connector_ref <span class="arrow">-&gt;</span> station_id<br />standard_code, max_power_kw<br />projected
+                from Oracle, read-only here
+              </div>
+            </div>
+            <div class="node">
+              <div class="id">why a copy</div>
+              <div class="sub">the analytics engine must answer a query without a round trip to the money database</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="schema-foot">
+        <div class="policy">
+          <div class="id">compression</div>
+          <div class="sub">meter_tick older than 7 days · segmentby connector_ref</div>
+        </div>
+        <div class="policy">
+          <div class="id">retention</div>
+          <div class="sub">meter_tick older than 90 days · dropped by chunk</div>
+        </div>
+        <div class="policy">
+          <div class="id">retention</div>
+          <div class="sub">connector_state_event older than 180 days</div>
+        </div>
+      </div>
+
+      <div class="note">
+        <div class="tag">why this shape</div>
+        <p>
+          Chunk keys are time, so every dashboard query touches a bounded set of chunks instead of the whole history.
+          Aggregates are <b>incremental</b>, so a refresh costs the new buckets only. And because the sink dedupes on
+          the primary key, the relay can replay a batch without a reconciliation job.
+        </p>
+      </div>
+    </section>
+  </body>
+</html>

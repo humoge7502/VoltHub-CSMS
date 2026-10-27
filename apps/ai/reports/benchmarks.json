@@ -1,22 +1,38 @@
 {
-  "generated_at": "2026-09-07T19:13:06.331220+00:00",
-  "torch": "2.13.0+cu130",
-  "cuda": true,
+  "generated_at": "2026-10-26T17:41:10.505442+00:00",
+  "torch": "2.14.1+cpu",
+  "cuda": false,
   "simulation": {
-    "shape": "24 stations x 28d x 2000 vehicles",
-    "cpu_seconds": 0.064,
-    "gpu_seconds": 0.005,
-    "gpu_speedup": 12.84
+    "shape": "24 stations x 120d x 2000 vehicles",
+    "cpu_seconds": 0.0733
+  },
+  "features": {
+    "panel_stations": 87,
+    "rows": 719880,
+    "input_dim": 36,
+    "build_seconds": 69.765,
+    "rows_per_second": 10319,
+    "baseline_arrays_seconds": 72.37,
+    "target_cells_sum_kwh": 31357292.0
+  },
+  "artifact_load": {
+    "weights_only": true,
+    "seconds": 0.053,
+    "bytes": 66045
   },
   "forecast_inference": {
-    "rows": 4096,
-    "cpu_seconds": 0.1178,
-    "gpu_seconds": 0.0003,
-    "gpu_speedup": 412.5
+    "stations_per_call": 500,
+    "cpu_seconds": 0.00053,
+    "throughput_stations_per_second": 939143,
+    "batch_rows": 4096,
+    "cpu_batch_seconds": 0.0012
   },
   "optimizer": {
-    "instance": "10 vehicles x 24h, station cap 120 kW",
-    "lp_highs_cpu_seconds": 0.0033,
+    "instance_small": "10 vehicles x 24h, cap 120 kW",
+    "lp_highs_cpu_seconds": 0.0066,
+    "instance_full": "200 vehicles x 24h with equality energy constraints",
+    "lp_highs_cpu_seconds_full": 0.5398,
+    "lp_highs_carbon_objective_seconds": 0.5523,
     "verdict": "LP (deterministic, exact) stays on CPU; GPU reserved for simulation/training/inference"
   }
 }

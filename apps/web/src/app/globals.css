@@ -203,7 +203,11 @@ a {
 .wrap {
   max-width: 1280px;
   margin: 0 auto;
-  padding: var(--sp-6) var(--sp-5) var(--sp-9);
+  /* viewportFit=cover (layout.js) paints under the notch/home indicator, so the
+     insets have to be paid for here or the first card sits behind the camera bar and
+     the last one under the iOS home indicator. */
+  padding: calc(var(--sp-6) + env(safe-area-inset-top)) calc(var(--sp-5) + env(safe-area-inset-right))
+    calc(var(--sp-9) + env(safe-area-inset-bottom)) calc(var(--sp-5) + env(safe-area-inset-left));
 }
 
 .grid {
@@ -258,11 +262,13 @@ a {
   z-index: var(--z-nav);
   background: var(--bg);
   border-bottom: 1px solid var(--hair);
+  /* with viewportFit=cover the bar is the thing that touches the notch */
+  padding-top: env(safe-area-inset-top);
 }
 .topbar-in {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 0 var(--sp-5);
+  padding: 0 calc(var(--sp-5) + env(safe-area-inset-right)) 0 calc(var(--sp-5) + env(safe-area-inset-left));
   min-height: 56px;
   display: flex;
   align-items: center;
@@ -636,6 +642,37 @@ table.t {
 }
 .tscroll .t {
   min-width: 640px;
+}
+
+/* Chart data tables (the WCAG 1.1.1 alternative under each chart). Collapsed by
+   default, so they cost the visual layout nothing; when open they are a normal table
+   but NOT the wide scroll variant — a two-column series does not need 640px. */
+.datatbl {
+  margin-top: var(--sp-3);
+  border-top: 1px solid var(--hair);
+  padding-top: var(--sp-2);
+}
+.datatbl summary {
+  cursor: pointer;
+  color: var(--tx3);
+  list-style: none;
+}
+.datatbl summary::-webkit-details-marker {
+  display: none;
+}
+.datatbl summary::before {
+  content: '+ ';
+  color: var(--lime);
+}
+.datatbl[open] summary::before {
+  content: '– ';
+}
+.datatbl:focus-within summary {
+  color: var(--tx);
+}
+.datatbl .t {
+  min-width: 0;
+  font-size: 12px;
 }
 
 .pill {

@@ -36,3 +36,15 @@ Four gaps turned "at-least-once" into "at-least-once until something goes wrong"
   worker is dead" stop looking identical).
 - **Connection churn.** Both relay paths opened and closed a Timescale `Pool` per 2-second
   poll. One pool is shared for the process lifetime and closed when the SIGTERM drain starts.
+- **Non-finite values are refused, not stored.** A `SampledValue.value` that does not parse
+  became `meter_kwh = NaN`, and Timescale wrote it as if it were a measurement: for float8,
+  Postgres defines `NaN = NaN` as TRUE (NaN sorts above every value for btree purposes), so
+  the usual `x <> x` detector answers FALSE on a stored NaN — while every `SUM`/`AVG` above
+  it becomes NaN. Timescale refuses a CHECK constraint on a compression-enabled hypertable
+  (`operation not supported on hypertables that have compression enabled`), and every table
+  here is compressed, so the rule cannot live at the sink. It lives at the three boundaries
+  instead: the gateway answers `TypeMismatch` and does not spend a sequence number,
+  `store.recordTick` raises `TICK_REJECTED` (NaN auxiliary channels degrade to NULL instead
+  of costing the session its register), the Oracle adapter applies the same guard before the
+  package bind — one frame, one answer on either engine — and the relay dead-letters any such
+  event that was already queued before the fix.

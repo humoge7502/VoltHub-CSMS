@@ -86,7 +86,10 @@ def _run(args, device_idx) -> int:
             "build_seconds": round(feat_s, 3),
             "rows_per_second": round(len(meta) / max(feat_s, 1e-9)),
             "baseline_arrays_seconds": round(time.perf_counter() - t0, 3),
-            "panel_total_kwh": round(float(np.sum(arrays["truth"])), 1),
+            # Sum of the (rows, HORIZON) target matrix — every station-hour is covered by
+            # 24 overlapping windows, so this is ~24x the panel's energy and must never be
+            # quoted as "panel total kWh". reports/dataset.json `panel.total_kwh` is that.
+            "target_cells_sum_kwh": round(float(np.sum(arrays["truth"])), 1),
         }
     else:
         results["features"] = {"note": "no real panel (run apps/ai/ingest.py) — measured on the twin instead"}

@@ -8,6 +8,7 @@
 // The driver credential is a published demo login; the admin leg is opt-in so CI
 // can run this without storing the provisioned secret (SEC-050).
 import { chromium } from 'playwright';
+import { requireServer } from './preflight.mjs';
 
 const BASE = (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 const DRIVER = {
@@ -25,6 +26,7 @@ const check = (name, ok, detail = '') => {
   if (!ok) failed++;
 };
 
+await requireServer(BASE);
 const CHANNEL = process.env.PW_CHANNEL ?? 'chrome';
 const browser = await chromium.launch({ ...(CHANNEL ? { channel: CHANNEL } : {}), headless: true });
 
@@ -59,6 +61,30 @@ async function login(page, creds) {
   return page.evaluate(() => localStorage.getItem('vh_token'));
 }
 
+// A page that renders *something* proves the route answered; it does not prove the
+// data island hydrated. These staff pages are all polled now, so the assertion waits
+// for text that only exists once the first tick resolved — a poller that silently
+// fails (bad token, wrong payload shape, aborted request) fails the check instead of
+// showing a skeleton forever, which is exactly the bug the analytics page had.
+// Case-insensitive because the console upper-cases KPI labels in CSS
+// (text-transform), and innerText returns what is *rendered*, not what the source says.
+async function waitForText(page, pattern, timeout = 20000) {
+  try {
+    await page.waitForFunction((src) => new RegExp(src, 'i').test(document.body.innerText), pattern.source, {
+      timeout,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function staffPage(page, label, path, pattern) {
+  await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  const ok = await waitForText(page, pattern);
+  check(`${label}: ${path} first poll resolves`, ok, ok ? '' : `no match for ${pattern}`);
+}
+
 async function session(creds, label, extra) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await ctx.newPage();
@@ -87,8 +113,100 @@ async function session(creds, label, extra) {
 
 await session(DRIVER, 'driver');
 
+// The four pages rebuilt around usePoll (dashboard fan-out, telemetry, analytics,
+// live session) plus the home health island. Each marker below is text that only
+// renders from fetched data, so this leg fails if a poller never resolves.
+async function staffTour(page, label) {
+  // The home island resolves to the live engine mode ('oracle' against the compose stack,
+  // 'local' for the hermetic store) and an outbox lag in events. The `…` placeholder has
+  // no digits, so this only matches after the first poll landed.
+  await staffPage(page, label, '/', /outbox lag[\s\S]{0,24}?\d+ ev/);
+  await staffPage(page, label, '/dashboard', /Active \/ Faults/);
+  const pick = page.locator('select#station-pick').first();
+  const stations = await pick
+    .locator('option')
+    .count()
+    .catch(() => 0);
+  check(`${label}: /dashboard station picker is populated`, stations >= 2, `${stations} options`);
+
+  // Repicking a station must never leave the PREVIOUS station's numbers under the new
+  // station's label — the stale-data defect the 2026-10-25 audit rated Critical. The poll
+  // is now scoped to the selection, so the payload is dropped the moment it changes and
+  // the KPI block disappears before the new batch lands.
+  const kpiBlock = () =>
+    page.evaluate(() => {
+      const el = document.querySelector('.grid.cards');
+      return el ? el.innerText.replace(/\s+/g, ' ').trim() : '';
+    });
+  const before = await kpiBlock();
+  check(`${label}: /dashboard renders a KPI block for the first station`, before.length > 0, before);
+  await pick.selectOption(await pick.locator('option').nth(1).getAttribute('value'));
+  const cleared = await page
+    .waitForFunction(
+      (prev) => {
+        const el = document.querySelector('.grid.cards');
+        return !el || el.innerText.replace(/\s+/g, ' ').trim() !== prev;
+      },
+      before,
+      { timeout: 4000 }
+    )
+    .then(() => true)
+    .catch(() => false);
+  check(
+    `${label}: /dashboard repick drops the previous station's KPIs`,
+    cleared,
+    cleared ? '' : `still showing "${before}"`
+  );
+  const reloaded = await waitForText(page, /Active \/ Faults/);
+  check(`${label}: /dashboard re-polls after the repick`, reloaded, reloaded ? '' : 'second station never resolved');
+  // The toast region has to exist BEFORE the first toast: a live region inserted in the
+  // same commit as its content is not watched by assistive tech, so the first toast of
+  // every visit — usually the error the user most needs — used to be silent.
+  const liveRegion = await page.evaluate(() => Boolean(document.querySelector('div[aria-live="polite"]')));
+  check(`${label}: /dashboard mounts the toast live region with nothing to say`, liveRegion, '');
+  await staffPage(page, label, '/telemetry', /MEAN DRAW/);
+  // WCAG 1.1.1: the charts are pictures of series, so each must ship its numbers. The
+  // heatmap only has numbers when the station has history, so an honest empty state
+  // ("no utilization history yet") satisfies the rule too — what must never happen is a
+  // chart on screen with no table behind it, which is what the skeleton did before.
+  const tables = await page
+    .locator('details.datatbl table.t')
+    .count()
+    .catch(() => 0);
+  const heatEmpty = await page.locator('[data-empty="heatmap"]').count();
+  check(
+    `${label}: /telemetry charts carry a data-table alternative`,
+    tables >= 2 || (tables >= 1 && heatEmpty === 1),
+    `${tables} tables${heatEmpty ? ' + honest heatmap empty state' : ''}`
+  );
+  await staffPage(page, label, '/analytics', /Utilization signal/);
+
+  // Session detail needs a real id: take the first link the history list renders
+  // rather than hard-coding one the seed may not produce.
+  await page.goto(`${BASE}/history`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await waitForText(page, /\/session\//);
+  const href = await page
+    .evaluate(() => document.querySelector('a[href^="/session/"]')?.getAttribute('href') || '')
+    .catch(() => '');
+  check(`${label}: /history links to a session`, href.startsWith('/session/'), href || 'none');
+  if (href) {
+    await page.goto(`${BASE}${href}`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    const gotData = await waitForText(page, /Meter frames/);
+    check(`${label}: ${href} live view renders its meter frames`, gotData, gotData ? '' : 'no data');
+    // The hero number is an aria-label set from the polled payload — proof the
+    // scoped live region (not the whole page) carries the announced value.
+    const heroLabel = await page
+      .locator('h1[aria-live="polite"]')
+      .first()
+      .getAttribute('aria-label')
+      .catch(() => null);
+    check(`${label}: ${href} hero meter is announced`, /kilowatt hours/.test(heroLabel || ''), heroLabel || 'none');
+  }
+}
+
 if (ADMIN.password) {
   await session(ADMIN, 'admin', async (page, label) => {
+    await staffTour(page, label);
     await page.goto(`${BASE}/admin`, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.getByRole('button', { name: 'OCPP commands' }).click();
     await page.getByText('Charge-point command console').waitFor({ timeout: 15000 });

@@ -10,6 +10,7 @@
 // do not break it but regressions do.
 
 import { chromium } from 'playwright';
+import { requireServer } from './preflight.mjs';
 
 const BASE = (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 const results = [];
@@ -23,6 +24,8 @@ function check(name, ok, detail = '') {
 
 // PW_CHANNEL='chrome' uses the system browser; set it to an empty string in CI to
 // use Playwright's bundled Chromium.
+await requireServer(BASE);
+
 const CHANNEL = process.env.PW_CHANNEL ?? 'chrome';
 const browser = await chromium.launch({ ...(CHANNEL ? { channel: CHANNEL } : {}), headless: true });
 

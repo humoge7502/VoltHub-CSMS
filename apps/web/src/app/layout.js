@@ -59,6 +59,11 @@ export const viewport = {
   colorScheme: 'dark',
   width: 'device-width',
   initialScale: 1,
+  // The console is installed as a PWA and used on phones at the charger. Without cover
+  // the whole app is letterboxed away from the notch; with it the safe-area insets in
+  // globals.css (.wrap, .topbar) are what keep content out of the camera bar and the
+  // home indicator.
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({ children }) {

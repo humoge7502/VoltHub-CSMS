@@ -400,7 +400,21 @@ module.exports = function extended(store) {
       return process.env.AI_URL || 'http://127.0.0.1:8100';
     },
     get token() {
-      return process.env.AI_TOKEN || 'dev-internal';
+      // Production never dials with the published demo literal. The sidecar already
+      // refuses to boot without a >=24-byte AI_TOKEN (`apps/ai/service.py:_resolve_token`);
+      // sending 'dev-internal' anyway would either be refused or, if that gate were ever
+      // lowered, turn a well-known string into a live credential on an internal endpoint.
+      // An unconfigured proxy is an outage we can name, so fail closed here.
+      const t = process.env.AI_TOKEN;
+      if (
+        process.env.NODE_ENV === 'production' &&
+        (!t || t.length < 24 || t === 'dev-internal' || /^replace_with_/.test(t))
+      ) {
+        const e = new Error('AI_TOKEN is unset or a published dev value — refusing to call the sidecar');
+        e.code = 'AI_MISCONFIGURED';
+        throw e;
+      }
+      return t || 'dev-internal';
     },
     get timeoutMs() {
       return Number(process.env.AI_TIMEOUT_MS || 3000);
@@ -450,6 +464,11 @@ module.exports = function extended(store) {
     }
     if (e && e.code === 'AI_UPSTREAM') {
       return res.status(502).json({ error: { code: 'AI_UNAVAILABLE', message: `AI sidecar answered ${e.message}` } });
+    }
+    // Not wired is not the same as unreachable: name the actual condition so the
+    // operator fixes the secret instead of restarting a healthy container.
+    if (e && e.code === 'AI_MISCONFIGURED') {
+      return res.status(503).json({ error: { code: 'AI_UNAVAILABLE', message: e.message } });
     }
     return res.status(503).json({ error: { code: 'AI_UNAVAILABLE', message: `AI sidecar unreachable (${path})` } });
   }

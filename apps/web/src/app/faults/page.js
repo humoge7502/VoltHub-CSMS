@@ -23,7 +23,15 @@ export default function Faults() {
     load();
   }, []);
   const ageH = (t) => ((Date.now() - new Date(t).getTime()) / 3600000).toFixed(1);
+  // A failed mutation must not look like a finished one. Both dialogs used to close on
+  // the error path (`setTarget(null)` inside the catch), so a rejected `POST`/`PATCH`
+  // left the operator with a closed dialog, an unchanged queue and no way to retry —
+  // and with no in-flight guard a second click could open two work records for one
+  // fault. Errors now stay inside the dialog, and the actions are inert while busy.
+  const [busy, setBusy] = useState('');
   const triage = async () => {
+    if (busy) return;
+    setBusy('triage');
     try {
       const j = await api(`/faults/${target.fault_id}/maintenance`, {
         method: 'POST',
@@ -31,24 +39,30 @@ export default function Faults() {
       });
       setRecord(j.record);
       setResolve(true);
+      setMsg('');
     } catch (e) {
       setMsg(e.message);
-      setTarget(null);
-      setResolve(false);
+    } finally {
+      setBusy('');
     }
   };
   const complete = async () => {
+    if (busy) return;
+    setBusy('complete');
     try {
       await api(`/maintenance/${record.record_id}/complete`, {
         method: 'PATCH',
         body: JSON.stringify({ resolution: 'Fixed, tested OK' }),
       });
+      setTarget(null);
+      setResolve(false);
+      setMsg('');
     } catch (e) {
-      setMsg(e.message);
+      setMsg(e.message); // the dialog stays open: the connector is NOT back in service
+    } finally {
+      setBusy('');
+      load();
     }
-    setTarget(null);
-    setResolve(false);
-    load();
   };
   return (
     <div className="wrap">
@@ -57,11 +71,9 @@ export default function Faults() {
         title="Faults"
         lede="Open faults age in place. Anything older than 48 hours tints red — the queue is a commitment, not a suggestion."
       />
-      {msg && (
-        <p className="err" role="alert">
-          {msg}
-        </p>
-      )}
+      {/* `msg` is set only by the two mutations below, and both now keep their dialog
+          open on failure and render the error inside it — an alert here would announce
+          the same sentence twice and sit behind the modal anyway. */}
       <PageState loading={loading} error={err} onRetry={load}>
         {list.length ? (
           <div className="tscroll">
@@ -93,7 +105,7 @@ export default function Faults() {
                     </td>
                     <td className="n num">{ageH(f.reported_at)}h</td>
                     <td>
-                      <button className="btn sm" onClick={() => setTarget(f)}>
+                      <button className="btn sm" onClick={() => setTarget(f)} disabled={!!busy}>
                         Triage
                       </button>
                     </td>
@@ -115,13 +127,25 @@ export default function Faults() {
         title={`Open maintenance on ${target?.connector_ref || target?.cp_id || ''}?`}
         body="A maintenance record is created and the connector leaves the available pool until it completes."
         confirmLabel="Open work record"
+        busyLabel="Opening…"
+        busy={busy === 'triage'}
         onConfirm={triage}
-        onCancel={() => setTarget(null)}
+        onCancel={() => {
+          setTarget(null);
+          setMsg('');
+        }}
       >
         <label className="f">
           Work description
           <input value={desc} onChange={(e) => setDesc(e.target.value)} />
         </label>
+        {/* The failure belongs INSIDE the dialog the operator is still looking at — the
+            page-level alert used to sit behind the modal they had just dismissed. */}
+        {msg && (
+          <p className="err" role="alert" style={{ marginTop: 'var(--sp-2)' }}>
+            {msg}
+          </p>
+        )}
       </ConfirmDialog>
       <ConfirmDialog
         open={resolve}
@@ -129,13 +153,22 @@ export default function Faults() {
         title="Mark resolved?"
         body="Completing the work record returns the connector to AVAILABLE."
         confirmLabel="Complete & release"
+        busyLabel="Completing…"
+        busy={busy === 'complete'}
         onConfirm={complete}
         onCancel={() => {
           setResolve(false);
           setTarget(null);
+          setMsg('');
           load();
         }}
-      />
+      >
+        {msg && (
+          <p className="err" role="alert">
+            {msg}
+          </p>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

@@ -1,32 +1,50 @@
 %% VoltHub CSMS — DA3 outbox pipeline: Oracle OLTP to TimescaleDB OLAP (Section 29)
-flowchart LR
-    subgraph OLTP["Oracle (system of record)"]
-        SP["CHARGE_SESSION_PKG.record_meter_tick"] -->|"same tx"| MR[("meter_reading<br/>(billing truth)")]
-        SP -->|"same tx"| OB[("OUTBOX_EVENT<br/>kind=METER_TICK<br/>processed_at NULL")]
+%% Render: bash scripts/render-diagrams.sh  ->  diagrams/out/da3-pipeline.{svg,png}
+flowchart TB
+    subgraph OLTP["Oracle — system of record"]
+        direction LR
+        SP["CHARGE_SESSION_PKG<br/>record_meter_tick"]
+        MR[("meter_reading<br/>billing truth")]
+        OB[("OUTBOX_EVENT<br/>kind = METER_TICK<br/>processed_at NULL")]
+        SP -->|"same tx"| MR
+        SP -->|"same tx"| OB
     end
 
-    subgraph Worker["apps/worker (relay loop, 2s)"]
-        R1["SELECT ... ORDER BY event_id<br/>FETCH FIRST 500 FOR UPDATE SKIP LOCKED"]
-        R2["map + COPY to sink"]
-        R3["UPDATE processed_at<br/>commit"]
+    subgraph Worker["apps/worker — relay loop, 2s"]
+        direction LR
+        R1["claim a batch<br/>ORDER BY event_id<br/>FETCH FIRST 500<br/>FOR UPDATE SKIP LOCKED"]
+        R2["map + COPY<br/>into the sink"]
+        R3["mark processed_at<br/>commit"]
         R1 --> R2 --> R3
     end
 
-    subgraph OLAP["TimescaleDB (analytics)"]
+    subgraph OLAP["TimescaleDB — analytics"]
+        direction LR
         MT[("meter_tick<br/>PK (session_id, ts)<br/>= idempotency key")]
         CSE[("connector_state_event")]
-        MT --> C1["tick_1m cagg"]
-        C1 --> C2["tick_1h cagg"]
-        CSE --> C3["state_1m cagg"]
-        POL["compress > 7d<br/>drop > 90d"] -.-> MT
+        C1["tick_1m cagg"]
+        C2["tick_1h<br/>cagg over cagg"]
+        C3["state_1m cagg"]
+        POL["compress > 7d<br/>drop > 90d"]
+        MT --> C1 --> C2
+        CSE --> C3
+        POL -.-> MT
         POL -.-> CSE
     end
 
-    DASH["Operator telemetry screens<br/>load curve - heatmap - traces"] --> C1
-    DASH --> C3
+    DASH["operator telemetry<br/>load curve · heatmap · traces"]
+    NOTE["crash between COPY and commit?<br/>the marks roll back and the sink<br/>dedupes on the PK at replay"]
 
-    OB --> R1
-    R2 --> MT
-    R2 --> CSE
+    OB -->|"poll"| R1
+    R2 -->|"COPY"| MT
+    R2 -->|"COPY"| CSE
+    C1 --> DASH
+    C3 --> DASH
+    R3 -.-> NOTE
 
-    note["Crash safety: worker killed after R2?<br/>marks rolled back, sink dedupes on replay.<br/>At-least-once delivery + idempotent sink = effectively-once analytics."]
+    classDef money fill:#151a20,stroke:#c6f24e,stroke-width:1.5px,color:#fffdd0
+    classDef store fill:#101418,stroke:#3a444e,color:#fffdd0
+    classDef policy fill:#101418,stroke:#8a949f,stroke-dasharray:4 3,color:#c9d1d9
+    class SP money
+    class MR,OB,MT,CSE store
+    class POL,NOTE policy

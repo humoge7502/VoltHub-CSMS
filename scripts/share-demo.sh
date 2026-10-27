@@ -113,7 +113,12 @@ echo "== 2/6 tunnel image =="
 docker image inspect "${CF_IMAGE}" >/dev/null 2>&1 || docker pull -q "${CF_IMAGE}" >/dev/null
 
 echo "== 3/6 start tunnels on the compose network =="
-NET="$(compose ps -q web | xargs -r docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null | tr -d '\r' | head -1)"
+NET_RAW="$(compose ps -q web | xargs -r docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}
+{{end}}' 2>/dev/null || true)"
+# No `head -1` here: under `set -o pipefail` an early-exiting reader sends SIGPIPE to
+# `docker inspect`, the assignment fails, and the whole deploy aborts at step 3 with no
+# message at all (the caller's `| tail` swallows the status too). sed reads to EOF.
+NET="$(printf '%s' "${NET_RAW}" | tr -d '\r' | sed -n '1p' | tr -d '\n')"
 if [ -z "${NET}" ]; then NET="infra_default"; fi
 stop_tunnels
 docker run -d --name "${C_API}" --restart unless-stopped --network "${NET}" "${CF_IMAGE}" \
@@ -145,6 +150,16 @@ set_env_key WEB_ORIGIN "${KEPT_ORIGIN},${WEB_URL}"
 set_env_key NEXT_PUBLIC_API_BASE "${API_URL}/api/v1"
 set_env_key NEXT_PUBLIC_SITE_URL "${WEB_URL}"
 
+# SEC-050: the admin row is provisioned, never published. This has to run BEFORE the
+# api container starts — the API hydrates the user table once at boot, so a row fixed
+# afterwards stays invisible until the next restart (which is exactly how a public
+# admin login reads "invalid email/password" while every health check is green).
+if [ -n "$(get_env_key ADMIN_BOOTSTRAP_PASSWORD)" ]; then
+  ORACLE_HOST=127.0.0.1 \
+    ADMIN_BOOTSTRAP_PASSWORD="$(get_env_key ADMIN_BOOTSTRAP_PASSWORD)" \
+    node "${ROOT}/scripts/rotate-admin.js" --ensure || true
+fi
+
 # Deploy the CURRENT code, not whatever the image was when it was last built:
 # api/worker images must be rebuilt just like the web bundle (a rerun after a code
 # change used to redeploy a fresh web bundle against a stale backend image).
@@ -174,6 +189,16 @@ if CORS_HEADERS="$(curl -sS -D - -o /dev/null --max-time 10 -X OPTIONS \
   if printf '%s' "${CORS_HEADERS}" | grep -qi "^access-control-allow-origin: ${WEB_URL}"; then CORS_OK=1; fi
 fi
 [ "${CORS_OK}" = 1 ] && echo "   CORS: ${WEB_URL} -> API allowed" || echo "WARN: CORS preflight did not echo ${WEB_URL} — check WEB_ORIGIN/docker logs volthub-api"
+
+# SEC-050: prove the provisioned admin actually signs in, from the public origin.
+if [ -n "$(get_env_key ADMIN_BOOTSTRAP_PASSWORD)" ]; then
+  ADMIN_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "${API_URL}/api/v1/auth/login" \
+    -H 'content-type: application/json' \
+    -d "{\"email\":\"admin@volthub.in\",\"password\":\"$(get_env_key ADMIN_BOOTSTRAP_PASSWORD)\"}" 2>/dev/null || echo 000)"
+  [ "${ADMIN_CODE}" = 200 ] && echo "   admin login: 200" || echo "WARN: admin login returned ${ADMIN_CODE} — check ADMIN_BOOTSTRAP_PASSWORD and docker logs volthub-api"
+else
+  echo "   admin login: skipped (ADMIN_BOOTSTRAP_PASSWORD not set in .env)"
+fi
 
 echo "== 6/6 done =="
 cat <<EOF

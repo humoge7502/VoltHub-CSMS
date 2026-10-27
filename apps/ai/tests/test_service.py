@@ -248,6 +248,29 @@ def test_served_intervals_stay_ordered_when_truncated(client, monkeypatch):
     assert all(v >= 0 for v in b["p10"] + b["hours"] + b["p90"])
 
 
+def test_interval_fields_describe_the_level_they_were_measured_at(client, monkeypatch):
+    """`lower`/`upper` always carry the band; `p10`/`p90` only exist while the calibrated
+    level really is 0.8. Publishing a differently-named band under those quantiles would
+    be a silent lie to whoever sizes equipment from it."""
+    install_model(monkeypatch)
+    st = client.post("/v1/forecast", json={"station_ids": [1], "history": {"1": history()}}, headers=TOK).json()["stations"]["1"]
+    assert st["interval_level"] == contract.INTERVAL_LEVEL == 0.8
+    assert st["lower"] == st["p10"] and st["upper"] == st["p90"], (
+        "at the served 0.8 level the legacy and honest names must agree"
+    )
+    # A level whose tails the table cannot produce is refused at load (see the artifact
+    # refusal test), so supply 0.05/0.95 here and reach the naming guard directly: what
+    # is asserted is the field NAME, not the arithmetic.
+    conf = service._MODEL["pt"]["conformal"]
+    conf["quantiles_kwh"]["0.05"] = [0.0] * contract.HORIZON
+    conf["quantiles_kwh"]["0.95"] = [0.5] * contract.HORIZON
+    monkeypatch.setitem(service._MODEL["pt"], "interval_level", 0.9)
+    st2 = client.post("/v1/forecast", json={"station_ids": [1], "history": {"1": history()}}, headers=TOK).json()["stations"]["1"]
+    assert st2["interval_level"] == 0.9
+    assert st2["p10"] is None and st2["p90"] is None, "an 0.9 band must not be labelled p10/p90"
+    assert len(st2["lower"]) == len(st2["upper"]) == contract.HORIZON
+
+
 def test_forecast_is_batched_and_station_scoped(client, monkeypatch):
     install_model(monkeypatch)
     r = client.post(
@@ -304,6 +327,7 @@ def good_payload():
         (lambda p: p["spec"].update(input_dim=12), "input_dim"),
         (lambda p: p["spec"].update(horizon=12), "horizon"),
         (lambda p: p["conformal"]["quantiles_kwh"].update({"0.1": [0.0] * 6}), "conformal quantile"),
+        (lambda p: p.update(interval_level=0.9), "interval_level"),
         (lambda p: p["state_dict"]["0.weight"].add_(1e-3), "payload digest"),
     ],
 )
