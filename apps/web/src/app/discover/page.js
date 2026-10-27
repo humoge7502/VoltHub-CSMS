@@ -1,40 +1,45 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import Link from 'next/link';
-import { api, Pill, CorridorMap, PageHead, EmptyState } from '../../lib/ui';
+import { api, usePoll, Pill, CorridorMap, PageHead, EmptyState, StaleChip } from '../../lib/ui';
 
 export default function Discover() {
   const [st, setSt] = useState([]);
   const [q, setQ] = useState('');
   const [std, setStd] = useState('');
   const [sel, setSel] = useState(null);
-  const [err, setErr] = useState('');
-  const [loading, setLoading] = useState(true);
-  // The 15 s poll runs from a stable interval, so it reads the LATEST q/std/sel
-  // through refs — a closure over the first render would poll the initial search
-  // forever and re-select the first station on every tick (BUG-027).
+  // The poll reads the LATEST q/std/sel through refs, so the stable interval never has to
+  // be torn down and rebuilt by a keystroke — a closure over the first render would poll
+  // the initial search forever and re-select the first station on every tick (BUG-027).
   const qRef = useRef(q);
   const stdRef = useRef(std);
   const selRef = useRef(sel);
   qRef.current = q;
   stdRef.current = std;
   selRef.current = sel;
-  const load = () =>
-    api(
-      `/stations?q=${encodeURIComponent(qRef.current)}${stdRef.current ? `&std=${stdRef.current}` : ''}&lat=12.97&lng=80.06&radius=60`
-    )
-      .then((j) => {
-        setErr('');
+  // usePoll serialises the requests (a 15 s tick used to fire even when the previous
+  // /stations search was still running), pauses while the tab is hidden, and aborts the
+  // in-flight fetch on unmount. Search/Enter re-runs the same tick immediately.
+  const { status, error, refresh } = usePoll(
+    ({ signal }) =>
+      api(
+        `/stations?q=${encodeURIComponent(qRef.current)}${stdRef.current ? `&std=${stdRef.current}` : ''}&lat=12.97&lng=80.06&radius=60`,
+        { signal }
+      ).then((j) => {
         setSt(j.stations);
         if (!selRef.current && j.stations[0]) setSel(j.stations[0].station_id);
-      })
-      .catch((e) => setErr('API unreachable — start it: npm run dev:api (localhost:4000)'))
-      .finally(() => setLoading(false));
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
-  }, []);
+      }),
+    { intervalMs: 15000 }
+  );
+  const loading = status === 'loading';
+  // An unreachable API is the common case here, so say how to start it — but keep the
+  // server's own message for everything else (401 and 403 used to be masked by it).
+  const err =
+    status === 'error'
+      ? error === 'Failed to fetch'
+        ? 'API unreachable — start it: npm run dev:api (localhost:4000)'
+        : error
+      : '';
   const cur = st.find((s) => s.station_id === sel);
   return (
     <div className="wrap">
@@ -49,7 +54,7 @@ export default function Discover() {
           placeholder="Search name / area…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && load()}
+          onKeyDown={(e) => e.key === 'Enter' && refresh()}
           style={{ maxWidth: 320 }}
         />
         <select
@@ -64,7 +69,7 @@ export default function Discover() {
           <option>CHADEMO</option>
           <option>BHARAT_DC001</option>
         </select>
-        <button className="btn pri" onClick={load}>
+        <button className="btn pri" onClick={refresh}>
           Search
         </button>
       </div>
@@ -73,6 +78,11 @@ export default function Discover() {
           {err}
         </p>
       )}
+      {status === 'stale' && (
+        <div style={{ marginBottom: 'var(--sp-3)' }}>
+          <StaleChip />
+        </div>
+      )}
       <div className="two">
         <div className="grid">
           <CorridorMap stations={st} selected={sel} onPick={(s) => setSel(s.station_id)} />
@@ -80,6 +90,7 @@ export default function Discover() {
             <div className="skel" style={{ height: 200 }} />
           ) : !st.length && !err ? (
             <EmptyState
+              as="h2"
               title="No stations match"
               body="Try a broader search or clear the standard filter — the corridor has a dozen seeded stations."
             />
@@ -98,7 +109,7 @@ export default function Discover() {
                         flexWrap: 'wrap',
                       }}
                     >
-                      <h3 style={{ fontSize: '1.05rem' }}>{s.name}</h3>
+                      <h2 style={{ fontSize: '1.05rem' }}>{s.name}</h2>
                       <span className="num micro">
                         {s.distance_km != null ? `${s.distance_km} km · ` : ''}
                         {s.available_count}/{s.connector_count} free
@@ -127,7 +138,7 @@ export default function Discover() {
           <div className="micro">SELECTED STATION</div>
           {cur ? (
             <>
-              <h3 style={{ margin: 'var(--sp-2) 0', fontSize: '1.15rem' }}>{cur.name}</h3>
+              <h2 style={{ margin: 'var(--sp-2) 0', fontSize: '1.15rem' }}>{cur.name}</h2>
               <p style={{ color: 'var(--tx2)', margin: 0, fontSize: 13 }}>
                 {cur.address_line}, {cur.city}
               </p>

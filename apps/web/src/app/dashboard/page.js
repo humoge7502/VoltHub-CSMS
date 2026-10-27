@@ -1,7 +1,8 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   api,
+  usePoll,
   Kpi,
   Pill,
   Line,
@@ -28,9 +29,17 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   // Stale-data contract (same as telemetry): a failed poll keeps the last good KPIs
   // on screen with a reconnecting chip; only a failed first load shows the error card.
-  const gotDataRef = useRef(false);
-  const [stale, setStale] = useState(false);
-  const fanoutRef = useRef(null);
+  const loadStations = () => {
+    setLoading(true);
+    api('/stations')
+      .then((j) => {
+        setSt(j.stations);
+        setErr('');
+        setSel((s) => s ?? j.stations[0]?.station_id);
+      })
+      .catch((e) => setErr(e.message))
+      .finally(() => setLoading(false));
+  };
   // URL as state (§9.5-3): ?station= survives refresh/deep-link.
   useEffect(() => {
     try {
@@ -47,54 +56,38 @@ export default function Dashboard() {
     } catch {}
   };
   useEffect(() => {
-    setLoading(true);
-    api('/stations')
-      .then((j) => {
-        setSt(j.stations);
-        setErr('');
-        setSel((s) => s ?? j.stations[0]?.station_id);
-      })
-      .catch((e) => setErr(e.message))
-      .finally(() => setLoading(false));
+    loadStations();
   }, []);
-  useEffect(() => {
-    if (!sel) return;
-    let dead = false;
-    const f = () =>
+  // usePoll serialises the five-request fan-out: the old setInterval fired the whole
+  // batch every 15 s whether or not the previous batch had landed, so one slow endpoint
+  // multiplied the load on a laptop with a bad connection. Same tick, paused in a hidden
+  // tab, and every request gets an AbortSignal. `scope: sel` is the part that keeps the
+  // numbers honest: repicking tears the loop down, aborts the batch in flight and clears
+  // the previous station's payload, so station B's label can never render station A's
+  // KPIs while the new batch is still on the wire (or, if it fails, indefinitely).
+  const { status, error, refresh } = usePoll(
+    ({ signal }) =>
       Promise.all([
-        api(`/stations/${sel}/analytics`)
-          .then((r) => {
-            if (dead) return;
-            setA(r);
-            gotDataRef.current = true;
-            setStale(false);
-          })
-          .catch((e) => {
-            if (dead) return;
-            if (gotDataRef.current) setStale(true);
-            else setErr(e.message);
-          }),
-        api(`/stations/${sel}/connectors/live`)
-          .then((j) => !dead && setLive(j.connectors))
-          .catch(() => {}),
-        api(`/stations/${sel}/sessions/active`)
-          .then((j) => !dead && setActive(j.sessions))
-          .catch(() => {}),
-        api(`/faults?open=1&station=${sel}`)
-          .then((j) => !dead && setFaults(j.faults))
-          .catch(() => {}),
-        api(`/telemetry/load-curve?station=${sel}&bucket=1h`)
-          .then((j) => !dead && setStrip(j.points))
-          .catch(() => {}),
-      ]);
-    fanoutRef.current = f;
-    f();
-    const t = setInterval(f, 15000);
-    return () => {
-      dead = true;
-      clearInterval(t);
-    };
-  }, [sel]);
+        api(`/stations/${sel}/analytics`, { signal }).then((r) => setA(r)),
+        api(`/stations/${sel}/connectors/live`, { signal }).then((j) => setLive(j.connectors)),
+        api(`/stations/${sel}/sessions/active`, { signal }).then((j) => setActive(j.sessions)),
+        api(`/faults?open=1&station=${sel}`, { signal }).then((j) => setFaults(j.faults)),
+        api(`/telemetry/load-curve?station=${sel}&bucket=1h`, { signal }).then((j) => setStrip(j.points)),
+      ]),
+    {
+      intervalMs: 15000,
+      enabled: !!sel,
+      scope: sel,
+      reset: () => {
+        setA(null);
+        setLive([]);
+        setActive([]);
+        setFaults([]);
+        setStrip([]);
+      },
+    }
+  );
+  const stale = status === 'stale';
   return (
     <div className="wrap">
       <Toasts />
@@ -111,8 +104,11 @@ export default function Dashboard() {
       )}
       <PageState
         loading={loading && !st.length}
-        error={err}
-        onRetry={() => (fanoutRef.current ? fanoutRef.current() : window.location.reload())}
+        error={err || (status === 'error' ? error : '')}
+        onRetry={() => {
+          loadStations();
+          refresh();
+        }}
       >
         {a && (
           <div className="grid cards" style={{ marginTop: 'var(--sp-4)' }}>

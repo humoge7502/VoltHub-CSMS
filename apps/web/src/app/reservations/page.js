@@ -20,6 +20,10 @@ export default function Reservations() {
   const [loading, setLoading] = useState(true);
   const [cancelTarget, setCancelTarget] = useState(null);
   const [planId, setPlanId] = useState(null);
+  // One in-flight guard for both driver actions: "Plug in" used to be clickable four
+  // times over, and each click minted a session attempt against the same booking.
+  const [busy, setBusy] = useState('');
+  const [dlgErr, setDlgErr] = useState('');
   // Start-session used to hardcode planId: 2 — a tariff the user never chose and one
   // that may not exist (or may not be the active version) on another database. The
   // active version from the public /tariffs/active preview is the honest default.
@@ -43,17 +47,24 @@ export default function Reservations() {
     load();
   }, []);
   const cancel = async (id) => {
-    setMsg('');
+    if (busy) return;
+    setBusy('cancel');
+    setDlgErr('');
     try {
       await api(`/reservations/${id}/cancel`, { method: 'POST' });
       setCancelTarget(null);
       load();
     } catch (e) {
-      setCancelTarget(null);
-      setMsg(e.message);
+      // The dialog stays open: closing it on failure made a rejected cancel look like
+      // one that had simply not refreshed yet.
+      setDlgErr(e.message);
+    } finally {
+      setBusy('');
     }
   };
   const startSession = async (r) => {
+    if (busy) return;
+    setBusy('start');
     setMsg('');
     try {
       const [cp, no] = r.connector_ref.split(':').map(Number);
@@ -67,8 +78,13 @@ export default function Reservations() {
         }),
       });
       window.location = `/session/${j.session.session_id}`;
+      // No `finally` here on purpose: the assignment above starts a navigation, so the
+      // guard stays set until this document is replaced — releasing it would re-arm the
+      // button for the fraction of a second before the browser leaves the page.
     } catch (e) {
       setMsg(e.message);
+      load(); // a 409 means the booking/connector state moved — re-read it, don't guess
+      setBusy('');
     }
   };
   return (
@@ -116,11 +132,16 @@ export default function Reservations() {
                       <td style={{ display: 'flex', gap: 6 }}>
                         {r.status === 'BOOKED' && (
                           <>
-                            <button className="btn sm" onClick={() => setCancelTarget(r)}>
+                            <button className="btn sm" onClick={() => setCancelTarget(r)} disabled={!!busy}>
                               Cancel
                             </button>
-                            <button className="btn sm pri" onClick={() => startSession(r)}>
-                              Plug in
+                            <button
+                              className="btn sm pri"
+                              onClick={() => startSession(r)}
+                              disabled={!!busy}
+                              aria-busy={busy === 'start' || undefined}
+                            >
+                              {busy === 'start' ? 'Starting…' : 'Plug in'}
                             </button>
                           </>
                         )}
@@ -149,10 +170,24 @@ export default function Reservations() {
         title={`Release ${cancelTarget?.connector_ref ?? ''}?`}
         body="The window frees immediately and another driver can take it. This cannot be undone."
         confirmLabel="Cancel reservation"
+        busyLabel="Releasing…"
+        busy={busy === 'cancel'}
         danger
         onConfirm={() => cancel(cancelTarget.reservation_id)}
-        onCancel={() => setCancelTarget(null)}
-      />
+        onCancel={() => {
+          setCancelTarget(null);
+          setDlgErr('');
+        }}
+      >
+        {/* Kept separate from the page-level `msg` (which carries "Plug in" failures):
+            the cancel failure stays inside the dialog that is still open, and one
+            sentence must not be announced by two live regions. */}
+        {dlgErr && (
+          <p className="err" role="alert">
+            {dlgErr}
+          </p>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

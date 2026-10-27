@@ -60,6 +60,13 @@ export default function Station() {
         }),
       });
       setOk(`BOOKED #${j.reservation.reservation_id} — see Reservations`);
+      // The booking moved the connector AVAILABLE → RESERVED on the server, but the tile
+      // kept saying AVAILABLE, so the next click on the same bay earned a 409 that looked
+      // like the UI had lied. Re-read the station (selection and start time untouched —
+      // those are the operator's input, not state to be refreshed).
+      api(`/stations/${params.id}`)
+        .then((r) => setS(r.station))
+        .catch(() => {});
     } catch (e) {
       setMsg(e.message);
     } finally {

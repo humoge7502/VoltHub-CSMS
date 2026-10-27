@@ -17,8 +17,41 @@ export async function logout() {
   localStorage.removeItem('vh_token');
 }
 
+// The access token lives 15 minutes and the refresh token is an httpOnly cookie the
+// server ROTATES on every use — presenting one twice is treated as theft and revokes
+// the whole family (SEC-012), signing out every tab on the device. A dashboard fans out
+// five requests, so at expiry instant they all 401 at once: without single-flighting,
+// the second POST /auth/refresh replays the cookie the first one already burned and the
+// user is logged out by their own polling. One refresh in flight; everyone awaits it.
+let refreshing = null;
+async function refreshAccessToken() {
+  if (!refreshing) {
+    refreshing = (async () => {
+      try {
+        const r = await fetch(`${API}/auth/refresh`, { method: 'POST', credentials: 'include' });
+        if (!r.ok) {
+          localStorage.removeItem('vh_token');
+          return null;
+        }
+        const j = await r.json().catch(() => ({}));
+        if (!j.accessToken) return null;
+        setToken(j.accessToken);
+        return j.accessToken;
+      } catch {
+        return null;
+      }
+    })().finally(() => {
+      refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
+// retry=false stops the 401→refresh→retry chain from recursing. Re-sending a mutating
+// call after a 401 is safe: the auth middleware rejects before the route handler runs,
+// so a 401 request never had a side effect to duplicate.
 export async function api(path, opts = {}) {
-  const { headers, ...rest } = opts;
+  const { headers, retry = true, ...rest } = opts;
   const r = await fetch(`${API}${path}`, {
     ...rest,
     headers: {
@@ -27,6 +60,7 @@ export async function api(path, opts = {}) {
       ...(headers || {}),
     },
   });
+  if (r.status === 401 && retry && (await refreshAccessToken())) return api(path, { ...opts, retry: false });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     const e = new Error(j.error?.message || `HTTP ${r.status}`);
@@ -74,6 +108,89 @@ export function useCountUp(target, { duration = 650 } = {}) {
     return () => cancelAnimationFrame(raf);
   }, [target, duration]);
   return v;
+}
+
+// usePoll: the console's one polling loop. Pages used to hand-roll
+// `const t = setInterval(f, N)` — five copies, each missing a different hazard:
+// a slow API answered AFTER the next tick went out (a laptop on a train stacks
+// requests without bound), a backgrounded tab still hitting the gateway every
+// 10 s (battery, and a real load multiplier on a public demo), and a response
+// landing after unmount. Ticks are serialised (one in flight, always), paused
+// while the document is hidden with an immediate catch-up on reveal, and every
+// request gets an AbortSignal that is cancelled on unmount or when `enabled`
+// flips. State is reported as the stale-data contract the pages already wanted:
+// 'error' only until there is data on screen, 'stale' for every failure after it.
+//
+// `scope` names WHAT the poll is about (a station id, a session id) and `reset`
+// hands the page its chance to drop the payload that belongs to the previous one.
+// Without them a repick left the old interval running on the new closure, so the
+// screen showed station B's label over station A's KPIs for up to a full interval
+// — and if the new station then errored, `hadData` was already true, so the wrong
+// numbers were dressed up as "last good data" and could sit there indefinitely.
+export function usePoll(fn, { intervalMs = 10000, enabled = true, scope = null, reset } = {}) {
+  const [status, setStatus] = useState('loading');
+  const [error, setError] = useState('');
+  const fnRef = useRef(fn);
+  const resetRef = useRef(reset);
+  const tickRef = useRef(null);
+  useEffect(() => {
+    fnRef.current = fn;
+    resetRef.current = reset;
+  });
+  const scopeKey = JSON.stringify(scope === undefined ? null : scope);
+  useEffect(() => {
+    if (!enabled || typeof document === 'undefined') return;
+    // Anything on screen right now describes the PREVIOUS scope. Clear it before the
+    // first tick so no render can pair a new label with the old entity's numbers.
+    if (resetRef.current) resetRef.current();
+    setStatus('loading');
+    setError('');
+    let dead = false;
+    let hadData = false;
+    let inFlight = null;
+    let timer = null;
+    let ctrl = null;
+    const tick = async () => {
+      if (inFlight) return; // backpressure: never overlap the same request
+      ctrl = new AbortController();
+      inFlight = (async () => {
+        try {
+          await fnRef.current({ signal: ctrl.signal });
+          if (dead) return;
+          hadData = true;
+          setStatus('ok');
+          setError('');
+        } catch (e) {
+          // An unmount/tab-switch abort is not an outage — do not show stale or error.
+          if (dead || ctrl.signal.aborted) return;
+          setStatus(hadData ? 'stale' : 'error');
+          setError(e.message || String(e));
+        } finally {
+          inFlight = null;
+        }
+        if (!dead && !document.hidden) timer = setTimeout(tick, intervalMs);
+      })();
+    };
+    const reveal = () => {
+      if (document.hidden) {
+        clearTimeout(timer);
+        timer = null;
+        return;
+      }
+      if (!timer) tick(); // catch up immediately instead of waiting out the interval
+    };
+    document.addEventListener('visibilitychange', reveal);
+    tickRef.current = tick;
+    tick();
+    return () => {
+      dead = true;
+      tickRef.current = null;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', reveal);
+      if (inFlight) ctrl.abort();
+    };
+  }, [intervalMs, enabled, scopeKey]);
+  return { status, error, refresh: () => tickRef.current && tickRef.current() };
 }
 
 // StaleChip: a poll failed but the last good payload is still on screen. Honest about
@@ -155,10 +272,13 @@ export function Kpi({ l, v, sub }) {
   );
 }
 
-export function EmptyState({ title, body, action }) {
+// `as` keeps the heading level correct wherever it lands: a card list under the page h1
+// needs h2, a panel inside a Section (h2) needs h3. Hardcoding one level made every
+// consumer skip a level, which screen-reader heading navigation reports as a broken outline.
+export function EmptyState({ title, body, action, as: Tag = 'h3' }) {
   return (
     <div className="card" style={{ textAlign: 'center', padding: 'var(--sp-7) var(--sp-5)' }}>
-      <h3>{title}</h3>
+      <Tag>{title}</Tag>
       {body ? (
         <p style={{ color: 'var(--tx2)', maxWidth: '48ch', margin: 'var(--sp-2) auto var(--sp-4)' }}>{body}</p>
       ) : null}
@@ -190,7 +310,7 @@ export function PageState({ loading, error, empty, onRetry, retryLabel = 'Retry'
         )}
       </div>
     );
-  if (empty) return <EmptyState title="Nothing here yet" body={empty} />;
+  if (empty) return <EmptyState as="h2" title="Nothing here yet" body={empty} />;
   return children;
 }
 
@@ -212,7 +332,11 @@ export function Toasts() {
       _push = null;
     };
   }, []);
-  if (!items.length) return null;
+  // The live region is mounted ALWAYS. With the old `if (!items.length) return null`,
+  // the region and its first message appeared in the same commit, and assistive tech
+  // does not announce content inserted into a node it has never seen — so the first
+  // toast of every page visit (usually the error the user most needs to hear) was
+  // silent. An empty fixed grid has no box and cannot be seen or tabbed into.
   return (
     <div
       aria-live="polite"
@@ -256,6 +380,9 @@ export function AuthGate({ error, children }) {
 /* ---------------- dialog (replaces window.confirm / window.prompt) ---------------- */
 
 // Native <dialog>: focus trap + Esc for free. Backdrop click = cancel.
+// `busy` is the in-flight guard for mutations: while it is true the dialog cannot be
+// dismissed (Esc, backdrop or Cancel) and both actions are inert, so a double click
+// cannot fire two `PATCH`es and a slow answer cannot be lost behind a closed dialog.
 export function ConfirmDialog({
   open,
   eyebrow = 'CONFIRM',
@@ -263,12 +390,17 @@ export function ConfirmDialog({
   body,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
+  busyLabel = 'Working…',
   danger = false,
+  busy = false,
   children, // extra fields (e.g. prompt input) rendered above the actions
   onConfirm,
   onCancel,
 }) {
   const ref = useRef(null);
+  const cancel = () => {
+    if (!busy) onCancel?.();
+  };
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -290,10 +422,10 @@ export function ConfirmDialog({
       aria-label={title}
       onCancel={(e) => {
         e.preventDefault(); // keep Esc semantic: route it through onCancel
-        onCancel?.();
+        cancel();
       }}
       onClick={(e) => {
-        if (e.target === ref.current) onCancel?.(); // backdrop
+        if (e.target === ref.current) cancel(); // backdrop
       }}
     >
       <div className="micro dlg-h">{eyebrow}</div>
@@ -302,16 +434,21 @@ export function ConfirmDialog({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          onConfirm?.();
+          if (!busy) onConfirm?.();
         }}
       >
         {children}
         <div className="dlg-actions">
-          <button type="button" className="btn" onClick={onCancel}>
+          <button type="button" className="btn" onClick={cancel} disabled={busy}>
             {cancelLabel}
           </button>
-          <button type="submit" className={danger ? 'btn danger' : 'btn pri'}>
-            {confirmLabel}
+          <button
+            type="submit"
+            className={danger ? 'btn danger' : 'btn pri'}
+            disabled={busy}
+            aria-busy={busy || undefined}
+          >
+            {busy ? busyLabel : confirmLabel}
           </button>
         </div>
       </form>
@@ -345,6 +482,54 @@ export function StationPicker({ id, label = 'Station', stations, value, onChange
 // Reads as a chart, not a block: a y-axis with real values, hour labels on the x-axis,
 // a gradient area under the line, and a marked last point. A constant series still
 // looks like a line at the top of its band instead of a solid rectangle.
+// WCAG 1.1.1: a chart is a picture of a series, and a picture is not a substitute for
+// the numbers. The table is real DOM behind a `<details>` — collapsed, so it costs the
+// visual layout nothing, but available to a screen reader, to find-in-page, and to
+// anyone who wants to copy the series out.
+export function ChartTable({ summary = 'Data table', head, rows, note }) {
+  return (
+    <details className="datatbl">
+      <summary className="micro">{summary}</summary>
+      <div className="tscroll">
+        <table className="t">
+          <caption className="sr-only">{summary}</caption>
+          <thead>
+            <tr>
+              {head.map((h) => (
+                <th key={h} scope="col">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                {r.map((c, j) =>
+                  j === 0 ? (
+                    <th key={j} scope="row" className="num">
+                      {c}
+                    </th>
+                  ) : (
+                    <td key={j} className="num">
+                      {c}
+                    </td>
+                  )
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {note ? (
+        <p className="micro" style={{ marginTop: 6 }}>
+          {note}
+        </p>
+      ) : null}
+    </details>
+  );
+}
+
 export function Line({ pts, h = 160, stroke = '#C6F24E', id = 'lg', unit = 'kW', live = false }) {
   if (!pts?.length) return <div className="skel" style={{ height: h }} />;
   const W = 960,
@@ -366,54 +551,69 @@ export function Line({ pts, h = 160, stroke = '#C6F24E', id = 'lg', unit = 'kW',
   const gid = `grad-${id}`;
   const ticks = [0, 0.5, 1].map((f) => ({ v: mx * f, y: Y(mx * f) }));
   const label = (p) => fmtClock(p.bucket || p.ts);
+  // ≤ 24 rows, always including the peak: a 5-minute load curve is 288 points, and a
+  // 288-row table is not an accessibility aid. The sampled series plus the peak is.
+  const stride = Math.max(1, Math.ceil(pts.length / 24));
+  const peakIdx = ys.indexOf(rawMax);
+  const keep = new Set([0, pts.length - 1, peakIdx]);
+  for (let i = 0; i < pts.length; i += stride) keep.add(i);
+  const tableRows = [...keep].sort((a, b) => a - b).map((i) => [label(pts[i]), ys[i].toFixed(1)]);
   return (
-    // height:auto keeps the chart at its natural aspect ratio instead of letter-boxing a
-    // 560-wide drawing inside a 1200-wide card — which shrank the axis labels to ~9px and
-    // left the plot floating in the middle of the panel.
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      style={{ width: '100%', height: 'auto', display: 'block' }}
-      role="img"
-      aria-label={`Load curve, ${pts.length} points, peak ${rawMax.toFixed(1)} ${unit}`}
-    >
-      <defs>
-        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={stroke} stopOpacity=".16" />
-          <stop offset="100%" stopColor={stroke} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {ticks.map((t) => (
-        <g key={t.v}>
-          <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="rgba(255,255,255,.07)" />
-          <text x={PL - 6} y={t.y + 3} fill="#8A94A0" fontSize="9" textAnchor="end">
-            {Math.round(t.v)}
-          </text>
-        </g>
-      ))}
-      <path d={`${d} L${lastX},${H - PB} L${PL},${H - PB} Z`} fill={`url(#${gid})`} />
-      <path
-        d={d}
-        fill="none"
-        stroke={stroke}
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-        className="chart-line"
-        pathLength="1"
+    <>
+      {/* height:auto keeps the chart at its natural aspect ratio instead of letter-boxing a
+          560-wide drawing inside a 1200-wide card — which shrank the axis labels to ~9px and
+          left the plot floating in the middle of the panel. */}
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ width: '100%', height: 'auto', display: 'block' }}
+        role="img"
+        aria-label={`Load curve, ${pts.length} points, peak ${rawMax.toFixed(1)} ${unit}`}
+      >
+        <defs>
+          <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={stroke} stopOpacity=".16" />
+            <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {ticks.map((t) => (
+          <g key={t.v}>
+            <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="rgba(255,255,255,.07)" />
+            <text x={PL - 6} y={t.y + 3} fill="#8A94A0" fontSize="9" textAnchor="end">
+              {Math.round(t.v)}
+            </text>
+          </g>
+        ))}
+        <path d={`${d} L${lastX},${H - PB} L${PL},${H - PB} Z`} fill={`url(#${gid})`} />
+        <path
+          d={d}
+          fill="none"
+          stroke={stroke}
+          strokeWidth="1.8"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          className="chart-line"
+          pathLength="1"
+        />
+        <line x1={lastX} x2={lastX} y1={lastY} y2={H - PB} stroke={stroke} strokeOpacity=".35" strokeDasharray="2 3" />
+        {live && <circle className="chart-pulse" cx={lastX} cy={lastY} r="3" fill={stroke} />}
+        <circle cx={lastX} cy={lastY} r="3" fill={stroke} />
+        <text x={PL} y={H - 6} fill="#8A94A0" fontSize="9">
+          {label(pts[0])}
+        </text>
+        <text x={W - PR} y={H - 6} fill="#8A94A0" fontSize="9" textAnchor="end">
+          {label(pts[pts.length - 1])} IST
+        </text>
+        <text x={W - PR} y={11} fill="#A7B0BA" fontSize="9.5" textAnchor="end">
+          peak {rawMax.toFixed(1)} {unit}
+        </text>
+      </svg>
+      <ChartTable
+        summary={`Load curve as a table (${pts.length} ${unit} points)`}
+        head={['Time (IST)', unit]}
+        rows={tableRows}
+        note={`Sampled every ${stride} point${stride > 1 ? 's' : ''}, plus the peak and both ends — the chart is drawn from all ${pts.length}.`}
       />
-      <line x1={lastX} x2={lastX} y1={lastY} y2={H - PB} stroke={stroke} strokeOpacity=".35" strokeDasharray="2 3" />
-      {live && <circle className="chart-pulse" cx={lastX} cy={lastY} r="3" fill={stroke} />}
-      <circle cx={lastX} cy={lastY} r="3" fill={stroke} />
-      <text x={PL} y={H - 6} fill="#8A94A0" fontSize="9">
-        {label(pts[0])}
-      </text>
-      <text x={W - PR} y={H - 6} fill="#8A94A0" fontSize="9" textAnchor="end">
-        {label(pts[pts.length - 1])} IST
-      </text>
-      <text x={W - PR} y={11} fill="#A7B0BA" fontSize="9.5" textAnchor="end">
-        peak {rawMax.toFixed(1)} {unit}
-      </text>
-    </svg>
+    </>
   );
 }
 
@@ -443,34 +643,71 @@ export function Heatmap({ grid, unit = 'bays busy' }) {
     return `rgb(${a.map((x, k) => Math.round(x + (b[k] - x) * t)).join(',')})`;
   };
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  // Where the peak is, not just how big it is — the root label used to quote the number
+  // alone, so the one fact a heatmap exists to convey was only reachable by hovering.
+  let peak = { d: 0, h: 0, v: 0 };
+  grid.forEach((row, d) =>
+    row.forEach((v, h) => {
+      if (v > peak.v) peak = { d, h, v };
+    })
+  );
   return (
-    <svg
-      viewBox="0 0 560 190"
-      style={{ width: '100%' }}
-      role="img"
-      aria-label={`7-day by-hour utilization heatmap, peak ${mx.toFixed(1)} ${unit}`}
-    >
-      {grid.map((row, d) =>
-        row.map((v, h) => (
-          <rect key={`${d}-${h}`} x={44 + h * 20} y={12 + d * 22} width="18" height="19" rx="2" fill={col(v)}>
-            <title>{`${DAYS[d]} ${String(h).padStart(2, '0')}:00 — ${v} ${unit}`}</title>
-          </rect>
-        ))
-      )}
-      {DAYS.map((t, i) => (
-        <text key={t} x="0" y={12 + i * 22 + 13} fill="#6B7681" fontSize="9">
-          {t}
+    <>
+      <svg
+        viewBox="0 0 560 190"
+        style={{ width: '100%' }}
+        // role="img" makes the whole subtree presentational, which is why every per-cell
+        // <title> below was invisible to assistive tech. A group keeps the summary label
+        // and exposes each cell (graphics-symbol) to AT, while hover tooltips still work.
+        role="group"
+        aria-label={`Utilization heatmap, 7 days by hour, ${unit}. ${
+          flat.length
+            ? `Peak ${peak.v} ${unit} at ${String(peak.h).padStart(2, '0')}:00 on ${DAYS[peak.d]}.`
+            : 'No utilization recorded this week.'
+        }`}
+      >
+        {grid.map((row, d) =>
+          row.map((v, h) => (
+            <rect
+              key={`${d}-${h}`}
+              x={44 + h * 20}
+              y={12 + d * 22}
+              width="18"
+              height="19"
+              rx="2"
+              fill={col(v)}
+              role="graphics-symbol"
+              aria-label={`${DAYS[d]} ${String(h).padStart(2, '0')}:00 — ${v} ${unit}`}
+            >
+              <title>{`${DAYS[d]} ${String(h).padStart(2, '0')}:00 — ${v} ${unit}`}</title>
+            </rect>
+          ))
+        )}
+        {DAYS.map((t, i) => (
+          <text key={t} x="0" y={12 + i * 22 + 13} fill="#6B7681" fontSize="9">
+            {t}
+          </text>
+        ))}
+        {[0, 6, 12, 18, 23].map((h) => (
+          <text key={h} x={44 + h * 20} y={186} fill="#6B7681" fontSize="9">
+            {String(h).padStart(2, '0')}
+          </text>
+        ))}
+        <text x={44 + 24 * 20} y={186} fill="#8A94A0" fontSize="9" textAnchor="end">
+          peak {mx.toFixed(1)} {unit}
         </text>
-      ))}
-      {[0, 6, 12, 18, 23].map((h) => (
-        <text key={h} x={44 + h * 20} y={186} fill="#6B7681" fontSize="9">
-          {String(h).padStart(2, '0')}
-        </text>
-      ))}
-      <text x={44 + 24 * 20} y={186} fill="#8A94A0" fontSize="9" textAnchor="end">
-        peak {mx.toFixed(1)} {unit}
-      </text>
-    </svg>
+      </svg>
+      <ChartTable
+        summary="Utilization as a table (per day)"
+        head={['Day', 'Busiest hour', 'Peak', 'Avg across 24 h']}
+        rows={grid.map((row, d) => {
+          const peakH = row.indexOf(Math.max(...row));
+          const avg = row.reduce((a, v) => a + v, 0) / Math.max(row.length, 1);
+          return [DAYS[d], `${String(peakH).padStart(2, '0')}:00`, `${row[peakH]} ${unit}`, avg.toFixed(2)];
+        })}
+        note="Every cell of the 7×24 grid is individually labelled in the chart; this is the per-day reading of the same numbers."
+      />
+    </>
   );
 }
 
@@ -489,7 +726,10 @@ export function CorridorMap({ stations, selected, onPick }) {
     <svg
       viewBox="0 0 560 236"
       style={{ width: '100%', background: '#11151A', border: '1px solid rgba(255,255,255,.08)', borderRadius: 8 }}
-      role="img"
+      // NOT role="img": that makes the subtree presentational, which hid every pin below
+      // from assistive tech while they stayed in the TAB ORDER — keyboard users landed on
+      // controls a screen reader said did not exist. A labelled group exposes both.
+      role="group"
       aria-label="Chennai station corridor map — numbered pins, legend below"
     >
       <path d="M40,190 L200,120 L360,90 L520,40" stroke="#5C6670" strokeDasharray="6 6" fill="none" />

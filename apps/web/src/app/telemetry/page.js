@@ -1,6 +1,17 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, Line, Heatmap, PageState, PageHead, StationPicker, Pill, StaleChip, HEAT_RAMP } from '../../lib/ui';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  api,
+  usePoll,
+  Line,
+  Heatmap,
+  PageState,
+  PageHead,
+  StationPicker,
+  Pill,
+  StaleChip,
+  HEAT_RAMP,
+} from '../../lib/ui';
 
 export default function Telemetry() {
   const [st, setSt] = useState([]);
@@ -14,9 +25,6 @@ export default function Telemetry() {
   // Stale-data contract: a failed POLL keeps the last good charts on screen and shows
   // a reconnecting chip — the old behaviour swapped the whole view for an error card
   // on any transient blip. Only a failed FIRST load renders the error state.
-  const gotDataRef = useRef(false);
-  const [stale, setStale] = useState(false);
-
   const loadStations = () => {
     setLoading(true);
     api('/stations')
@@ -31,38 +39,41 @@ export default function Telemetry() {
   useEffect(() => {
     loadStations();
   }, []);
-  useEffect(() => {
-    if (!sel) return;
-    let dead = false;
-    const f = () => {
-      api(`/telemetry/load-curve?station=${sel}&bucket=5m`)
-        .then((j) => {
-          if (dead) return;
+  // usePoll: ticks are serialised, so a slow load-curve query can no longer stack a
+  // second request behind it every 10 s; a hidden tab stops polling and catches up on
+  // reveal. `scope: sel` makes a repick tear the loop down — aborting the request in
+  // flight and clearing the previous station's curve/heatmap — instead of letting the
+  // next tick arrive up to 10 s later with the new station's data under the old charts.
+  const { status, error, refresh } = usePoll(
+    ({ signal }) =>
+      Promise.all([
+        api(`/telemetry/load-curve?station=${sel}&bucket=5m`, { signal }).then((j) => {
           setCurve(j.points);
           setSource(j.source);
-          gotDataRef.current = true;
-          setStale(false);
-        })
-        .catch((e) => {
-          if (dead) return;
-          if (gotDataRef.current) setStale(true);
-          else setErr(e.message);
-        });
-      api(`/telemetry/utilization-heatmap?station=${sel}`)
-        .then((j) => {
-          if (dead) return;
-          setHeat(j.heatmap);
-          setHeatSource(j.source);
-        })
-        .catch(() => {});
-    };
-    f();
-    const t = setInterval(f, 10000);
-    return () => {
-      dead = true;
-      clearInterval(t);
-    };
-  }, [sel]);
+        }),
+        // The heatmap is secondary: its own failure must not mark the load curve stale,
+        // so it is swallowed HERE (visible as the absent source chip) rather than by the
+        // whole tick.
+        api(`/telemetry/utilization-heatmap?station=${sel}`, { signal })
+          .then((j) => {
+            setHeat(j.heatmap);
+            setHeatSource(j.source);
+          })
+          .catch(() => {}),
+      ]),
+    {
+      intervalMs: 10000,
+      enabled: !!sel,
+      scope: sel,
+      reset: () => {
+        setCurve([]);
+        setSource('');
+        setHeat(null);
+        setHeatSource('');
+      },
+    }
+  );
+  const stale = status === 'stale';
 
   const stats = useMemo(() => {
     if (!curve.length) return null;
@@ -86,7 +97,14 @@ export default function Telemetry() {
           <StaleChip />
         </div>
       )}
-      <PageState loading={loading && !st.length} error={err} onRetry={loadStations}>
+      <PageState
+        loading={loading && !st.length}
+        error={err || (status === 'error' ? error : '')}
+        onRetry={() => {
+          loadStations();
+          refresh();
+        }}
+      >
         <section className="card" style={{ marginTop: 'var(--sp-4)' }}>
           <div className="sec-h" style={{ marginBottom: 'var(--sp-3)' }}>
             <h2 style={{ fontSize: '1rem' }}>Load curve</h2>
@@ -133,7 +151,18 @@ export default function Telemetry() {
               ) : null}
             </p>
           </div>
-          <Heatmap grid={heat} unit="bays busy" />
+          {/* A skeleton means "loading"; a station with no history would sit on one
+              forever and read as a page that never finished. Once the tick has resolved
+              with no grid, say so — the matrix is genuinely absent, not pending. */}
+          {heat ? (
+            <Heatmap grid={heat} unit="bays busy" />
+          ) : status === 'ok' || status === 'stale' ? (
+            <p className="micro" data-empty="heatmap">
+              No utilization history for this station yet — the 7×24 matrix appears once meter ticks land.
+            </p>
+          ) : (
+            <div className="skel" style={{ height: 180 }} />
+          )}
           <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'center', marginTop: 'var(--sp-2)' }}>
             <span className="micro">quiet</span>
             <span style={{ display: 'flex', gap: 3 }}>

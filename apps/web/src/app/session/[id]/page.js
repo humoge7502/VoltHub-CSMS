@@ -1,8 +1,20 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { api, Pill, Line, Toasts, toast, inr, ConfirmDialog, useCountUp, IST } from '../../../lib/ui';
+import {
+  api,
+  usePoll,
+  Pill,
+  Line,
+  Toasts,
+  toast,
+  inr,
+  ConfirmDialog,
+  useCountUp,
+  StaleChip,
+  IST,
+} from '../../../lib/ui';
 
 const fmtTime = (iso) =>
   iso
@@ -19,34 +31,48 @@ export default function LiveSession() {
   const [d, setD] = useState(null);
   const [msg, setMsg] = useState('');
   const [confirmStop, setConfirmStop] = useState(false);
+  // One in-flight guard for every mutation on this page (declared with the other hooks —
+  // a useState below the `if (!d)` skeleton is the React #310 crash this route already
+  // shipped once). The old code closed the stop dialog BEFORE awaiting the call, so a
+  // 409/500 left the operator looking at a settled-looking page, and Suspend/Resume/
+  // Invoice could be clicked again while the previous PATCH was still running.
+  const [busy, setBusy] = useState('');
+  // A session that has reached a terminal state has nothing left to poll (the old
+  // interval kept hitting /sessions/:id/live every 5 s forever after the stop).
+  const [terminal, setTerminal] = useState(false);
   const id = params.id;
-  // Poll hygiene (review 2026-10-24): sequence-guard every response so a slow reply
-  // can never overwrite a newer one, and STOP polling once the session reaches a
-  // terminal state (the old interval kept hitting the API forever after the stop).
-  const seqRef = useRef(0);
-  const doneRef = useRef(false);
-  const load = () => {
-    const my = ++seqRef.current;
-    return api(`/sessions/${id}/live`)
-      .then((x) => {
-        if (my !== seqRef.current) return;
+  useEffect(() => {
+    setTerminal(false);
+  }, [id]);
+  // Poll hygiene: usePoll sequence-guards (via AbortController — a superseded or
+  // unmounted tick cannot write state at all), never overlaps a tick, and pauses when
+  // the tab is hidden so a driver watching the meter on a phone doesn't burn battery or
+  // queue requests behind a stalled one.
+  const { status, error, refresh } = usePoll(
+    ({ signal }) =>
+      api(`/sessions/${id}/live`, { signal }).then((x) => {
         setD(x);
         setMsg('');
         const st = x?.session?.state;
-        if (st && !['PREPARING', 'CHARGING', 'SUSPENDED'].includes(st)) doneRef.current = true;
-      })
-      .catch((e) => {
-        if (my === seqRef.current) setMsg(e.message);
-      });
-  };
-  useEffect(() => {
-    doneRef.current = false;
-    load();
-    const t = setInterval(() => {
-      if (!doneRef.current) load();
-    }, 5000);
-    return () => clearInterval(t);
-  }, [id]);
+        if (st) setTerminal(!['PREPARING', 'CHARGING', 'SUSPENDED'].includes(st));
+      }),
+    {
+      intervalMs: 5000,
+      enabled: !terminal,
+      // Navigating /session/1 → /session/2 reuses this component, so the loop is scoped
+      // to the id: the old session's meter is cleared and its request aborted rather
+      // than shown for up to 5 s under the new session's header.
+      scope: id,
+      reset: () => setD(null),
+    }
+  );
+  const load = refresh;
+  // Hooks must run on EVERY render: this call used to sit below the `if (!d)` skeleton
+  // return, so render 1 (no data) registered fewer hooks than render 2 (data arrived)
+  // and React aborted the route with "rendered more hooks than during the previous
+  // render" — the live session page never mounted at all in a production build. The
+  // count-up now runs unconditionally and animates from the skeleton's zero.
+  const energy = useCountUp(d?.live?.energy_kwh ?? 0);
   if (!d)
     return (
       <div className="wrap">
@@ -54,54 +80,52 @@ export default function LiveSession() {
         <div className="skel" style={{ height: 60, maxWidth: 280 }} />
         <div className="skel" style={{ height: 120, marginTop: 12 }} />
         <div className="skel" style={{ height: 200, marginTop: 12 }} />
-        {msg && (
+        {(msg || error) && (
           <p className="err" role="alert" style={{ marginTop: 12 }}>
-            {msg}
+            {msg || error}
           </p>
         )}
       </div>
     );
   const { session: s, live } = d;
   const isLive = ['PREPARING', 'CHARGING', 'SUSPENDED'].includes(s.state);
-  const stop = async () => {
-    setConfirmStop(false);
+  const mutate = async (key, run) => {
+    if (busy) return;
+    setBusy(key);
     try {
-      await api(`/sessions/${s.session_id}/remote-stop`, { method: 'POST' });
-      toast('Charge stopped');
-      load();
+      await run();
+      setMsg('');
     } catch (e) {
-      setMsg(e.message);
-      toast(`${e.code || ''} ${e.message}`, 'err');
+      setMsg(`${e.code || ''} ${e.message}`.trim());
+      toast(`${e.code || ''} ${e.message}`.trim(), 'err');
+    } finally {
+      setBusy('');
     }
   };
-  const setState = async (to) => {
-    try {
+  const stop = () =>
+    mutate('stop', async () => {
+      await api(`/sessions/${s.session_id}/remote-stop`, { method: 'POST' });
+      setConfirmStop(false); // only on success — a failure leaves the dialog open to retry
+      toast('Charge stopped');
+      load();
+    });
+  const setState = (to) =>
+    mutate(`state:${to}`, async () => {
       await api(`/sessions/${s.session_id}/state`, {
         method: 'PATCH',
         body: JSON.stringify({ to, reason: 'OPERATOR_CONSOLE' }),
       });
       toast(`State → ${to}`);
       load();
-    } catch (e) {
-      setMsg(`${e.code || ''} ${e.message}`);
-      toast(`${e.code || ''} ${e.message}`, 'err');
-    }
-  };
-  const bill = async () => {
-    try {
+    });
+  const bill = () =>
+    mutate('bill', async () => {
       const j = await api(`/sessions/${s.session_id}/bill`, { method: 'POST' });
       toast(`Invoice ${j.invoice.invoice_id} issued`);
       window.location = `/invoices?id=${j.invoice.invoice_id}`;
-    } catch (e) {
-      setMsg(e.message);
-      toast(e.message, 'err');
-    }
-  };
+    });
   const ticks = live.ticks || [];
   const peak = ticks.reduce((m, t) => Math.max(m, Number(t.power_kw) || 0), 0);
-  // The hero number glides between polls instead of snapping (useCountUp snaps
-  // instantly under prefers-reduced-motion).
-  const energy = useCountUp(live.energy_kwh);
 
   return (
     <div className="wrap">
@@ -111,6 +135,9 @@ export default function LiveSession() {
           <div className="micro">
             {isLive ? 'LIVE SESSION' : 'SESSION'} · {s.connector_ref} · {isLive ? '5 s POLL' : fmtDate(s.started_at)}
           </div>
+          {/* A poll that failed after the first good frame keeps the meter on screen —
+              it must not silently read as a live number that is simply not moving. */}
+          {status === 'stale' && <StaleChip />}
           {/* Scoped live region: only the hero number is announced — the old
               whole-page aria-live re-read the ENTIRE view every 5 s. */}
           <h1
@@ -284,23 +311,23 @@ export default function LiveSession() {
 
       <div style={{ display: 'flex', gap: 8, marginTop: 'var(--sp-4)', flexWrap: 'wrap' }}>
         {isLive && (
-          <button className="btn danger" onClick={() => setConfirmStop(true)}>
+          <button className="btn danger" onClick={() => setConfirmStop(true)} disabled={!!busy}>
             Stop charging
           </button>
         )}
         {s.state === 'CHARGING' && (
-          <button className="btn" onClick={() => setState('SUSPENDED')}>
-            Suspend
+          <button className="btn" onClick={() => setState('SUSPENDED')} disabled={!!busy}>
+            {busy === 'state:SUSPENDED' ? 'Suspending…' : 'Suspend'}
           </button>
         )}
         {s.state === 'SUSPENDED' && (
-          <button className="btn" onClick={() => setState('CHARGING')}>
-            Resume
+          <button className="btn" onClick={() => setState('CHARGING')} disabled={!!busy}>
+            {busy === 'state:CHARGING' ? 'Resuming…' : 'Resume'}
           </button>
         )}
         {s.state === 'COMPLETED' && s.billing_state === 'UNBILLED' && (
-          <button className="btn pri" onClick={bill}>
-            Generate invoice
+          <button className="btn pri" onClick={bill} disabled={!!busy}>
+            {busy === 'bill' ? 'Issuing…' : 'Generate invoice'}
           </button>
         )}
       </div>
@@ -315,6 +342,8 @@ export default function LiveSession() {
         title="Stop this charge?"
         body="The gateway sends RemoteStopTransaction to the charge point. The session settles at the metered total."
         confirmLabel="Stop charging"
+        busyLabel="Stopping…"
+        busy={busy === 'stop'}
         danger
         onConfirm={stop}
         onCancel={() => setConfirmStop(false)}
