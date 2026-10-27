@@ -74,7 +74,7 @@ every forecast interval is inspectable. Switching away means giving up the audit
 
 ## 6. Unit economics (SaaS tier, order-of-magnitude)
 
-- Single-VM compose serves the demo scale (4 stations / 8 CPs / 72 paths, p95 < 300 ms
+- Single-VM compose serves the demo scale (4 stations / 8 CPs / 82 paths, p95 < 300 ms
   in the k6 smoke); a Network customer at 100 connectors ≈ **$1,200 MRR** on infra a
   ~$40 VM handles — infrastructure cost < 4% of revenue at launch scale.
 - Support load is bounded by the design: typed errors, request-ID envelopes, dead-letter

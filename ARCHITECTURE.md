@@ -37,6 +37,15 @@ flowchart TB
 2. **Outbox pipeline (ADR-0003):** `meter_reading` + `outbox_event` commit atomically inside one package call; the relay delivers at-least-once and the sink dedupes (idempotent replay), so billing never depends on TimescaleDB being up.
 3. **Error-band contract (`src/errors.js`):** `ORA-20501…209xx` → HTTP `422/409/402/…` mapped once; identical bands raised by `RAISE_APPLICATION_ERROR` in PL/SQL and mirrored in JS.
 
+![DA3 — the outbox pipeline, Oracle OLTP into TimescaleDB OLAP](diagrams/out/da3-pipeline.png)
+
+![DA3 — TimescaleDB hypertables, continuous aggregates and policies](diagrams/out/da3-schema.png)
+
+Rendered from `diagrams/da3.html` by `node scripts/render-da3.mjs`; the portable Mermaid
+equivalents are `diagrams/da3-pipeline.mmd` and `da3-schema.mmd`. Both diagrams are also
+available as a two-page vector PDF — [`diagrams/out/da3.pdf`](diagrams/out/da3.pdf) — for
+handouts and print.
+
 ## Key decisions (ADR index)
 
 | ADR  | Decision                       | One-line reason                                                                            |

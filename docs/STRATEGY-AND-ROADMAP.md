@@ -10,7 +10,7 @@
 | Dimension        | Grade  | Evidence                                                                                                                                  |
 | ---------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | Architecture     | **A−** | Two-engine money/telemetry split, in-transaction outbox, OCPP gateway, clean module boundaries                                            |
-| Test engineering | **B+** | 143 Node cases + race suite + invariants + OpenAPI drift gate + E2E + control-plane E2E + real Oracle/Timescale CI job                    |
+| Test engineering | **B+** | 189 Node cases + race suite + invariants + OpenAPI drift gate + browser smoke/E2E + control-plane E2E + real Oracle/Timescale CI job      |
 | CI/CD            | **A−** | 6 jobs, Node 20+22 matrix, `npm audit` on both lockfiles, Codecov, web build                                                              |
 | Frontend quality | **B**  | Strong design system (tinted shadows, documented contrast, `ease-out`, 4px scale); **zero tests**; 3 design anti-patterns found and fixed |
 | Security posture | **C**  | Good CSP/headers/JWT design, but **default admin password is live on the public URL**                                                     |
@@ -229,9 +229,10 @@ from `ADMIN_BOOTSTRAP_PASSWORD` — idempotent, so a restart never clobbers a ro
 
 ### 6.1 Current coverage (verified)
 
-- **143 Node cases**: relay 7, API 37, simulator 2, security 17, rate-limit 8, cross-layer 5, OCPP-remote 2, gateway-close 11, control 16, control-AES 6, wallet 14, AI contract 6, twin 12.
+- **189 Node cases**: relay 14, API 45, simulator 2, security 19, rate-limit 8, cross-layer 5, OCPP-remote 2, gateway-close 12, control 17, control-AES 6, OCPP-commands 10, carbon 8, wallet 14, Oracle adapter 4, AI contract 11, twin 12.
 - **Race suite** (R1 double-reserve, R4 double-pay) on both engines.
-- **SQL invariants** runner, **OpenAPI drift gate** (72 paths), **snapshot check**.
+- **SQL invariants** runner, **OpenAPI drift gate** (82 paths), **snapshot check**.
+- **Browser suites** (`test:web`): 20 smoke checks plus an authenticated E2E tour whose staff leg asserts that every polled page resolves its first tick, that a station repick drops the previous station's KPIs, and that each chart ships a data-table alternative.
 - **E2E** + **control-plane E2E** against a real compose stack in CI.
 
 ### 6.2 Target test pyramid
@@ -239,7 +240,7 @@ from `ADMIN_BOOTSTRAP_PASSWORD` — idempotent, so a restart never clobbers a ro
 | Layer          | Tool                            | What it must prove                                        | Gate         |
 | -------------- | ------------------------------- | --------------------------------------------------------- | ------------ |
 | Unit           | node:test / pytest              | pure logic, money math, OCPP codecs                       | every push   |
-| Contract       | Schemathesis / OpenAPI          | request/response conformance for all 72 paths             | every push   |
+| Contract       | Schemathesis / OpenAPI          | request/response conformance for all 82 paths             | every push   |
 | Property-based | fast-check                      | invariants: energy = ∫power·dt; no double-book; bill-once | nightly      |
 | Integration    | compose + real DBs              | outbox relay, cagg refresh, migrations                    | every push   |
 | Race/chaos     | existing race suite + Toxiproxy | contention, network partitions, poison messages           | every push   |
@@ -310,7 +311,7 @@ from `ADMIN_BOOTSTRAP_PASSWORD` — idempotent, so a restart never clobbers a ro
 
 ```bash
 # correctness
-npm test                     # 143 cases + invariants + OpenAPI drift
+npm test                     # 189 cases + invariants + OpenAPI drift
 npm run test:race            # 201/409 proof on both engines
 npm run test:e2e             # browser E2E against the stack
 

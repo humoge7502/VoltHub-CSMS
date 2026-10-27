@@ -32,7 +32,10 @@
   is the production overlay: `NODE_ENV=production`, `${VAR:?}` required secrets, no demo seed,
   no welcome credit, no unsigned top-ups. Demo compose (`NODE_ENV` unset) boots with a loud
   warning instead — one-command demo must work; production must not. In production the OCPP
-  gateway also refuses `dev-*` charge-point secrets and ignores `OCPP_AUTH=off`.
+  gateway also refuses `dev-*` charge-point secrets and ignores `OCPP_AUTH=off`. `AI_TOKEN`
+  (API → advisory sidecar) is `${AI_TOKEN:?}` in the prod overlay, the sidecar aborts with
+  `SystemExit` on a missing/short/published value (`apps/ai/service.py:_resolve_token`), and
+  the API proxy refuses to _dial_ with such a value per request — see the AI bullet below.
 - RBAC: `authRequired` + `roles()` + operator station-scope on session state
   (`extended.js`). Session/live/telemetry/admin endpoints require auth; drivers see only their
   own sessions (403 otherwise). See `TEST-SEC-AUTHZ5` in `apps/api/test/security.js`.
@@ -40,6 +43,18 @@
   (`apps/api/src/ocpp/gateway.js:checkBasic`); `Authorize` is allow-list only (`TAG-<user_id>`).
   TLS terminates at the platform (Caddy) in the deploy profile — see `DEPLOY.md`.
 - Internal worker endpoints: `crypto.timingSafeEqual` compare on `x-internal` (no string `!==`).
+- AI sidecar (advisory only, ADR-0008): it can never mutate charging/billing state, because the
+  REST API applies `authRequired` + `roles('OPERATOR','ADMIN')` + operator station scope **before**
+  the sidecar is consulted (`extended.js:aiScope` — drivers get 403, out-of-scope operators
+  403 `OUT_OF_SCOPE`, unknown stations 404 without a single AI call). Every sidecar call carries
+  `x-internal: AI_TOKEN`, checked with `secrets.compare_digest` (`apps/ai/service.py:_auth`), and
+  compose binds the service off the public interface. Production fails **closed** on a missing,
+  short (<24), or published token value — the sidecar refuses to boot and the proxy refuses to
+  dial, returning `503 AI_UNAVAILABLE` whose message names `AI_TOKEN` so a misconfiguration reads
+  as an outage we can diagnose, not as a silent fallback to a well-known string
+  (`extended.js:AI.token`). Degradation is typed: `422 AI_INVALID_INPUT` (the sidecar refused an
+  input the proxy should have caught) is never reported as an outage, and a non-2xx other than 422
+  becomes `502 AI_UNAVAILABLE`, never a 500. Pinned by `TEST-AI-1..11` in `apps/api/test/ai.js`.
 - Throttle: tier from **signature-verified** JWT claims only; buckets keyed by verified `sub`
   else IP; idle buckets evicted (no unbounded growth). Per-process state (single-VM scope).
   Proxy awareness (BUG-023): `req.ip` trusts proxy headers only when `TRUST_PROXY` is set

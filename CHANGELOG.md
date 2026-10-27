@@ -4,6 +4,51 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 
 ## [Unreleased]
 
+### Console audit 2026-10-27 — stale data, token races, interval honesty
+
+Seven defects found by walking the shipped console with a browser and a stopwatch
+instead of reading the code. Every fix below is covered by a test that fails without it.
+
+- **Single-flight token refresh** (`apps/web/src/lib/ui.js`). The access token lives 15
+  minutes and the refresh cookie is rotated on every use (SEC-012), so five parallel
+  dashboard requests reaching expiry together each tried to redeem the same cookie and
+  the console signed itself out. One refresh is in flight now and every caller awaits it;
+  the 401 → refresh → retry chain is bounded so it cannot recurse.
+- **`usePoll` replaces five hand-rolled `setInterval` loops.** Ticks are serialised (one
+  request in flight, always), paused while the document is hidden with a catch-up tick on
+  reveal, aborted on unmount or when `enabled` flips, and reported as `error` only until
+  there is data on screen and `stale` after it. `scope` + `reset` drop the previous
+  entity's payload before the first tick, which closes the Critical defect where a station
+  repick rendered station B's label over station A's KPIs — and, if the new station then
+  errored, dressed that mismatch up as "last good data" indefinitely.
+- **`EmptyState` mounts its live region unconditionally.** A region inserted in the same
+  commit as its first message is never announced, so the first error of every visit —
+  usually the one that matters — was silent. Its heading level is now a prop (`as`), so a
+  card list under the page `h1` renders `h2` instead of skipping a level.
+- **Honest forecast interval names** (`apps/ai/service.py`, `/ai/forecast`, `/ai/explain`).
+  `lower`/`upper` always describe the level actually computed; `p10`/`p90` are published
+  only while that level really is 0.8, and `null` otherwise. An artifact declaring an
+  `interval_level` its own calibration table cannot produce is refused at load rather than
+  500ing on the first forecast.
+- **`AI_TOKEN` fails closed** (`apps/api/src/extended.js`). Production refuses to dial the
+  sidecar with the published `dev-internal` literal, a missing value, or anything under 24
+  bytes, and answers 503 `AI_UNAVAILABLE` naming the secret — "not wired" is not the same
+  as "unreachable", and the operator should not restart a healthy container.
+- **`react-hooks` is a build gate** (`eslint.config.js`): `rules-of-hooks` as an error,
+  `exhaustive-deps` as a warning. `/session/[id]` had shipped a conditional early return
+  above a `useCountUp()` call, which throws the moment the first fetch resolves.
+- **Browser suites grew a staff tour** (`apps/web/test/e2e.mjs`). Every polled page must
+  resolve its first tick, a station repick must drop the previous KPIs and re-poll, the
+  toast live region must exist before it has anything to say, each telemetry chart must
+  carry a data-table alternative (WCAG 1.1.1), and the session hero must announce its
+  value through a scoped live region. `test/preflight.mjs` turns "nothing listening at
+  `BASE_URL`" into a named error instead of a 45-second navigation timeout, and
+  `playwright` is now a declared devDependency rather than an ad-hoc install.
+
+Receipts moved: **189 Node cases** (was 143), **82 OpenAPI paths** (was 72). Every figure
+in `README`, `docs/`, the landing page and the demo film was re-derived from a green run
+rather than edited by hand.
+
 ### Added
 
 - **Console signature layer.** The landing page is now investor-grade: scroll-reveal
@@ -18,10 +63,12 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 - **Business strategy docs.** `docs/business-model.md` (market receipts, ICP, published
   per-connector pricing, GTM, unit economics) and `docs/investor-one-pager.md`.
 - **Expanded AI training receipt.** Forecaster retrained on the real licensed panel
-  (87 stations, 754k station-hours) with 6 rolling-origin folds, a 256-128 MLP and 622k
-  test points: 25–35% MASE skill vs seasonal-naive on every fold, conformal coverage
-  0.813 (nominal 0.8), beats both statistical baselines. `reports/metrics.json` +
-  `model.pt.sha256` updated by the honesty-gated trainer.
+  (87 stations, 754k station-hours) with rolling-origin folds and an honesty-gated writer:
+  `reports/metrics.json` + `model.pt.sha256` are regenerated only when the trained artifact
+  actually beats both statistical baselines. The current numbers are the ones below
+  (4 folds, MLP 128×64, 746,616 test points, MAE 1.906 kWh, coverage 0.8029) — an earlier
+  draft of this bullet quoted a 6-fold 256×128 run whose receipt no longer exists, and a
+  changelog that disagrees with its own reports is worse than no changelog.
 
 ### Changed
 
@@ -133,6 +180,130 @@ All notable changes. Format: Keep a Changelog, Semantic Versioning.
 - `scripts/migrate.sh` waits (up to 2 min) for `freepdb1` to register with the listener
   before applying V001…, instead of racing it with ORA-12514 on a fast runner — the
   Docker healthcheck can already read `healthy` while the PDB is still closed.
+- **Relay queue: head-of-line blocking, silent state loss and NaN telemetry.** One bad
+  row used to roll back the batch, and the whole relay then stopped behind it; the batch
+  is now retried row-by-row so the writable events land and only the offender is
+  dead-lettered to `/ops/dead-letters` (`POST /internal/outbox/quarantine`). A systemic
+  sink failure (transport 08/53/57/58/40, schema drift 42xx) is _never_ mass-quarantined —
+  the queue keeps its events and backs off. `connector_state_event` keyed only on
+  `(connector_ref, ts)` silently deleted two genuine transitions inside the same second
+  (`ON CONFLICT DO NOTHING` on a second-truncated timestamp); `dedupe_key` joins the key
+  (T001 + idempotent T004 upgrade, `DEFAULT ''` so an un-upgraded relay keeps writing).
+  An unparsable `SampledValue.value` was stored as `meter_kwh = NaN`, where Postgres says
+  `NaN = NaN` is true so nothing detects it and every SUM above it becomes NaN — the
+  gateway answers `TypeMismatch`, the store and the Oracle bind guard both refuse the tick,
+  and the relay dead-letters such events that were already queued. The queue is bounded
+  (retention + soft/hard cap) without ever dropping unacked events, shares one Timescale
+  pool instead of one per poll, and reports measured lag:
+  `volthub_outbox_oldest_age_seconds`, `volthub_relay_last_poll_seconds`,
+  `volthub_dead_letter_depth` replace the self-reported `lag_probe=ok` log line.
+- **`gateway-close.js` could park the whole 16-suite CI chain with zero output.** Two
+  harness defects stacked: the 120 s watchdog was disarmed _before_ `await server.close()`
+  in the `finally`, so a failed assertion that left a WS client open hung the close
+  callback forever and nothing printed; and the CALL helpers polled only for CALLRESULT
+  (3), so a legitimate CALLERROR looked identical to a dead socket and the timeout message
+  named no evidence. The `finally` now forces `server.closeAllConnections()` and keeps the
+  watchdog armed until exit, the helpers quote every answer received for the uid, and they
+  pace to the gateway's documented 10 CALL/s per-identity limit (SEC-042) that the
+  metering burst was silently tripping.
+- **The live-session route could not mount at all in a production build.** `/session/[id]`
+  called `useCountUp` _below_ its `if (!d)` skeleton return, so render 1 (no data yet)
+  registered fewer hooks than render 2 (first `/sessions/:id/live` response) and React
+  aborted the tree with "rendered more hooks than during the previous render" — the driver
+  and operator live view was a blank error page, not a slow one. It survived because no
+  browser test had ever visited the route. The count-up is now unconditional (animating
+  from the skeleton's zero), the E2E staff tour opens a real session and asserts the meter
+  frames render, and `react-hooks/rules-of-hooks` fails the lint on the pattern in ~1 s
+  instead of waiting for a browser.
+- **The console signed every user out 15 minutes after login**, and on the pages that fan
+  out to several endpoints at once it could also revoke the whole refresh-token family
+  (SEC-050/061: a refresh token is single-use, and reuse is treated as theft). `api()` now
+  refreshes on a 401 through one _shared_ in-flight promise, retries the original request
+  exactly once, and clears the token only when the refresh genuinely fails.
+- **Five hand-rolled pollers, none of which respected each other.** `/dashboard`,
+  `/telemetry`, `/session/[id]`, `/live` and `/discover` each kept their own `setInterval`,
+  so a slow endpoint stacked another request behind it every tick, hidden tabs kept
+  polling and burning battery on a phone, unmounting did not abort the request in flight,
+  and any failed poll swapped live data for an error card. They now share `usePoll`
+  (serialised ticks, `AbortController` per tick, pause on `visibilitychange` + catch-up on
+  reveal, and a `stale` state distinct from `error` so the last good numbers stay on
+  screen under a `reconnecting` chip).
+- **Analytics "Retry" retried nothing.** It called `setSel((s) => s)`, which React bails
+  out on, and every failure path was `catch(() => {})` — so a 500 left the page blank
+  forever with a button that did not work. It now owns an `attempt` counter, real loading
+  and error states, and an abort on unmount.
+- **Chart and map controls were invisible to assistive tech.** `Heatmap` and `CorridorMap`
+  carried `role="img"`, which makes the whole SVG subtree presentational: the focusable
+  station pins stayed in the tab order but announced nothing, and the per-cell `<title>`s
+  never reached a screen reader. They are `role="group"` now, with each cell/pin a
+  `role="graphics-symbol"` carrying its own label, plus a computed peak instead of a
+  hard-coded scale legend.
+- **Notch and home-indicator overlap on phones.** `viewportFit: 'cover'` was declared in
+  the manifest but the layout ignored it, so the topbar sat under the notch and the bottom
+  nav under the home indicator. `.wrap` and `.topbar` now add `env(safe-area-inset-*)` to
+  their padding, which is a no-op on every browser that reports zero insets.
+- **The AI proxy fell back to a published credential in production.** `AI.token` was
+  `process.env.AI_TOKEN || 'dev-internal'`, so an operator who forgot the secret in a prod
+  deploy kept a working-looking advisory surface authenticated by a string printed in
+  `.env.example` and `infra/docker-compose.yml` — while the sidecar itself had already
+  refused to boot on that value (`apps/ai/service.py:_resolve_token`). The getter now throws
+  `AI_MISCONFIGURED` in production for an unset, <24-byte, `dev-internal` or `replace_with_*`
+  token and `aiDown` answers `503 AI_UNAVAILABLE` naming `AI_TOKEN`, so a missing secret is a
+  diagnosable outage instead of a well-known credential on an internal endpoint. Demo boots
+  keep the fallback (`TEST-AI-11` pins both halves, and the gate was mutation-checked: with
+  the condition removed the suite fails with "unset AI_TOKEN must be 503, got 200").
+
+### Added
+
+- **E2E staff tour for the polled pages.** The authenticated suite only ever proved that
+  four driver pages rendered _something_. It now walks `/`, `/dashboard`, `/telemetry`,
+  `/analytics`, `/history` and a real `/session/[id]` and waits for text that can only
+  come from a resolved first poll (KPI labels, the load-curve statband, the announced
+  meter), so a poller that silently fails fails the build instead of showing a skeleton.
+  Matched case-insensitively because the console upper-cases those labels in CSS.
+- **`react-hooks` in the lint config** (plugin added at the root): `rules-of-hooks` as an
+  error on `apps/web/src` and `exhaustive-deps` as a warning. Verified against a
+  deliberate violation, and the whole repo is clean with it on.
+- **`apps/web/test/preflight.mjs`** — both browser suites now fail in under a second with
+  the exact command to start the console, instead of a 45 s Playwright timeout that looked
+  like a broken app. `playwright` is a declared `devDependency` of `@volthub/web`; it had
+  been installed with `--no-save`, so a fresh `npm ci` could not run the browser suites at
+  all.
+
+### Fixed
+
+- **Repicking a station left the previous station's numbers on screen.** The audit's
+  Critical finding (#1) survived the `usePoll` migration because the loop was keyed only
+  on `[intervalMs, enabled]`: changing the selection neither aborted the request in flight
+  nor cleared the payload, so station B's label sat over station A's KPIs for up to a full
+  15 s interval — and if the new station then failed, the hook's `hadData` was already
+  true, so the wrong numbers were dressed up as "last good data" and could sit there
+  indefinitely. `usePoll` takes a `scope` (the id the poll is about) and a `reset` now:
+  the effect tears down on a scope change, the in-flight batch is aborted, the page drops
+  the old payload, and the state goes back to `loading`. Wired in `/dashboard`,
+  `/telemetry` and `/session/[id]`. The E2E tour captures the KPI block, repicks, and
+  asserts the old block disappears; validated by mutation — with `scope` removed the check
+  fails red quoting the exact stale string (`REVENUE ₹8,454.03 …`).
+- **Failed mutations still looked finished.** The fault dialogs closed from their own
+  `catch` (`setTarget(null)` inside the error path), so a rejected `PATCH
+/maintenance/:id/complete` left a closed dialog and an unchanged queue; reservation
+  cancel did the same; the live-session stop dialog closed _before_ awaiting, and
+  Suspend/Resume/Invoice/"Plug in" had no in-flight guard at all. Mutations now own a
+  `busy` state — `ConfirmDialog` gained `busy`/`busyLabel`, which disables both actions
+  and refuses Esc, backdrop and Cancel while a call is in flight — the dialog stays open
+  on failure with the error rendered **inside** it (not behind the modal, and not
+  announced twice by two live regions), and a successful reservation re-reads the station
+  so the connector tile stops claiming AVAILABLE after its window was booked.
+- **The first toast of every visit was silent.** `Toasts` returned `null` while empty, so
+  the `aria-live` region and its first message arrived in the same commit — assistive tech
+  does not watch a region it has never seen, which meant the error the user most needed to
+  hear was the one that was never announced. The region is mounted always (an empty fixed
+  grid has no box, is not tabbable, and intercepts nothing).
+- **Charts had no numbers.** `Line` and `Heatmap` are pictures of series, and a picture is
+  not a WCAG 1.1.1 text alternative. Each now ships a collapsed `<details>` data table
+  (`ChartTable`, styled `.datatbl`) — the load curve samples ≤ 24 points plus the peak and
+  both ends, the heatmap gives per-day busiest hour, peak and mean; every heatmap cell keeps
+  its own `graphics-symbol` label.
 
 ## [1.8.1] — 2026-10-24
 

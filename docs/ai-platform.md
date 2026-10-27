@@ -37,33 +37,63 @@ hours it overlaps (overlap-weighted), local time is converted to UTC, and gaps o
 grid are true zeros. A source is excluded (and the exclusion recorded) if it cannot meet the
 contract's 168-hour minimum or if its provenance/licence is missing.
 
-## Measured receipts (2026-10-25, `apps/ai/reports/`)
+## Measured receipts (2026-10-26, `apps/ai/reports/`)
 
-Protocol: rolling-origin, 4 folds, 45 backtest days, 10-day calibration block, 1-day purge
-before each test fold. **746,616 test points.** Per-station relative targets; the model
-never sees a test fold during fit or calibration.
+Protocol: rolling-origin (per-series recency), 4 folds of 270 h, 45 backtest days, 10-day
+calibration block, 1-day purge before each test fold. **746,616 test points.** Per-station
+relative targets; the model never sees a test fold during fit or calibration.
 
-| Model                   |    MAE kWh |   RMSE kWh | MASE vs 168 h naive | Skill vs naive |
-| ----------------------- | ---------: | ---------: | ------------------: | -------------: |
-| **MLP 128×64 (served)** | **1.9060** | **6.9986** |          **0.6398** |   **+36.02 %** |
-| Ridge                   |     3.2679 |     6.9195 |              1.0970 |        −9.70 % |
-| Seasonal naive (168 h)  |     2.9790 |     9.3255 |              1.0000 |              — |
-| Weekly same-hour mean   |     2.8721 |     7.4358 |                   — |              — |
+| Model                   |    MAE kWh |   RMSE kWh | MASE vs 168 h naive | Skill vs naive | Skill vs weekly mean |
+| ----------------------- | ---------: | ---------: | ------------------: | -------------: | -------------------: |
+| **MLP 128×64 (served)** | **1.9060** | **6.9986** |          **0.6398** |   **+36.02 %** |         **+33.64 %** |
+| Ridge                   |     3.2679 |     6.9195 |              1.0970 |        −9.70 % |             −13.78 % |
+| Seasonal naive (168 h)  |     2.9790 |     9.3255 |              1.0000 |              — |              −3.72 % |
+| Weekly same-hour mean   |     2.8721 |     7.4358 |                   — |              — |                    — |
+
+Skill is quoted against **both** naive references on purpose: the weekly same-hour mean is a
+stronger baseline than seasonal naive (it averages four same-hour observations, so it is less
+sensitive to one weird week), and a model that only beats the naive is not yet interesting.
+
+The receipt in `reports/metrics.json` is finer than this table, and the fine print matters:
+
+- **Per fold** (MAE kWh / interval coverage): 2.1552 / 0.794 · 1.7656 / 0.837 ·
+  1.6416 / 0.817 · 2.0575 / 0.764. Folds 0 and 3 carry the error; the spread is reported,
+  not averaged away.
+- **Per source** (MAE kWh vs that source's own naive): Tennessee 2.380 vs 4.036,
+  Norway 3.600 vs 4.402, Korea 1.140 vs 1.682. Korea is the easiest series (dense,
+  regular); Norway is the hardest and the smallest — 60,480 of the 746,616 points — which
+  is why the aggregate MAE is not a per-station promise.
+- **Per horizon**: MAE rises from 1.675 kWh at +1 h to 1.948 kWh at +18 h and stays flat
+  after that, i.e. the model reaches its own noise floor inside a day rather than
+  degrading linearly.
+- **Early stopping** is real: 13 / 7 / 11 / 9 epochs of the 60-epoch budget, 5,096 / 2,849
+  / 4,653 / 3,942 optimizer steps.
 
 - **Conformal intervals**: split conformal, per-horizon signed residual quantiles,
   finite-sample corrected. Nominal 80 %, **empirical coverage 0.8029** (error +0.29 pp) over
-  662,952 calibration points; mean width 5.159 kWh. Coverage per fold: 0.794 / 0.837 /
-  0.817 / 0.764 — the spread is reported, not hidden.
+  662,952 calibration points; mean width 5.159 kWh; pinball loss 0.302 (low) / 1.358
+  (high) — asymmetric, because demand is right-skewed and a symmetric interval would be
+  too narrow at the top.
 - **Artifact integrity**: `apps/ai/reports/model.pt` has file SHA-256
-  `f8273bcc…b8d44` and payload SHA-256 `e77838a8…591fa`. Serving parity checked on 512 rows:
+  `39681580…c5b62` and payload SHA-256 `5e828df5…a368`. Serving parity checked on 512 rows:
   max absolute relative difference **0**; `weights_only` load verified. A checksum mismatch
   is refused at startup, not served.
-- **Training cost**: 642.61 s on CPU (torch 2.14.1+cpu). This is the honest number for the
-  three-dataset panel; the earlier 3.5 s receipt was a single-source panel on an A100.
-- `benchmarks.json` retains the hardware receipt (simulation 24 stations × 28 d × 2000
-  vehicles: CPU 50.6 ms vs GPU 3.4 ms; batch-4096 inference: CPU 136.9 ms vs GPU 0.3 ms;
-  LP on CPU/HiGHS 3.4 ms). Conclusion recorded there: **the optimizer stays on CPU**;
-  accelerators earn their keep on simulation and training.
+- **Training cost**: 226.77 s on CPU (torch 2.14.1+cpu) for the three-source panel.
+  Wall time here is early-stopping-bound and machine-load-bound, so treat it as an order
+  of magnitude, not a contract; `metrics.json` records the actual device and torch build.
+- `benchmarks.json` is a **CPU-only** receipt (`cuda: false`): fleet simulation
+  24 stations × 120 d × 2,000 vehicles in 73 ms, feature build 719,880 rows in 69.8 s
+  (10,319 rows/s), artifact load 53 ms at 66,045 bytes, batched forecast inference
+  ~0.53 ms per 500-station call (≈939k stations/s), and the LP on HiGHS at 6.6 ms for
+  10 vehicles × 24 h rising to 540 ms for 200 vehicles with equality energy constraints.
+  Verdict recorded there: **the optimizer stays on CPU**. This runner has no CUDA device,
+  so the CPU-vs-GPU speedup columns those numbers previously replaced were measured on
+  other hardware and are kept in git history rather than restated as current fact.
+
+`features.target_cells_sum_kwh` (31,357,292 kWh) is the sum of the (rows × 24) target
+matrix — every station-hour is covered by 24 overlapping windows, so it is ~24× panel
+energy and must never be quoted as "the panel's kWh". The panel total is in
+`dataset.json`: **1,331,724 kWh**.
 
 ## Governance surface (new in 2026-10)
 
@@ -96,17 +126,29 @@ changed. `apps/ai/tests/test_service.py` pins both the stable case and a real re
    (pytest-pinned).
 4. **Honest degradation**: no trained artifact → `seasonal-naive-fallback` + a note naming
    `train.py`. Sidecar down → `503 AI_UNAVAILABLE` (never a 500).
-5. **Internal-only sidecar**: `x-internal` shared token checked on every call (401
-   otherwise); compose binds it off the public interface.
+5. **Internal-only sidecar**: `x-internal` shared token checked on every call with a
+   constant-time compare (401 otherwise); compose binds it to loopback, off the public
+   interface. Both ends fail **closed** in production on a missing, short or published
+   `AI_TOKEN` — the sidecar refuses to boot (`service.py:_resolve_token`) and the API proxy
+   refuses to dial, answering `503 AI_UNAVAILABLE` with a message that names `AI_TOKEN`
+   rather than quietly falling back to the demo literal.
 6. **Carbon is not an AI input**: CarbonPilot is a separate deterministic model (ADR-0017)
    and never becomes a hard constraint in the optimizer or the money path.
+7. **Interval names cannot outrun the calibration**: `/v1/forecast` and `/v1/explain` always
+   publish `lower` / `upper` plus the `interval_level` they were measured at, and the legacy
+   `p10` / `p90` keys are only filled while that level is 0.8. An artifact that declares a
+   level its own conformal table cannot produce is **refused at load** (the sidecar falls
+   back to seasonal naive and says why) rather than 500ing on the first request or, worse,
+   shipping a mislabelled band to whoever sizes equipment from it.
 
 ## Tests
 
-- JS contract tests (`apps/api/test/ai.js`, 10): RBAC, station scope, unknown station,
-  advisory passthrough + token riding, sidecar-down 503, 422 validation, model card, drift
-  split, explain scope/history.
-- pytest (`apps/ai/tests`, 98 passed + 2 skipped): ingest provenance round-trip, panel
+- JS contract tests (`apps/api/test/ai.js`, 11): RBAC, station scope, unknown station,
+  advisory passthrough + token riding, sidecar-down 503, 422 validation, the timestamped-kWh
+  history grid and horizon clamp, model card, drift split, explain scope/history, and the
+  production `AI_TOKEN` fail-closed gate (missing/short/published → 503 that names the secret,
+  with zero requests reaching the sidecar).
+- pytest (`apps/ai/tests`, 100 passed + 2 skipped): ingest provenance round-trip, panel
   contract, training metrics, simulator determinism, optimizer hard-constraint satisfaction
   - infeasibility, anomaly math (incl. MAD=0), token auth, forecast degradation honesty,
     model card with/without artifact, drift stable/regime/malformed, explain scope, allocator

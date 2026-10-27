@@ -4,6 +4,64 @@ Evidence discipline: **EXECUTED** (ran in this repo's environment) vs
 **STRONGLY INFERRED** (CI config verified line-by-line; execution on runners)
 vs **PENDING** (blocked here; exact command given). No claim without a receipt.
 
+## 2026-10-27 — browser-verified console, mutation-checked gates, AI proxy fail-closed (EXECUTED)
+
+The previous section's receipts were all local-store/API-side. This one is the console under a
+real browser, plus the two security/trust gates added since, and every new gate was
+**mutation-checked**: the fix was removed, the gate had to go red, and the fix was restored.
+
+| Gate                 | Command                                               | Result                                                                      |
+| -------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| JS chain             | `npm run test:all`                                    | **exit 0** — breakdown below                                                |
+| AI sidecar           | `cd apps/ai; python -m pytest tests -q`               | **100 passed, 2 skipped** (GPU-optional; was 98 on 2026-10-25)              |
+| Lint                 | `npx eslint . --max-warnings 0`                       | clean — now includes `react-hooks/rules-of-hooks` on `apps/web/src`         |
+| Formatting           | `npx prettier --check .`                              | clean                                                                       |
+| Dependency audit     | `npm audit --omit=dev` (root, `apps/web`, `apps/api`) | **0 vulnerabilities** on all three lockfiles                                |
+| Web production build | `cd apps/web; npm run build`                          | 23 routes                                                                   |
+| Browser smoke        | `BASE_URL=… node test/smoke.mjs`                      | **20/20**                                                                   |
+| Browser E2E          | `BASE_URL=… node test/e2e.mjs`                        | **27/27** against the production build (was 22 before this session's gates) |
+
+JS breakdown: relay 14 · API 45 · simulator 2 · security 19 · rate-limit 8 · cross-layer 5 ·
+OCPP remote 2 · gateway-close 12 · control 17 · control-AES 6 · OCPP commands 10 · carbon 8 ·
+wallet 14 · Oracle adapter 4 · **AI contract 11** · twin 12 · local invariants 12 checks / 0 rows ·
+OpenAPI 82 paths, no drift · race 2 · API E2E 7 steps.
+
+The browser leg ran against `next start` serving the real production build, with the API on a
+non-default port: Docker Desktop still holds inert `127.0.0.1:3000/4000/8100` forwarders whose
+engine answers `500 Internal Server Error`, so those ports hang rather than fail fast. Console on
+`:3100`, API on `:4110` (`WEB_ORIGIN` set to the console origin — CORS allows `localhost:3000`
+only by default, and a silent "Failed to fetch" at login is exactly how that mistake shows up).
+
+### What the browser leg found, and the receipts that keep it fixed
+
+- **BUG (Critical, console): the live-session route could not mount at all** — `useCountUp` sat
+  below the `if (!d)` skeleton return, so render 1 registered fewer hooks than render 2 and React
+  aborted with error #310. Proven pre-existing on `main` with `git show HEAD:`, invisible to every
+  suite that existed before. Gates now: `react-hooks/rules-of-hooks` as an error (validated against
+  a deliberate violation) and the E2E staff tour opening a real `/session/<id>`.
+- **BUG (Critical, console): repicking a station kept the previous station's KPIs.** `usePoll`
+  was keyed on `[intervalMs, enabled]` only, so a scope change aborted nothing and cleared nothing
+  — and once `hadData` was true a later failure dressed the wrong numbers as "last good data".
+  `scope` + `reset` fix it. **Mutation receipt:** with `scope` removed the new E2E check fails red
+  quoting the exact stale string — `still showing "REVENUE ₹8,454.03 ENERGY 408.73 kWh SESSIONS 20
+ACTIVE / FAULTS 0 / 0"` — and passes with it restored.
+- **BUG (High, trust): the AI proxy fell back to a published credential in production**
+  (`process.env.AI_TOKEN || 'dev-internal'`, while the sidecar itself refused to boot on that
+  value). Now fails closed per request with `503 AI_UNAVAILABLE` naming `AI_TOKEN`, and never
+  dials. **Mutation receipt:** with the condition neutered, `TEST-AI-11` fails with
+  `unset AI_TOKEN must be 503, got 200`; restored, the suite is 11/11.
+
+### What this does **not** prove
+
+- The Oracle + Timescale durable path was not booted in this session; the JS chain above ran the
+  documented local store. Durable receipts stay in CI (`db-tests`, `e2e`) and in the sections below.
+- Browser verification was one Chromium at 1280×800 and 375px (smoke), on the seeded demo dataset.
+  No third-party assistive-tech matrix, no Safari/Firefox, no real charge point hardware.
+- The mutation checks prove the _gates_ fire, not that no other route has the same defect class.
+- AI training numbers are the 2026-10-26 receipt (`apps/ai/reports/metrics.json`: 87 stations /
+  754,032 station-hours, MAE 1.906 kWh, 36.02 % skill vs seasonal-naive, coverage 0.803, CPU-only
+  226.77 s) — nothing in this session retrained the model, and `docs/ai-platform.md` cites it.
+
 ## 2026-10-25 — three-dataset AI, CarbonPilot, OCPP day-2, PWA (EXECUTED)
 
 Fresh synthesis of the six review categories, implemented rather than filed. The prior
@@ -183,8 +241,28 @@ rather than deferred to CI.
   30 s window contains **zero** 429s.
 - **The telemetry pipeline end-to-end (EXECUTED):** the simulator drove a real OCPP
   1.6J session (`tx=117`) against the gateway, the API wrote it through to Oracle, the
-  worker relayed it and Timescale gained 12 ticks. Steady state: `relayed=1..3
-lag_probe=ok` on every cycle, no 429s.
+  worker relayed it and Timescale gained 12 ticks. Steady state at the time:
+  `relayed=1..3 lag_probe=ok` on every cycle, no 429s. That log line was self-reported
+  and is gone — see **Queue hardening** below for what the pipeline measures now.
+- **Queue hardening (EXECUTED, 2026-10-24):** against a real API + Timescale, a backlog
+  was left to age and then drained. First cycle `{"relayed":7,"pending":7,"oldest_age_s":0}`;
+  with events still queued `/health` reported `{"outbox_lag":5,"oldest":130,"relay_age":2}`
+  and the worker printed
+  `LAG SLO BREACH: oldest unacked event is 130s old (SLO 120s), pending=5` — the same
+  state that used to print `lag_probe=ok`. After the drain: `outbox_lag=0`,
+  `relay_last_poll_age_s=0`, `dead_letters_open=0`, and `/metrics` exported
+  `volthub_outbox_oldest_age_seconds`, `volthub_relay_last_poll_seconds` (−1 when no
+  relay has ever polled) and `volthub_dead_letter_depth`.
+  Two data-integrity defects surfaced while proving it: (a) two genuine connector
+  transitions inside one wall-clock second collided on `connector_state_event(connector_ref, ts)`
+  and `ON CONFLICT DO NOTHING` deleted one — the relay now carries `dedupe_key` in the key
+  (T001/T004) and the live sink kept both rows; (b) an unparsable `SampledValue.value`
+  reached Timescale as `meter_kwh = NaN`, where float8 treats `NaN = NaN` as TRUE so no
+  query detects it — the gateway now answers `TypeMismatch`, the store refuses the tick
+  (`TICK_REJECTED`), the Oracle bind guard refuses it too, and the relay dead-letters any
+  such event that was already queued. A CHECK constraint was tried first and rejected by
+  Timescale itself (`operation not supported on hypertables that have compression
+enabled`), which is why the rule lives at the boundary instead of the sink.
 - **The web tier is deployable (EXECUTED):** with the new build args, an image built
   with `NEXT_PUBLIC_API_BASE=https://api.example.test/api/v1` contains
   `api.example.test` inside `.next/static` (before the fix the value was inlined as
