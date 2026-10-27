@@ -271,6 +271,47 @@ async function main() {
     assert.equal(sent.history.kwh.length, 240);
   });
 
+  await t('TEST-AI-11: production refuses to dial the sidecar with a published or missing AI_TOKEN', async () => {
+    // The sidecar already fails fast without a >=24-byte secret in production
+    // (apps/ai/service.py). The proxy used to paper over the gap by falling back to
+    // the literal 'dev-internal' — a value published in .env.example — so a
+    // misconfigured deploy silently sent a well-known string to an internal endpoint
+    // instead of erroring. Demo boots keep the fallback; production fails closed.
+    const origToken = process.env.AI_TOKEN;
+    const devSeen = seen.auth.length;
+
+    const r = await api(`/ai/forecast?stationId=${stId}`, { headers: OH });
+    assert.ok(
+      seen.auth.slice(devSeen).every((tok) => tok === 'dev-internal'),
+      'with NODE_ENV unset the demo fallback must still ride'
+    );
+    assert.equal(r.status, 200);
+
+    process.env.NODE_ENV = 'production';
+    try {
+      delete process.env.AI_TOKEN;
+      const before = seen.auth.length;
+      const unset = await api(`/ai/forecast?stationId=${stId}`, { headers: OH });
+      assert.equal(unset.status, 503, `unset AI_TOKEN must be 503, got ${unset.status}`);
+      assert.equal(unset.j.error.code, 'AI_UNAVAILABLE');
+      assert.match(unset.j.error.message, /AI_TOKEN/, `the outage must name the secret: ${unset.j.error.message}`);
+      assert.equal(seen.auth.length, before, 'a misconfigured proxy must not reach the sidecar at all');
+
+      process.env.AI_TOKEN = 'dev-internal';
+      const literal = await api(`/ai/forecast?stationId=${stId}`, { headers: OH });
+      assert.equal(literal.status, 503, 'the published dev literal is not a production credential');
+
+      process.env.AI_TOKEN = 'a'.repeat(32);
+      const wired = await api(`/ai/forecast?stationId=${stId}`, { headers: OH });
+      assert.equal(wired.status, 200, `a real secret must work, got ${wired.status}`);
+      assert.equal(seen.auth.at(-1), 'a'.repeat(32), 'the configured secret must be the one that rides');
+    } finally {
+      delete process.env.NODE_ENV;
+      if (origToken === undefined) delete process.env.AI_TOKEN;
+      else process.env.AI_TOKEN = origToken;
+    }
+  });
+
   console.log(`\nAI contract tests: ${pass} passed`);
   server.close();
   stub.close();

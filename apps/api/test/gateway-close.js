@@ -489,8 +489,26 @@ async function main() {
         msReplies.push(JSON.parse(String(raw)));
       } catch {}
     });
-    const msCall = (uid, action, payload) =>
-      new Promise((resolve, reject) => {
+    // A CALL is answered by CALLRESULT (3) or CALLERROR (4). Matching only the first
+    // shape turned any legitimate rejection into a 3s "timeout" with no evidence, so
+    // the failure message now quotes every answer that actually came back for the uid.
+    const answersFor = (uid) => msReplies.filter((m) => Array.isArray(m) && (m[0] === 3 || m[0] === 4) && m[1] === uid);
+    // The gateway rate-limits each identity to 10 CALL/s (SEC-042) and answers the
+    // overflow with FormationViolation. This suite drives a whole session's frames in a
+    // few milliseconds, so the helper paces itself rather than tripping the limiter and
+    // failing an unrelated assertion.
+    const sentAt = [];
+    const pace = async () => {
+      for (;;) {
+        const now = Date.now();
+        if (sentAt.filter((t) => now - t < 1000).length < 9) break;
+        await sleep(100);
+      }
+      sentAt.push(Date.now());
+    };
+    const msCall = async (uid, action, payload) => {
+      await pace();
+      return new Promise((resolve, reject) => {
         wsMs.send(JSON.stringify([2, uid, action, payload]));
         const t0 = Date.now();
         const iv = setInterval(() => {
@@ -500,10 +518,11 @@ async function main() {
             resolve(hit[2]);
           } else if (Date.now() - t0 > 3000) {
             clearInterval(iv);
-            reject(new Error(`timeout waiting for ${action}`));
+            reject(new Error(`timeout waiting for ${action}: ${JSON.stringify(answersFor(uid))}`));
           }
         }, 50);
       });
+    };
     const startAck = await msCall('ms-start', 'StartTransaction', {
       connectorId: free.connector_no,
       idTag: `TAG-${drvUid}`,
@@ -591,14 +610,115 @@ async function main() {
     });
     await sleep(150);
     console.log('  close 11 - power-only frames recorded (register carry-forward); NoError clears open faults');
+
+    // --- t12 (TELEM-02): an unparsable energy register is a malformed frame, not a tick ---
+    // SampledValue.value is a string, so Number('n/a') is NaN. Before the boundary guard
+    // that NaN travelled readings → outbox → Timescale, where float8 stores it as an
+    // ordinary-looking row and NaN = NaN is TRUE, so nothing downstream detects it while
+    // every SUM above it becomes NaN. Oracle rejects the same bind outright — one frame
+    // must not get two answers from two engines. The CP now gets TypeMismatch and the
+    // sequence cursor is NOT advanced, so the next honest sample still lands at seq 1.
+    const msAny = async (uid, action, payload) => {
+      await pace();
+      return new Promise((resolve, reject) => {
+        wsMs.send(JSON.stringify([2, uid, action, payload]));
+        const t0 = Date.now();
+        const iv = setInterval(() => {
+          const hit = msReplies.find((m) => Array.isArray(m) && (m[0] === 3 || m[0] === 4) && m[1] === uid);
+          if (hit) {
+            clearInterval(iv);
+            resolve(hit);
+          } else if (Date.now() - t0 > 3000) {
+            clearInterval(iv);
+            reject(new Error(`timeout waiting for ${action}: ${JSON.stringify(answersFor(uid))}`));
+          }
+        }, 50);
+      });
+    };
+    const t12Sid = (
+      await msCall('t12-start', 'StartTransaction', {
+        connectorId: free.connector_no,
+        idTag: `TAG-${drvUid}`,
+        meterStart: 800000,
+        timestamp: new Date().toISOString(),
+      })
+    ).transactionId;
+    const t12Rows = () => store.readings.filter((r) => r.session_id === t12Sid);
+    const refuse = await msAny('t12-bad', 'MeterValues', {
+      transactionId: t12Sid,
+      meterValue: [
+        {
+          timestamp: new Date().toISOString(),
+          sampledValue: [{ measurand: 'Energy.Active.Import.Register', value: 'n/a' }],
+        },
+      ],
+    });
+    assert.strictEqual(
+      refuse[0],
+      4,
+      `a refused frame must answer CALLERROR, not a silent CALLRESULT — got ${JSON.stringify(refuse)}`
+    );
+    assert.strictEqual(refuse[2], 'TypeMismatch', `expected TypeMismatch, got ${JSON.stringify(refuse)}`);
+    assert.strictEqual(t12Rows().length, 0, 'nothing may be stored for a refused frame');
+    await msCall('t12-good', 'MeterValues', {
+      transactionId: t12Sid,
+      meterValue: [
+        {
+          timestamp: new Date().toISOString(),
+          sampledValue: [{ measurand: 'Energy.Active.Import.Register', value: '800250' }],
+        },
+      ],
+    });
+    assert.deepEqual(
+      t12Rows().map((r) => [r.seq_no, r.meter_kwh]),
+      [[1, 800.25]],
+      'the refused frame must not spend a sequence number — the honest sample is still seq 1'
+    );
+    // A NaN auxiliary channel must not cost the session its register: it lands as NULL.
+    await msCall('t12-pow', 'MeterValues', {
+      transactionId: t12Sid,
+      meterValue: [
+        {
+          timestamp: new Date().toISOString(),
+          sampledValue: [
+            { measurand: 'Energy.Active.Import.Register', value: '800300' },
+            { measurand: 'Power.Active.Import', value: '???' },
+          ],
+        },
+      ],
+    });
+    assert.strictEqual(t12Rows().length, 2, 'a broken power field must not reject the whole frame');
+    assert.strictEqual(t12Rows()[1].power_kw, null, 'a NaN power sample is stored as NULL, never NaN');
+    const t12Queued = store.outbox.filter((e) => e.kind === 'METER_TICK' && e.payload.session_id === t12Sid);
+    assert.equal(t12Queued.length, 2, 'only the two accepted ticks are queued for the sink');
+    assert.ok(
+      t12Queued.every(
+        (e) =>
+          Number.isFinite(e.payload.meter_kwh) && (e.payload.power_kw === null || Number.isFinite(e.payload.power_kw))
+      ),
+      'the outbox cannot carry a non-finite value to the sink'
+    );
+    await msCall('t12-stop', 'StopTransaction', {
+      transactionId: t12Sid,
+      meterStop: 800500,
+      timestamp: new Date().toISOString(),
+      reason: 'Local',
+    });
+    await sleep(150);
+    console.log('  close 12 - unparsable register → TypeMismatch, no row, no sequence number spent');
     wsMs.close();
 
     ws6.close();
     await sleep(250);
-    console.log('\nOCPP gateway-close tests: 11 passed');
+    console.log('\nOCPP gateway-close tests: 12 passed');
   } finally {
-    clearTimeout(watchdog);
+    // The watchdog stays armed until the very end: a failed assertion leaves its WS
+    // client open, and server.close() then waits forever for that socket — the exact
+    // silent hang the header comment warns about. Forcing the connections closed lets
+    // the rejection reach main().catch, so the failure is printed instead of parked.
+    server.closeAllConnections();
     await new Promise((res) => server.close(res));
+    clearTimeout(watchdog);
   }
   process.exitCode = 0;
 }
