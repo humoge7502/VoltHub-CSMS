@@ -15,5 +15,7 @@ docs/openapi.json
 coverage/
 __pycache__/
 .pytest_cache/
+# Local agent-tooling cache (same class as .zcode/ and .workbuddy-ai/).
+.impeccable/
 # Trainer-written AI receipts: byte-reproducible from train.py (same rule as bench/results).
 apps/ai/reports/
